@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.repositories.settings_kv import SettingKvRepository
+from xw_studio.services.clickup.client import ClickUpClient, ClickUpTask
 from xw_studio.services.secrets.service import SecretService
 
 if TYPE_CHECKING:
@@ -39,6 +40,7 @@ _QUEUE_MOLLIE_KEY = "daily_business.queue.mollie"
 _QUEUE_GUTSCHEINE_KEY = "daily_business.queue.gutscheine"
 _QUEUE_DOWNLOADS_KEY = "daily_business.queue.downloads"
 _QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
+_CLICKUP_LIST_ID_KEY = "clickup.default_list_id"
 _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "MOLLIE_ACCESS_TOKEN",
     "STRIPE_SECRET_KEY",
@@ -66,6 +68,7 @@ class SettingsView(QWidget):
         super().__init__(parent)
         self._container = container
         self._db_worker: BackgroundWorker | None = None
+        self._clickup_worker: BackgroundWorker | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -102,9 +105,11 @@ class SettingsView(QWidget):
         secret_service: SecretService = self._container.resolve(SecretService)
         sevdesk_ok = bool(secret_service.get_secret("SEVDESK_API_TOKEN"))
         wix_ok = bool(secret_service.get_secret("WIX_API_KEY"))
+        clickup_ok = bool(secret_service.get_secret("CLICKUP_API_TOKEN"))
         fernet_ok = bool((cfg.fernet_master_key or "").strip())
         form_sec.addRow("SEVDESK_API_TOKEN:", _pill("gesetzt ✓", sevdesk_ok) if sevdesk_ok else _pill("fehlt ✗", False))
         form_sec.addRow("WIX_API_KEY:", _pill("gesetzt ✓", wix_ok) if wix_ok else _pill("fehlt ✗", False))
+        form_sec.addRow("CLICKUP_API_TOKEN:", _pill("gesetzt ✓", clickup_ok) if clickup_ok else _pill("fehlt ✗", False))
         form_sec.addRow("FERNET_MASTER_KEY:", _pill("gesetzt ✓", fernet_ok) if fernet_ok else _pill("fehlt ✗", False))
         main.addWidget(gb_secrets)
 
@@ -139,6 +144,26 @@ class SettingsView(QWidget):
         btn_save_tokens.clicked.connect(self._save_tokens)
         sec_edit.addRow("", btn_save_tokens)
         main.addWidget(gb_secret_edit)
+
+        gb_clickup = QGroupBox("ClickUp Schnellanlage")
+        clickup_form = QFormLayout(gb_clickup)
+        self._clickup_list_id = QLineEdit(self._get_setting_value(_CLICKUP_LIST_ID_KEY))
+        self._clickup_list_id.setPlaceholderText("ClickUp Listen-ID")
+        self._clickup_title = QLineEdit()
+        self._clickup_title.setPlaceholderText("Kurzbeschreibung der Aufgabe")
+        self._clickup_description = QPlainTextEdit()
+        self._clickup_description.setPlaceholderText("Details, Kontext, naechste Schritte")
+        self._clickup_description.setMinimumHeight(90)
+        clickup_form.addRow("Listen-ID:", self._clickup_list_id)
+        clickup_form.addRow("Titel:", self._clickup_title)
+        clickup_form.addRow("Beschreibung:", self._clickup_description)
+        self._clickup_status = QLabel("—")
+        self._clickup_status.setStyleSheet("color: #9e9e9e;")
+        clickup_form.addRow("Status:", self._clickup_status)
+        self._clickup_create_btn = QPushButton("Task in ClickUp erstellen")
+        self._clickup_create_btn.clicked.connect(self._create_clickup_task)
+        clickup_form.addRow("", self._clickup_create_btn)
+        main.addWidget(gb_clickup)
 
         # --- Drucker ---
         gb_printer = QGroupBox("Drucker (konfiguriert)")
@@ -264,6 +289,18 @@ class SettingsView(QWidget):
         except KeyError:
             return False
 
+    def _get_setting_value(self, key: str) -> str:
+        if not self._has_settings_repo():
+            return ""
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        return repo.get_value_json(key) or ""
+
+    def _set_setting_value(self, key: str, value: str) -> None:
+        if not self._has_settings_repo():
+            return
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        repo.set_value_json(key, value)
+
     def _load_queue_settings(self) -> None:
         if not self._has_settings_repo():
             self._queue_status.setText("DB-Repository nicht aktiv (DATABASE_URL fehlt oder Migration fehlt).")
@@ -375,3 +412,61 @@ class SettingsView(QWidget):
         self._secret_status.setStyleSheet(_OK_STYLE)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("Tokens wurden in der DB gespeichert", 4500)
+
+    def _create_clickup_task(self) -> None:
+        if self._clickup_worker is not None and self._clickup_worker.isRunning():
+            return
+
+        title = self._clickup_title.text().strip()
+        list_id = self._clickup_list_id.text().strip()
+        description = self._clickup_description.toPlainText().strip()
+        client: ClickUpClient = self._container.resolve(ClickUpClient)
+
+        if not client.has_credentials():
+            self._clickup_status.setText("CLICKUP_API_TOKEN fehlt.")
+            self._clickup_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "ClickUp", "Bitte zuerst CLICKUP_API_TOKEN speichern.")
+            return
+        if not list_id:
+            self._clickup_status.setText("Listen-ID fehlt.")
+            self._clickup_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "ClickUp", "Bitte eine ClickUp Listen-ID eintragen.")
+            return
+        if not title:
+            self._clickup_status.setText("Titel fehlt.")
+            self._clickup_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "ClickUp", "Bitte einen Titel fuer die Aufgabe eingeben.")
+            return
+
+        self._clickup_create_btn.setEnabled(False)
+        self._clickup_status.setText("Erstelle Task...")
+        self._clickup_status.setStyleSheet(_WARN_STYLE)
+
+        def job() -> ClickUpTask:
+            return client.create_task(title, description=description, list_id=list_id)
+
+        self._clickup_worker = BackgroundWorker(job)
+        self._clickup_worker.signals.result.connect(self._on_clickup_created)
+        self._clickup_worker.signals.error.connect(self._on_clickup_error)
+        self._clickup_worker.signals.finished.connect(self._on_clickup_finished)
+        self._clickup_worker.start()
+
+    def _on_clickup_created(self, task: object) -> None:
+        if not isinstance(task, ClickUpTask):
+            return
+        self._set_setting_value(_CLICKUP_LIST_ID_KEY, self._clickup_list_id.text().strip())
+        self._clickup_status.setText(f"Task erstellt: {task.name} ({task.id})")
+        self._clickup_status.setStyleSheet(_OK_STYLE)
+        self._clickup_title.clear()
+        self._clickup_description.clear()
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("ClickUp-Task erstellt", 4000)
+
+    def _on_clickup_error(self, exc: Exception) -> None:
+        logger.error("ClickUp task creation failed: %s", exc)
+        self._clickup_status.setText(f"Fehler: {exc}")
+        self._clickup_status.setStyleSheet(_ERR_STYLE)
+        QMessageBox.warning(self, "ClickUp", str(exc))
+
+    def _on_clickup_finished(self) -> None:
+        self._clickup_create_btn.setEnabled(True)
