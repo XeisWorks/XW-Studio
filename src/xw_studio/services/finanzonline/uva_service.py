@@ -21,9 +21,11 @@ class UvaService:
     def describe_capabilities(self) -> str:
         """Human-readable status for the Steuern > UVA tab."""
         has_url = bool(self._config.database_url)
+        has_fon = self._client.has_credentials()
         return (
             "UVA-Modul: SOAP-Anbindung (zeep) wird pro Meldungstyp ergaenzt.\n"
-            f"PostgreSQL-Konfiguration: {'ja' if has_url else 'nein (nur .env lokale Entwicklung)'}"
+            f"PostgreSQL: {'konfiguriert' if has_url else 'nicht konfiguriert (nur .env)'}\n"
+            f"FinanzOnline-Zugangsdaten: {'vorhanden' if has_fon else 'fehlen (Einstellungen > Token)'}"
         )
 
     def mock_build_payload(self, year: int, month: int) -> dict[str, Any]:

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _STOCK_KEY = "inventory.stock_levels"
 _REQUIREMENTS_KEY = "daily_business.pending_requirements"
+_PRODUCTS_KEY = "inventory.products"
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,19 @@ class StartPreflight:
     open_invoice_count: int
     decisions: list[StartDecision]
     missing_position_data: bool
+
+
+@dataclass(frozen=True)
+class ProductRow:
+    """Single product row for UI tables."""
+
+    sku: str
+    name: str
+    category: str
+    on_hand: int
+    price_eur: str
+    wix_id: str
+    sevdesk_id: str
 
 
 class InventoryService:
@@ -138,3 +152,43 @@ class InventoryService:
             "Produkte / Inventar: Bestand, Druckplaene, Wix/sevDesk-Abgleich — "
             "persistiert spaeter in PostgreSQL."
         )
+
+    def list_products(self) -> list[ProductRow]:
+        """Return product catalogue rows from DB (``inventory.products`` JSON array).
+
+        Each entry must be a JSON object with optional keys:
+        ``sku``, ``name``, ``category``, ``on_hand``, ``price_eur``, ``wix_id``, ``sevdesk_id``.
+        Returns an empty list when no DB connection or data is available.
+        """
+        if self._settings_repo is None:
+            return []
+        raw = self._settings_repo.get_value_json(_PRODUCTS_KEY)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in %s", _PRODUCTS_KEY)
+            return []
+        if not isinstance(data, list):
+            return []
+        rows: list[ProductRow] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                on_hand = int(item.get("on_hand") or 0)
+            except (TypeError, ValueError):
+                on_hand = 0
+            rows.append(
+                ProductRow(
+                    sku=str(item.get("sku") or ""),
+                    name=str(item.get("name") or ""),
+                    category=str(item.get("category") or ""),
+                    on_hand=on_hand,
+                    price_eur=str(item.get("price_eur") or ""),
+                    wix_id=str(item.get("wix_id") or ""),
+                    sevdesk_id=str(item.get("sevdesk_id") or ""),
+                )
+            )
+        return rows

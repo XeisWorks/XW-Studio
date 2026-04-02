@@ -57,7 +57,13 @@ def register_default_services(container: Container) -> None:
         lambda c: InvoiceProcessingService(c.resolve(InvoiceClient)),
     )
 
-    container.register(FinanzOnlineClient, lambda c: FinanzOnlineClient(c.config))
+    container.register(
+        FinanzOnlineClient,
+        lambda c: FinanzOnlineClient(
+            c.config,
+            secret_service=c.resolve(SecretService),
+        ),
+    )
     container.register(
         UvaService,
         lambda c: UvaService(c.config, c.resolve(FinanzOnlineClient)),
@@ -65,7 +71,13 @@ def register_default_services(container: Container) -> None:
     container.register(PaymentClearingService, lambda c: PaymentClearingService())
     container.register(ExpenseAuditService, lambda c: ExpenseAuditService())
     container.register(StatisticsService, lambda c: StatisticsService())
-    container.register(CrmService, lambda c: CrmService(c.config))
+    container.register(
+        CrmService,
+        lambda c: CrmService(
+            c.config,
+            c.resolve(ContactClient) if (c.config.sevdesk.api_token or "").strip() else None,
+        ),
+    )
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
     container.register(CalculationService, lambda c: CalculationService())
     container.register(

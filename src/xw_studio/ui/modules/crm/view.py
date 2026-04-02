@@ -1,72 +1,227 @@
-"""CRM module — mock contacts and duplicate scan."""
+"""CRM module — live contacts from sevDesk with duplicate scan."""
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.crm import ContactRecord, CrmService
+from xw_studio.services.crm.types import DuplicateCandidate
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
 
 logger = logging.getLogger(__name__)
 
+_HEADERS = ["Score", "Kontakt A", "Kontakt B", "E-Mail A", "E-Mail B"]
 
-def _mock_contacts() -> list[ContactRecord]:
-    return [
-        ContactRecord(id="1", name="Musik Verlag Nord", email="kontakt@mv-nord.test"),
-        ContactRecord(id="2", name="Verlags Nord GmbH", email="kontakt@mv-nord.test"),
-        ContactRecord(id="3", name="Klavierschule Sued", email="info@klavier-sued.test"),
-    ]
+_DEMO_CONTACTS: list[ContactRecord] = [
+    ContactRecord(id="1", name="Musik Verlag Nord", email="kontakt@mv-nord.test"),
+    ContactRecord(id="2", name="Verlags Nord GmbH", email="kontakt@mv-nord.test"),
+    ContactRecord(id="3", name="Klavierschule Sued", email="info@klavier-sued.test"),
+    ContactRecord(id="4", name="Klavierschule Süd", email="info@klavier-sued.test"),
+]
 
 
 class CrmView(QWidget):
-    """Customer maintenance shell with duplicate detection demo."""
+    """Customer maintenance with live sevDesk contact sync and duplicate detection."""
 
     def __init__(self, container: Container, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._container = container
+        self._contacts: list[ContactRecord] = []
         self._worker: BackgroundWorker | None = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.addWidget(
-            QLabel(
-                "CRM: Kontaktdaten aus sevDesk werden hier zusammengefuehrt. "
-                "Aktuell Demo-Daten fuer Duplikat-Score."
-            )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        # --- header bar ---
+        bar = QHBoxLayout()
+        crm: CrmService = container.resolve(CrmService)
+        self._status_lbl = QLabel(
+            "Live: sevDesk verbunden — Kontakte laden…"
+            if crm.has_live_connection()
+            else "Demo-Modus (kein sevDesk-Token). Ergebnisse sind Testdaten."
         )
-        self._result = QLabel("")
-        self._result.setWordWrap(True)
-        layout.addWidget(self._result)
-        btn = QPushButton("Duplikate suchen (Demo)")
-        btn.clicked.connect(self._run_scan)
-        layout.addWidget(btn)
-        layout.addStretch()
+        self._status_lbl.setObjectName("crmStatusLabel")
+        bar.addWidget(self._status_lbl)
+        bar.addStretch()
+        self._sync_btn = QPushButton("Kontakte laden")
+        self._sync_btn.clicked.connect(self._load_contacts)
+        bar.addWidget(self._sync_btn)
+        root.addLayout(bar)
 
-    def _run_scan(self) -> None:
+        # --- search bar ---
+        search_row = QHBoxLayout()
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Kontakte filtern…")
+        self._search.textChanged.connect(self._apply_filter)
+        search_row.addWidget(self._search)
+        self._scan_btn = QPushButton("Duplikat-Scan")
+        self._scan_btn.clicked.connect(self._run_scan)
+        search_row.addWidget(self._scan_btn)
+        root.addLayout(search_row)
+
+        # --- contacts table ---
+        contact_lbl = QLabel("Kontakte")
+        contact_lbl.setObjectName("sectionLabel")
+        root.addWidget(contact_lbl)
+
+        self._contacts_table = QTableWidget(0, 4)
+        self._contacts_table.setHorizontalHeaderLabels(["ID", "Name", "E-Mail", "Telefon"])
+        self._contacts_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self._contacts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._contacts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._contacts_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        root.addWidget(self._contacts_table, stretch=3)
+
+        # --- duplicates table ---
+        dup_lbl = QLabel("Mögliche Duplikate")
+        dup_lbl.setObjectName("sectionLabel")
+        root.addWidget(dup_lbl)
+
+        self._dup_table = QTableWidget(0, len(_HEADERS))
+        self._dup_table.setHorizontalHeaderLabels(_HEADERS)
+        self._dup_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self._dup_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self._dup_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._dup_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._dup_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        root.addWidget(self._dup_table, stretch=2)
+
+        # --- auto-load contacts on show ---
+        self._load_contacts()
+
+    # ------------------------------------------------------------------
+    # Contact loading
+    # ------------------------------------------------------------------
+
+    def _load_contacts(self) -> None:
         crm: CrmService = self._container.resolve(CrmService)
+        self._sync_btn.setEnabled(False)
+        self._status_lbl.setText("Laden…")
 
-        def job() -> str:
-            dups = crm.find_duplicates_in_memory(_mock_contacts())
-            if not dups:
-                return "Keine Treffer ueber dem Schwellwert."
-            lines = [f"Score {d.score}: {d.a.name!r} <> {d.b.name!r}" for d in dups[:10]]
-            return "\n".join(lines)
+        def job() -> list[ContactRecord]:
+            if crm.has_live_connection():
+                return crm.fetch_live_contacts()
+            return list(_DEMO_CONTACTS)
 
         self._worker = BackgroundWorker(job)
-        self._worker.signals.result.connect(self._on_result)
-        self._worker.signals.error.connect(lambda e: QMessageBox.warning(self, "CRM", str(e)))
+        self._worker.signals.result.connect(self._on_contacts_loaded)
+        self._worker.signals.error.connect(self._on_load_error)
         self._worker.start()
 
-    def _on_result(self, text: object) -> None:
-        if isinstance(text, str):
-            self._result.setText(text)
+    def _on_contacts_loaded(self, contacts: object) -> None:
+        if not isinstance(contacts, list):
+            return
+        self._contacts = contacts  # type: ignore[assignment]
+        crm: CrmService = self._container.resolve(CrmService)
+        src = "sevDesk" if crm.has_live_connection() else "Demo"
+        self._status_lbl.setText(f"{len(self._contacts)} Kontakte geladen ({src})")
+        self._sync_btn.setEnabled(True)
+        self._populate_contacts_table(self._contacts)
+
+    def _on_load_error(self, exc: BaseException) -> None:
+        self._sync_btn.setEnabled(True)
+        self._status_lbl.setText(f"Fehler: {exc}")
+        logger.exception("CRM contact load failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Contacts table population & filtering
+    # ------------------------------------------------------------------
+
+    def _populate_contacts_table(self, rows: list[ContactRecord]) -> None:
+        tbl = self._contacts_table
+        tbl.setRowCount(0)
+        for rec in rows:
+            r = tbl.rowCount()
+            tbl.insertRow(r)
+            tbl.setItem(r, 0, QTableWidgetItem(rec.id))
+            tbl.setItem(r, 1, QTableWidgetItem(rec.name))
+            tbl.setItem(r, 2, QTableWidgetItem(rec.email or ""))
+            tbl.setItem(r, 3, QTableWidgetItem(rec.phone or ""))
+        for col in (0, 3):
+            tbl.resizeColumnToContents(col)
+
+    def _apply_filter(self, text: str) -> None:
+        needle = text.lower()
+        filtered = [
+            r for r in self._contacts
+            if needle in (r.name or "").lower()
+            or needle in (r.email or "").lower()
+        ]
+        self._populate_contacts_table(filtered)
+
+    # ------------------------------------------------------------------
+    # Duplicate scan
+    # ------------------------------------------------------------------
+
+    def _run_scan(self) -> None:
+        if not self._contacts:
+            QMessageBox.information(self, "CRM", "Bitte zuerst Kontakte laden.")
+            return
+        crm: CrmService = self._container.resolve(CrmService)
+        self._scan_btn.setEnabled(False)
+
+        contacts_snapshot = list(self._contacts)
+
+        def job() -> list[DuplicateCandidate]:
+            return crm.find_duplicates_in_memory(contacts_snapshot)
+
+        self._worker = BackgroundWorker(job)
+        self._worker.signals.result.connect(self._on_scan_done)
+        self._worker.signals.error.connect(
+            lambda e: QMessageBox.warning(self, "CRM", str(e))
+        )
+        self._worker.start()
+
+    def _on_scan_done(self, dups: object) -> None:
+        self._scan_btn.setEnabled(True)
+        if not isinstance(dups, list):
+            return
+        tbl = self._dup_table
+        tbl.setRowCount(0)
+        for dup in dups:
+            if not isinstance(dup, DuplicateCandidate):
+                continue
+            r = tbl.rowCount()
+            tbl.insertRow(r)
+            score_item = QTableWidgetItem(str(dup.score))
+            score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            tbl.setItem(r, 0, score_item)
+            tbl.setItem(r, 1, QTableWidgetItem(dup.a.name))
+            tbl.setItem(r, 2, QTableWidgetItem(dup.b.name))
+            tbl.setItem(r, 3, QTableWidgetItem(dup.a.email or ""))
+            tbl.setItem(r, 4, QTableWidgetItem(dup.b.email or ""))
+        tbl.resizeColumnToContents(0)
+        if not dups:
+            QMessageBox.information(
+                self, "CRM", "Keine Duplikate über dem Schwellwert gefunden."
+            )
+
