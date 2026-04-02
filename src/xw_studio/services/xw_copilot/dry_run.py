@@ -12,6 +12,7 @@ from xw_studio.services.xw_copilot.contracts import (
     XWCopilotRequest,
     XWCopilotResponse,
 )
+from xw_studio.services.xw_copilot.live_dispatch import XWCopilotLiveDispatcher
 from xw_studio.services.xw_copilot.service import AuditEntry, XWCopilotService
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,15 @@ logger = logging.getLogger(__name__)
 class XWCopilotDryRunService:
     """Validate and simulate incoming Outlook add-in requests."""
 
-    def __init__(self, config_service: XWCopilotService, audit_service: XWCopilotService | None = None) -> None:
+    def __init__(
+        self,
+        config_service: XWCopilotService,
+        audit_service: XWCopilotService | None = None,
+        live_dispatcher: XWCopilotLiveDispatcher | None = None,
+    ) -> None:
         self._config_service = config_service
         self._audit_service = audit_service
+        self._live = live_dispatcher
 
     def simulate_raw_request(self, raw_json: str) -> XWCopilotResponse:
         """Parse and validate JSON, then execute a no-side-effect preview."""
@@ -126,6 +133,15 @@ class XWCopilotDryRunService:
             logger.warning("Failed to write audit entry: %s", exc)
 
     def _build_preview(self, action: str, payload: dict[str, object]) -> dict[str, object] | None:
+        # In live mode, try real dispatch first before falling back to preview.
+        if self._resolved_mode() == "live" and self._live is not None:
+            try:
+                result = self._live.dispatch(action, payload)
+                if result is not None:
+                    return result
+            except Exception as exc:
+                logger.warning("Live dispatch error for %s: %s", action, exc)
+
         if action == "crm.lookup_contact":
             query = str(payload.get("query") or "")
             return {

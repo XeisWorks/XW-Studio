@@ -57,6 +57,8 @@ class XWCopilotView(QWidget):
 
         self._load_config_into_form()
         self._load_templates_into_editor()
+        # Auto-refresh Verlauf when ingress receives a request (cross-thread safe)
+        self._ingress.signals.request_received.connect(self._on_ingress_request_received)
 
     def _build_settings_tab(self) -> QWidget:
         page = QWidget()
@@ -384,3 +386,11 @@ class XWCopilotView(QWidget):
         self._ingress_status.setText("Gestoppt")
         self._ingress_start_btn.setEnabled(True)
         self._ingress_stop_btn.setEnabled(False)
+
+    def _on_ingress_request_received(self, action: str, correlation_id: str, accepted: bool) -> None:
+        """Slot called (queued, main thread) after ingress processes a request."""
+        self._reload_history()
+        status = "OK" if accepted else "Fehler"
+        self._history_status.setText(
+            f"Eingehend: {status} — action={action}  corr={correlation_id}"
+        )

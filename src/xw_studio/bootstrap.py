@@ -30,6 +30,7 @@ from xw_studio.services.wix.client import WixProductsClient
 from xw_studio.services.clickup.client import ClickUpClient
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
 from xw_studio.services.xw_copilot.ingress import XWCopilotIngress
+from xw_studio.services.xw_copilot.live_dispatch import XWCopilotLiveDispatcher
 from xw_studio.services.xw_copilot.service import XWCopilotService
 from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, SettingKvRepository
 
@@ -109,10 +110,19 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(
+        XWCopilotLiveDispatcher,
+        lambda c: XWCopilotLiveDispatcher(
+            crm_service=c.resolve(CrmService) if (c.config.sevdesk.api_token or "").strip() else None,
+            invoice_processing=c.resolve(InvoiceProcessingService),
+            inventory_service=c.resolve(InventoryService),
+        ),
+    )
+    container.register(
         XWCopilotDryRunService,
         lambda c: XWCopilotDryRunService(
             c.resolve(XWCopilotService),
             audit_service=c.resolve(XWCopilotService),
+            live_dispatcher=c.resolve(XWCopilotLiveDispatcher),
         ),
     )
     container.register(

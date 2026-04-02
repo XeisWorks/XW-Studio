@@ -6,7 +6,8 @@ from xw_studio.services.xw_copilot.contracts import (
     XWCopilotResponse,
 )
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
-from xw_studio.services.xw_copilot.ingress import XWCopilotIngress
+from xw_studio.services.xw_copilot.ingress import XWCopilotIngress, XWCopilotIngressSignals
+from xw_studio.services.xw_copilot.live_dispatch import XWCopilotLiveDispatcher
 from xw_studio.services.xw_copilot.security import (
     generate_hmac_signature,
     is_within_replay_window,
@@ -19,6 +20,8 @@ __all__ = [
     "XWCopilotDryRunService",
     "XWCopilotError",
     "XWCopilotIngress",
+    "XWCopilotIngressSignals",
+    "XWCopilotLiveDispatcher",
     "XWCopilotRequest",
     "XWCopilotResponse",
     "XWCopilotService",

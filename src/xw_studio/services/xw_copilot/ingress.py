@@ -10,6 +10,8 @@ import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
 
+from PySide6.QtCore import QObject, Signal
+
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.xw_copilot.security import verify_hmac_signature
 
@@ -20,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 _PATH = "/api/xw-copilot"
 _MAX_BODY = 256 * 1024  # 256 KB
+
+
+class XWCopilotIngressSignals(QObject):
+    """Qt signals emitted by XWCopilotIngress for cross-thread communication."""
+
+    request_received = Signal(str, str, bool)  # action, correlation_id, accepted
 
 
 class XWCopilotIngress:
@@ -39,6 +47,7 @@ class XWCopilotIngress:
         self._server: HTTPServer | None = None
         self._worker: BackgroundWorker | None = None
         self._port: int | None = None
+        self.signals = XWCopilotIngressSignals()
 
     # ------------------------------------------------------------------
     # Public API
@@ -59,6 +68,7 @@ class XWCopilotIngress:
 
         dry_run = self._dry_run
         secret = self._hmac_secret
+        signals = self.signals
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: object) -> None:  # type: ignore[override]
@@ -90,6 +100,8 @@ class XWCopilotIngress:
                 self.send_header("Content-Length", str(len(response_json)))
                 self.end_headers()
                 self.wfile.write(response_json)
+                # Emit cross-thread signal so UI can auto-refresh history
+                signals.request_received.emit(result.action, result.correlation_id, result.accepted)
 
         server = HTTPServer(("127.0.0.1", port), _Handler)
         self._server = server
