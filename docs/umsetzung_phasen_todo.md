@@ -228,6 +228,7 @@ Aktueller Fortschritt:
 Ergaenzung 2026-04-02:
 - XW-Copilot Untermenue + Panel fuer Outlook-Add-in Integration umgesetzt.
 - Verbesserte Integrationsskizze: docs/xw_copilot_outlook_integration.md
+- Dry-Run API-Contract + Simulationsservice + UI-Testtab umgesetzt (Request/Response Validation inkl. Correlation-ID).
 
 ---
 

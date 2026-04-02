@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
 from xw_studio.services.xw_copilot.service import XWCopilotConfig, XWCopilotService
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ class XWCopilotView(QWidget):
         super().__init__(parent)
         self._container = container
         self._service: XWCopilotService = container.resolve(XWCopilotService)
+        self._dry_run_service: XWCopilotDryRunService = container.resolve(XWCopilotDryRunService)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -43,6 +45,7 @@ class XWCopilotView(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self._build_settings_tab(), "Einstellungen")
         tabs.addTab(self._build_templates_tab(), "Bausteine")
+        tabs.addTab(self._build_dry_run_tab(), "Dry-Run")
         tabs.addTab(self._build_notes_tab(), "Integration")
         root.addWidget(tabs)
 
@@ -140,6 +143,53 @@ class XWCopilotView(QWidget):
         lay.addWidget(txt)
         return page
 
+    def _build_dry_run_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+
+        lay.addWidget(
+            QLabel(
+                "Dry-Run Contract Test: Request JSON einfuegen, validieren und Vorschauantwort erzeugen."
+            )
+        )
+
+        self._dry_run_request = QPlainTextEdit()
+        self._dry_run_request.setPlaceholderText("Request JSON")
+        self._dry_run_request.setPlainText(
+            json.dumps(
+                {
+                    "tenant": "xeisworks",
+                    "mailbox": "info@xeisworks.at",
+                    "action": "crm.lookup_contact",
+                    "payload_version": "1.0",
+                    "payload": {"query": "Musterkunde"},
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        lay.addWidget(self._dry_run_request, stretch=1)
+
+        row = QHBoxLayout()
+        execute_btn = QPushButton("Dry-Run ausfuehren")
+        execute_btn.clicked.connect(self._execute_dry_run)
+        row.addWidget(execute_btn)
+        reset_btn = QPushButton("Beispiel laden")
+        reset_btn.clicked.connect(self._reset_dry_run_sample)
+        row.addWidget(reset_btn)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self._dry_run_status = QLabel("—")
+        lay.addWidget(self._dry_run_status)
+
+        self._dry_run_response = QPlainTextEdit()
+        self._dry_run_response.setReadOnly(True)
+        self._dry_run_response.setPlaceholderText("Response JSON")
+        lay.addWidget(self._dry_run_response, stretch=1)
+
+        return page
+
     def _load_config_into_form(self) -> None:
         cfg = self._service.load_config()
         self._enabled.setChecked(cfg.enabled)
@@ -190,3 +240,37 @@ class XWCopilotView(QWidget):
         self._service.save_templates([row for row in data if isinstance(row, dict)])
         self._templates_status.setText(f"{len(data)} Bausteine gespeichert")
         QMessageBox.information(self, "XW-Copilot", "Bausteine gespeichert.")
+
+    def _execute_dry_run(self) -> None:
+        raw = self._dry_run_request.toPlainText().strip()
+        if not raw:
+            QMessageBox.warning(self, "XW-Copilot", "Bitte ein Request JSON eingeben.")
+            return
+        result = self._dry_run_service.simulate_raw_request(raw)
+        self._dry_run_response.setPlainText(
+            json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
+        )
+        if result.accepted:
+            self._dry_run_status.setText(
+                f"OK: action={result.action}, mode={result.mode}, correlation_id={result.correlation_id}"
+            )
+            return
+        self._dry_run_status.setText(
+            f"Fehler: action={result.action}, correlation_id={result.correlation_id}"
+        )
+
+    def _reset_dry_run_sample(self) -> None:
+        self._dry_run_request.setPlainText(
+            json.dumps(
+                {
+                    "tenant": "xeisworks",
+                    "mailbox": "info@xeisworks.at",
+                    "action": "crm.lookup_contact",
+                    "payload_version": "1.0",
+                    "payload": {"query": "Musterkunde"},
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        self._dry_run_status.setText("Beispiel-Request geladen")

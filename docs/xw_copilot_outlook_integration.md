@@ -22,6 +22,11 @@ Ja, das ist sinnvoll, weil:
 - Persistenz ueber `SettingKvRepository`:
   - `xw_copilot.config`
   - `xw_copilot.templates`
+- Dry-Run Contract fuer Add-in Requests:
+  - Typed Request/Response Modelle (tenant, mailbox, action, payload_version)
+  - Korrelation-ID Handling und strukturierte Fehlerantworten
+  - Dry-Run Simulation fuer erste Actions (`crm.lookup_contact`, `invoice.read_status`, `inventory.start_preflight`)
+- Dry-Run Tab im XW-Copilot Panel fuer manuelle Payload-Validierung und Vorschauantwort.
 
 ## Verbesserte Zielarchitektur
 
@@ -47,11 +52,12 @@ Ja, das ist sinnvoll, weil:
 ## Empfohlene naechste Schritte
 
 1. API-Vertrag definieren
-- JSON Schema fuer Add-in Request/Response.
-- Versionierung (`payload_version`).
+- DONE: Basisschema als Pydantic-Contract in App integriert.
+- Offen: formales JSON-Schema fuer externes Add-in-Paket exportieren.
 
 2. Dry-Run Endpoint bauen
-- Erfasst Request, validiert, liefert Vorschauantwort.
+- DONE: Dry-Run Service validiert Request und liefert strukturierte Vorschauantwort.
+- Offen: optionaler HTTP-Eingangspunkt fuer Add-in (lokal/remote).
 
 3. Live-Aktionen schrittweise aktivieren
 - Start mit risikoarmen Aktionen (z. B. CRM Lookup, Rechnung lesen).
