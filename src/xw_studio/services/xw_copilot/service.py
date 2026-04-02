@@ -1,9 +1,10 @@
-"""Persisted settings and templates for Outlook add-in integration."""
+"""Persisted settings, templates and audit log for Outlook add-in integration."""
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 
@@ -11,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_KEY = "xw_copilot.config"
 _TEMPLATES_KEY = "xw_copilot.templates"
+_AUDIT_KEY = "xw_copilot.audit_log"
+_MAX_AUDIT_ENTRIES = 100
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    timestamp: str
+    action: str
+    correlation_id: str
+    accepted: bool
+    mode: str
 
 
 @dataclass(frozen=True)
@@ -111,3 +123,59 @@ class XWCopilotService:
                 }
             )
         self._repo.set_value_json(_TEMPLATES_KEY, json.dumps(clean, ensure_ascii=False, indent=2))
+
+    # ------------------------------------------------------------------
+    # Audit log
+    # ------------------------------------------------------------------
+
+    def append_audit_entry(self, entry: AuditEntry) -> None:
+        """Append one audit entry and keep at most _MAX_AUDIT_ENTRIES entries."""
+        if self._repo is None:
+            return
+        entries = self._load_raw_audit()
+        entries.append(asdict(entry))
+        if len(entries) > _MAX_AUDIT_ENTRIES:
+            entries = entries[-_MAX_AUDIT_ENTRIES:]
+        self._repo.set_value_json(_AUDIT_KEY, json.dumps(entries, ensure_ascii=False))
+
+    def load_audit_entries(self) -> list[AuditEntry]:
+        """Return stored audit entries, newest first."""
+        raw = self._load_raw_audit()
+        result: list[AuditEntry] = []
+        for item in reversed(raw):
+            if not isinstance(item, dict):
+                continue
+            result.append(
+                AuditEntry(
+                    timestamp=str(item.get("timestamp") or ""),
+                    action=str(item.get("action") or ""),
+                    correlation_id=str(item.get("correlation_id") or ""),
+                    accepted=bool(item.get("accepted", False)),
+                    mode=str(item.get("mode") or "dry_run"),
+                )
+            )
+        return result
+
+    def clear_audit_log(self) -> None:
+        if self._repo is None:
+            return
+        self._repo.set_value_json(_AUDIT_KEY, "[]")
+
+    def _load_raw_audit(self) -> list[dict[str, object]]:
+        if self._repo is None:
+            return []
+        raw = self._repo.get_value_json(_AUDIT_KEY)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in %s", _AUDIT_KEY)
+            return []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    @staticmethod
+    def utc_now() -> str:
+        return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

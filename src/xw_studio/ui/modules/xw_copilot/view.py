@@ -16,12 +16,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
+from xw_studio.services.xw_copilot.ingress import XWCopilotIngress
 from xw_studio.services.xw_copilot.service import XWCopilotConfig, XWCopilotService
 
 if TYPE_CHECKING:
@@ -38,6 +42,7 @@ class XWCopilotView(QWidget):
         self._container = container
         self._service: XWCopilotService = container.resolve(XWCopilotService)
         self._dry_run_service: XWCopilotDryRunService = container.resolve(XWCopilotDryRunService)
+        self._ingress: XWCopilotIngress = container.resolve(XWCopilotIngress)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -46,6 +51,7 @@ class XWCopilotView(QWidget):
         tabs.addTab(self._build_settings_tab(), "Einstellungen")
         tabs.addTab(self._build_templates_tab(), "Bausteine")
         tabs.addTab(self._build_dry_run_tab(), "Dry-Run")
+        tabs.addTab(self._build_history_tab(), "Verlauf")
         tabs.addTab(self._build_notes_tab(), "Integration")
         root.addWidget(tabs)
 
@@ -86,7 +92,7 @@ class XWCopilotView(QWidget):
         form.addRow("Default Projekt:", self._project)
 
         self._settings_status = QLabel("—")
-        form.addRow("Status:", self._settings_status)
+        form.addRow("Config Status:", self._settings_status)
 
         btn_row = QHBoxLayout()
         load_btn = QPushButton("Laden")
@@ -99,6 +105,36 @@ class XWCopilotView(QWidget):
         form.addRow("", btn_row)
 
         lay.addWidget(group)
+
+        # Ingress controls
+        ingress_group = QGroupBox("Lokaler HTTP-Ingress (optional)")
+        ingress_form = QFormLayout(ingress_group)
+
+        self._ingress_port = QSpinBox()
+        self._ingress_port.setRange(1024, 65535)
+        self._ingress_port.setValue(8765)
+        ingress_form.addRow("Port:", self._ingress_port)
+
+        self._ingress_secret = QLineEdit()
+        self._ingress_secret.setPlaceholderText("HMAC-Secret (leer = keine Signaturpruefung)")
+        self._ingress_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        ingress_form.addRow("HMAC-Secret:", self._ingress_secret)
+
+        self._ingress_status = QLabel("Gestoppt")
+        ingress_form.addRow("Status:", self._ingress_status)
+
+        ingress_btn_row = QHBoxLayout()
+        self._ingress_start_btn = QPushButton("Starten")
+        self._ingress_start_btn.clicked.connect(self._start_ingress)
+        ingress_btn_row.addWidget(self._ingress_start_btn)
+        self._ingress_stop_btn = QPushButton("Stoppen")
+        self._ingress_stop_btn.clicked.connect(self._stop_ingress)
+        self._ingress_stop_btn.setEnabled(False)
+        ingress_btn_row.addWidget(self._ingress_stop_btn)
+        ingress_btn_row.addStretch()
+        ingress_form.addRow("", ingress_btn_row)
+
+        lay.addWidget(ingress_group)
         lay.addStretch()
         return page
 
@@ -274,3 +310,77 @@ class XWCopilotView(QWidget):
             )
         )
         self._dry_run_status.setText("Beispiel-Request geladen")
+
+    # ------------------------------------------------------------------
+    # Verlauf tab
+    # ------------------------------------------------------------------
+
+    def _build_history_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+
+        cols = ["Zeit", "Action", "Modus", "OK?", "Correlation-ID"]
+        self._history_table = QTableWidget(0, len(cols))
+        self._history_table.setHorizontalHeaderLabels(cols)
+        self._history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._history_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self._history_table, stretch=1)
+
+        row = QHBoxLayout()
+        reload_btn = QPushButton("Verlauf laden")
+        reload_btn.clicked.connect(self._reload_history)
+        row.addWidget(reload_btn)
+        clear_btn = QPushButton("Verlauf loeschen")
+        clear_btn.clicked.connect(self._clear_history)
+        row.addWidget(clear_btn)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self._history_status = QLabel("—")
+        lay.addWidget(self._history_status)
+        return page
+
+    def _reload_history(self) -> None:
+        entries = self._service.load_audit_entries()
+        self._history_table.setRowCount(0)
+        for e in entries:
+            r = self._history_table.rowCount()
+            self._history_table.insertRow(r)
+            self._history_table.setItem(r, 0, QTableWidgetItem(e.timestamp))
+            self._history_table.setItem(r, 1, QTableWidgetItem(e.action))
+            self._history_table.setItem(r, 2, QTableWidgetItem(e.mode))
+            self._history_table.setItem(r, 3, QTableWidgetItem("Ja" if e.accepted else "Nein"))
+            self._history_table.setItem(r, 4, QTableWidgetItem(e.correlation_id))
+        self._history_status.setText(f"{len(entries)} Eintraege geladen")
+
+    def _clear_history(self) -> None:
+        if not self._service.has_storage():
+            QMessageBox.warning(self, "XW-Copilot", "Kein DB-Storage verfuegbar.")
+            return
+        self._service.clear_audit_log()
+        self._history_table.setRowCount(0)
+        self._history_status.setText("Verlauf geloescht")
+
+    # ------------------------------------------------------------------
+    # Ingress controls
+    # ------------------------------------------------------------------
+
+    def _start_ingress(self) -> None:
+        port = self._ingress_port.value()
+        secret = self._ingress_secret.text().strip()
+        self._ingress.update_secret(secret)
+        try:
+            self._ingress.start(port=port)
+        except OSError as exc:
+            QMessageBox.warning(self, "Ingress", f"Port {port} nicht verfuegbar: {exc}")
+            return
+        self._ingress_status.setText(f"Laeuft auf 127.0.0.1:{port}")
+        self._ingress_start_btn.setEnabled(False)
+        self._ingress_stop_btn.setEnabled(True)
+
+    def _stop_ingress(self) -> None:
+        self._ingress.stop()
+        self._ingress_status.setText("Gestoppt")
+        self._ingress_start_btn.setEnabled(True)
+        self._ingress_stop_btn.setEnabled(False)

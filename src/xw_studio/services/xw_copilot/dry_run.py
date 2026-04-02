@@ -12,7 +12,7 @@ from xw_studio.services.xw_copilot.contracts import (
     XWCopilotRequest,
     XWCopilotResponse,
 )
-from xw_studio.services.xw_copilot.service import XWCopilotService
+from xw_studio.services.xw_copilot.service import AuditEntry, XWCopilotService
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 class XWCopilotDryRunService:
     """Validate and simulate incoming Outlook add-in requests."""
 
-    def __init__(self, config_service: XWCopilotService) -> None:
+    def __init__(self, config_service: XWCopilotService, audit_service: XWCopilotService | None = None) -> None:
         self._config_service = config_service
+        self._audit_service = audit_service
 
     def simulate_raw_request(self, raw_json: str) -> XWCopilotResponse:
         """Parse and validate JSON, then execute a no-side-effect preview."""
@@ -84,7 +85,7 @@ class XWCopilotDryRunService:
         preview = self._build_preview(action, request.payload)
 
         if preview is None:
-            return XWCopilotResponse(
+            response = XWCopilotResponse(
                 accepted=False,
                 mode=mode,
                 action=action,
@@ -97,14 +98,32 @@ class XWCopilotDryRunService:
                     )
                 ],
             )
+        else:
+            response = XWCopilotResponse(
+                accepted=True,
+                mode=mode,
+                action=action,
+                correlation_id=correlation_id,
+                preview=preview,
+            )
 
-        return XWCopilotResponse(
-            accepted=True,
-            mode=mode,
-            action=action,
-            correlation_id=correlation_id,
-            preview=preview,
-        )
+        self._write_audit(response)
+        return response
+
+    def _write_audit(self, response: XWCopilotResponse) -> None:
+        if self._audit_service is None:
+            return
+        try:
+            entry = AuditEntry(
+                timestamp=XWCopilotService.utc_now(),
+                action=response.action,
+                correlation_id=response.correlation_id,
+                accepted=response.accepted,
+                mode=response.mode,
+            )
+            self._audit_service.append_audit_entry(entry)
+        except Exception as exc:
+            logger.warning("Failed to write audit entry: %s", exc)
 
     def _build_preview(self, action: str, payload: dict[str, object]) -> dict[str, object] | None:
         if action == "crm.lookup_contact":
