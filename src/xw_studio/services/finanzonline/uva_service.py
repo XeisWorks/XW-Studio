@@ -22,8 +22,10 @@ class UvaService:
         """Human-readable status for the Steuern > UVA tab."""
         has_url = bool(self._config.database_url)
         has_fon = self._client.has_credentials()
+        mode = self._client.backend_mode()
         return (
-            "UVA-Modul: SOAP-Anbindung (zeep) wird pro Meldungstyp ergaenzt.\n"
+            "UVA-Modul: SOAP-Anbindung (zeep) pro Meldungstyp.\n"
+            f"Backend-Modus: {mode}\n"
             f"PostgreSQL: {'konfiguriert' if has_url else 'nicht konfiguriert (nur .env)'}\n"
             f"FinanzOnline-Zugangsdaten: {'vorhanden' if has_fon else 'fehlen (Einstellungen > Token)'}"
         )

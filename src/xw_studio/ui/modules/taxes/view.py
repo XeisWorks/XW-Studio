@@ -72,7 +72,7 @@ class TaxesView(QWidget):
         layout.addLayout(row)
 
         preview = QPushButton("Preview-Payload erzeugen")
-        submit = QPushButton("UVA senden (SOAP — noch nicht implementiert)")
+        submit = QPushButton("UVA senden (SOAP)")
 
         def on_preview() -> None:
             payload = uva.mock_build_payload(year.value(), month.value())

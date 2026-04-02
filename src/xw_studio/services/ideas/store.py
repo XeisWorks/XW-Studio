@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 class IdeaEntry:
     title: str
     body: str
+    lane: str = "backlog"
+    channel: str = ""
+    due_date: str = ""
 
 
 class IdeasStore:
@@ -39,6 +42,9 @@ class IdeasStore:
                         IdeaEntry(
                             title=str(item.get("title", "")),
                             body=str(item.get("body", "")),
+                            lane=str(item.get("lane", "backlog") or "backlog"),
+                            channel=str(item.get("channel", "") or ""),
+                            due_date=str(item.get("due_date", "") or ""),
                         )
                     )
         return out

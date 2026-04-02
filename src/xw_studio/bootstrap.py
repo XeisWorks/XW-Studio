@@ -24,6 +24,7 @@ from xw_studio.services.layout.service import LayoutToolsService
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
+from xw_studio.services.sevdesk.part_client import PartClient
 from xw_studio.services.statistics.service import StatisticsService
 from xw_studio.services.wix.client import WixProductsClient
 from xw_studio.services.clickup.client import ClickUpClient
@@ -53,6 +54,10 @@ def register_default_services(container: Container) -> None:
     container.register(
         ContactClient,
         lambda c: ContactClient(c.resolve(SevdeskConnection)),
+    )
+    container.register(
+        PartClient,
+        lambda c: PartClient(c.resolve(SevdeskConnection)),
     )
     container.register(
         InvoiceProcessingService,

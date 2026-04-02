@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _STOCK_KEY = "inventory.stock_levels"
 _REQUIREMENTS_KEY = "daily_business.pending_requirements"
 _PRODUCTS_KEY = "inventory.products"
+_PRINT_PLANS_KEY = "inventory.print_plans"
 
 
 @dataclass(frozen=True)
@@ -279,3 +280,45 @@ class InventoryService:
                 )
             )
         return rows
+
+    def save_products(self, rows: list[ProductRow]) -> None:
+        """Persist ``inventory.products`` rows to settings repository."""
+        if self._settings_repo is None:
+            return
+        payload = [
+            {
+                "sku": row.sku,
+                "name": row.name,
+                "category": row.category,
+                "on_hand": max(0, int(row.on_hand)),
+                "price_eur": row.price_eur,
+                "wix_id": row.wix_id,
+                "sevdesk_id": row.sevdesk_id,
+            }
+            for row in rows
+            if row.sku
+        ]
+        self._settings_repo.set_value_json(_PRODUCTS_KEY, json.dumps(payload, ensure_ascii=False))
+
+    def load_print_plans(self) -> list[dict[str, object]]:
+        """Load print plan list (free-form JSON objects) from settings."""
+        if self._settings_repo is None:
+            return []
+        raw = self._settings_repo.get_value_json(_PRINT_PLANS_KEY)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in %s", _PRINT_PLANS_KEY)
+            return []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    def save_print_plans(self, plans: list[dict[str, object]]) -> None:
+        """Persist print plan list to settings."""
+        if self._settings_repo is None:
+            return
+        clean = [item for item in plans if isinstance(item, dict)]
+        self._settings_repo.set_value_json(_PRINT_PLANS_KEY, json.dumps(clean, ensure_ascii=False, indent=2))

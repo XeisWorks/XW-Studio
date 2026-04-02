@@ -7,6 +7,7 @@ from xw_studio.services.finanzonline.uva_soap import (
     MockUvaSoapBackend,
     UvaSoapUnavailableError,
     UvaSubmitResult,
+    ZeepUvaSoapBackend,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "UvaService",
     "UvaSoapUnavailableError",
     "UvaSubmitResult",
+    "ZeepUvaSoapBackend",
 ]

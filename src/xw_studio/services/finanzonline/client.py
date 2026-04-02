@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from xw_studio.core.config import AppConfig
@@ -9,6 +10,7 @@ from xw_studio.services.finanzonline.uva_soap import (
     UnconfiguredUvaSoapBackend,
     UvaSoapBackend,
     UvaSubmitResult,
+    ZeepUvaSoapBackend,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +31,7 @@ class FinanzOnlineClient:
     ) -> None:
         self._config = config
         self._secrets = secret_service
-        self._uva_backend: UvaSoapBackend = uva_backend or UnconfiguredUvaSoapBackend()
+        self._uva_backend: UvaSoapBackend = uva_backend or self._build_default_backend()
 
     # ------------------------------------------------------------------
     # Credential helpers — SecretService > env > config > None
@@ -59,8 +61,30 @@ class FinanzOnlineClient:
         """True when all three FON credentials are available."""
         return bool(self.participant_id() and self.user_id() and self.fon_pin())
 
+    def backend_mode(self) -> str:
+        """Human-readable backend mode for UI/status text."""
+        return "live" if isinstance(self._uva_backend, ZeepUvaSoapBackend) else "mock/off"
+
     # ------------------------------------------------------------------
 
     def submit_uva(self, payload: dict[str, Any]) -> UvaSubmitResult:
         """Submit UVA payload via configured SOAP backend."""
         return self._uva_backend.submit_uva(payload)
+
+    def _build_default_backend(self) -> UvaSoapBackend:
+        wsdl = (os.getenv("FON_SOAP_WSDL") or "").strip()
+        operation = (os.getenv("FON_SOAP_OPERATION") or "submitUva").strip() or "submitUva"
+        if wsdl and self.has_credentials():
+            static_kwargs = {
+                "teilnehmer_id": self.participant_id() or "",
+                "benutzer_id": self.user_id() or "",
+                "pin": self.fon_pin() or "",
+            }
+            logger.info("FinanzOnlineClient: using Zeep live backend (%s)", operation)
+            return ZeepUvaSoapBackend(
+                wsdl_url=wsdl,
+                operation_name=operation,
+                static_kwargs=static_kwargs,
+            )
+        logger.info("FinanzOnlineClient: using unconfigured/mock backend")
+        return UnconfiguredUvaSoapBackend()

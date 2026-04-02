@@ -10,6 +10,7 @@ from xw_studio.services.finanzonline.uva_soap import (
     MockUvaSoapBackend,
     UvaSoapUnavailableError,
     UvaSubmitResult,
+    ZeepUvaSoapBackend,
 )
 
 
@@ -45,3 +46,56 @@ def test_mock_can_raise() -> None:
     client = FinanzOnlineClient(AppConfig(), uva_backend=mock)
     with pytest.raises(ValueError, match="SOAP fault"):
         client.submit_uva({})
+
+
+class _ZeepServiceStub:
+    def submitUva(self, *, payload: dict[str, object], teilnehmer_id: str, benutzer_id: str, pin: str) -> dict[str, object]:
+        _ = (teilnehmer_id, benutzer_id, pin)
+        return {
+            "ok": True,
+            "reference_id": "LIVE-REF-1",
+            "message": f"accepted {payload.get('monat')}",
+        }
+
+
+class _ZeepClientStub:
+    def __init__(self, _wsdl: str) -> None:
+        self.service = _ZeepServiceStub()
+
+
+class _SecretsStub:
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get_secret(self, key: str) -> str:
+        return self._values.get(key, "")
+
+
+def test_zeep_backend_calls_operation() -> None:
+    backend = ZeepUvaSoapBackend(
+        wsdl_url="https://fon.example/wsdl",
+        operation_name="submitUva",
+        static_kwargs={"teilnehmer_id": "T", "benutzer_id": "B", "pin": "P"},
+        client_factory=lambda wsdl: _ZeepClientStub(wsdl),
+    )
+
+    out = backend.submit_uva({"jahr": 2026, "monat": 4})
+
+    assert out.ok is True
+    assert out.reference_id == "LIVE-REF-1"
+
+
+def test_finanzonline_client_uses_live_backend_when_wsdl_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FON_SOAP_WSDL", "https://fon.example/wsdl")
+    monkeypatch.setenv("FON_SOAP_OPERATION", "submitUva")
+    secrets = _SecretsStub(
+        {
+            "FON_TEILNEHMER_ID": "T",
+            "FON_BENUTZER_ID": "B",
+            "FON_PIN": "P",
+        }
+    )
+
+    client = FinanzOnlineClient(AppConfig(), secret_service=secrets)  # type: ignore[arg-type]
+
+    assert client.backend_mode() == "live"

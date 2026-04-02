@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
@@ -60,3 +61,54 @@ class MockUvaSoapBackend:
         if self._error is not None:
             raise self._error
         return self._result.model_copy()
+
+
+class ZeepUvaSoapBackend:
+    """Live SOAP backend using zeep client and configurable operation name."""
+
+    def __init__(
+        self,
+        *,
+        wsdl_url: str,
+        operation_name: str = "submitUva",
+        static_kwargs: dict[str, Any] | None = None,
+        client_factory: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._wsdl_url = wsdl_url
+        self._operation_name = operation_name
+        self._static_kwargs = static_kwargs or {}
+        if client_factory is None:
+            from zeep import Client as ZeepClient  # local import for optional dependency behavior
+
+            self._client_factory: Callable[[str], Any] = ZeepClient
+        else:
+            self._client_factory = client_factory
+        self.calls: list[dict[str, Any]] = []
+
+    def submit_uva(self, payload: dict[str, Any]) -> UvaSubmitResult:
+        self.calls.append(dict(payload))
+        if not self._wsdl_url.strip():
+            raise UvaSoapUnavailableError("FON_SOAP_WSDL fehlt fuer Live-UVA.")
+
+        client = self._client_factory(self._wsdl_url)
+        op = getattr(client.service, self._operation_name, None)
+        if op is None:
+            raise UvaSoapUnavailableError(
+                f"SOAP-Operation '{self._operation_name}' nicht gefunden.",
+            )
+
+        try:
+            raw = op(payload=payload, **self._static_kwargs)
+        except TypeError:
+            raw = op(payload)
+
+        if isinstance(raw, UvaSubmitResult):
+            return raw
+        if isinstance(raw, dict):
+            ok = bool(raw.get("ok", True))
+            ref = raw.get("reference_id") or raw.get("reference")
+            msg = str(raw.get("message") or raw.get("msg") or "accepted")
+            return UvaSubmitResult(ok=ok, reference_id=None if ref is None else str(ref), message=msg)
+        if isinstance(raw, str):
+            return UvaSubmitResult(ok=True, reference_id=None, message=raw)
+        return UvaSubmitResult(ok=True, reference_id=None, message="accepted")

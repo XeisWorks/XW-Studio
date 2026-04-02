@@ -4,8 +4,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -46,9 +48,22 @@ class MarketingView(QWidget):
         self._title = QPlainTextEdit()
         self._title.setPlaceholderText("Titel")
         self._title.setMaximumHeight(60)
+        meta_row = QHBoxLayout()
+        self._channel = QComboBox()
+        self._channel.addItems(["", "instagram", "facebook", "tiktok", "newsletter", "blog"]) 
+        self._lane = QComboBox()
+        self._lane.addItems(["backlog", "ready", "scheduled", "done"])
+        self._due = QLineEdit()
+        self._due.setPlaceholderText("Faelligkeit (YYYY-MM-DD)")
+        meta_row.addWidget(QLabel("Kanal"))
+        meta_row.addWidget(self._channel)
+        meta_row.addWidget(QLabel("Status"))
+        meta_row.addWidget(self._lane)
+        meta_row.addWidget(self._due)
         self._body = QPlainTextEdit()
         self._body.setPlaceholderText("Notizen, Links, Kampagnen …")
         entry_layout.addWidget(self._title)
+        entry_layout.addLayout(meta_row)
         entry_layout.addWidget(self._body, stretch=1)
         btn_row = QHBoxLayout()
         save = QPushButton("Speichern")
@@ -88,9 +103,20 @@ class MarketingView(QWidget):
         if not title:
             QMessageBox.warning(self, "Marketing", "Bitte einen Titel eingeben.")
             return
-        self._store.add_idea(IdeaEntry(title=title, body=self._body.toPlainText().strip()))
+        self._store.add_idea(
+            IdeaEntry(
+                title=title,
+                body=self._body.toPlainText().strip(),
+                lane=self._lane.currentText(),
+                channel=self._channel.currentText(),
+                due_date=self._due.text().strip(),
+            )
+        )
         self._title.clear()
         self._body.clear()
+        self._due.clear()
+        self._lane.setCurrentIndex(0)
+        self._channel.setCurrentIndex(0)
         self._refresh_list()
 
     def _on_delete(self) -> None:
@@ -109,9 +135,16 @@ class MarketingView(QWidget):
         ideas = self._store.list_ideas()
         if 0 <= row < len(ideas):
             idea = ideas[row]
-            self._detail.setPlainText(f"{idea.title}\n\n{idea.body}")
+            self._detail.setPlainText(
+                f"{idea.title}\n"
+                f"Status: {idea.lane or 'backlog'}\n"
+                f"Kanal: {idea.channel or '—'}\n"
+                f"Faelligkeit: {idea.due_date or '—'}\n\n"
+                f"{idea.body}"
+            )
 
     def _refresh_list(self) -> None:
         self._list.clear()
         for idea in self._store.list_ideas():
-            self._list.addItem(QListWidgetItem(idea.title))
+            suffix = f" [{idea.lane}]" if idea.lane else ""
+            self._list.addItem(QListWidgetItem(f"{idea.title}{suffix}"))
