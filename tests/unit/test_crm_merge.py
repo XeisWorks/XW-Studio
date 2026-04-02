@@ -6,6 +6,14 @@ from xw_studio.services.crm.service import CrmService
 from xw_studio.services.crm.types import ContactRecord
 
 
+class _ContactClientStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def merge_contacts(self, master: ContactRecord, duplicate: ContactRecord) -> None:
+        self.calls.append((master.id, duplicate.id, master.name))
+
+
 def test_merge_prefers_master_non_empty_fields() -> None:
     service = CrmService(AppConfig(), contact_client=None)
     master = ContactRecord(
@@ -57,3 +65,15 @@ def test_merge_fills_missing_master_fields_from_duplicate() -> None:
     assert result.merged.email == "kontakt@musikhaus.test"
     assert result.merged.phone == "+43-1-3000"
     assert result.merged.city == "Linz"
+
+
+def test_merge_writes_back_when_live_client_available() -> None:
+    stub = _ContactClientStub()
+    service = CrmService(AppConfig(), contact_client=stub)  # type: ignore[arg-type]
+    master = ContactRecord(id="200", name="Master", email=None, phone=None, city=None)
+    duplicate = ContactRecord(id="201", name="Dup", email="dup@test", phone=None, city=None)
+
+    result = service.merge_contacts(master, duplicate)
+
+    assert result.master_id == "200"
+    assert stub.calls == [("200", "201", "Master")]

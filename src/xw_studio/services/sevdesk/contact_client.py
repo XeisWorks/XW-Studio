@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from xw_studio.services.crm.types import ContactRecord
-from xw_studio.services.http_client import SevdeskConnection
+from xw_studio.services.http_client import SevdeskConnection, raise_for_sevdesk
 
 logger = logging.getLogger(__name__)
 
@@ -108,3 +108,32 @@ class ContactClient:
             raise ValueError("Unexpected Contact payload")
         cid = obj.get("id", contact_id)
         return ContactSummary.model_validate({**obj, "id": str(cid)})
+
+    def update_contact(self, contact_id: str, payload: dict[str, Any]) -> None:
+        """Update sevDesk contact by id."""
+        response = self._conn.client.put(f"/Contact/{contact_id}", json=payload)
+        raise_for_sevdesk(response)
+
+    def delete_contact(self, contact_id: str) -> None:
+        """Delete sevDesk contact by id."""
+        response = self._conn.client.delete(f"/Contact/{contact_id}")
+        raise_for_sevdesk(response)
+
+    def merge_contacts(self, master: ContactRecord, duplicate: ContactRecord) -> None:
+        """Write merge result to sevDesk: update master and delete duplicate."""
+        payload: dict[str, Any] = {"name": master.name}
+        if master.email:
+            payload["emails"] = [{"value": master.email, "type": "work"}]
+        if master.phone:
+            payload["phones"] = [{"value": master.phone, "type": "work"}]
+        if master.city:
+            payload["addresses"] = [{"city": master.city}]
+
+        # Try rich payload first; on API-schema mismatch, fallback to minimal update.
+        try:
+            self.update_contact(master.id, payload)
+        except Exception:
+            logger.warning("Contact rich update failed for %s; retry with minimal payload", master.id)
+            self.update_contact(master.id, {"name": master.name})
+
+        self.delete_contact(duplicate.id)

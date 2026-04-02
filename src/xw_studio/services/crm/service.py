@@ -61,8 +61,7 @@ class CrmService:
     ) -> MergeResult:
         """Merge duplicate into master using deterministic field fallback rules.
 
-        This is an in-memory merge operation used by the CRM wizard.
-        Live sevDesk writeback can be added in a following step.
+        Writes back to sevDesk when a live ContactClient is available.
         """
 
         merged = ContactRecord(
@@ -73,6 +72,9 @@ class CrmService:
             city=(master.city or "").strip() or (duplicate.city or "").strip() or None,
         )
         logger.info("CRM merge prepared: master=%s duplicate=%s", master.id, duplicate.id)
+        if self._contact_client is not None:
+            self._contact_client.merge_contacts(merged, duplicate)
+            logger.info("CRM merge written to sevDesk: master=%s duplicate=%s", master.id, duplicate.id)
         return MergeResult(
             master_id=master.id,
             duplicate_id=duplicate.id,

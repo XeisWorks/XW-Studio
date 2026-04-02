@@ -104,6 +104,7 @@ class CrmView(QWidget):
         self._contacts: list[ContactRecord] = []
         self._dup_candidates: list[DuplicateCandidate] = []
         self._worker: BackgroundWorker | None = None
+        self._pending_merge_pair: tuple[ContactRecord, ContactRecord] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
@@ -300,8 +301,23 @@ class CrmView(QWidget):
             return
 
         crm: CrmService = self._container.resolve(CrmService)
-        result: MergeResult = crm.merge_contacts(dlg.master, dlg.duplicate)
+        self._merge_btn.setEnabled(False)
+        self._scan_btn.setEnabled(False)
+        self._sync_btn.setEnabled(False)
+        self._status_lbl.setText("Merge wird ausgefuehrt...")
+        self._pending_merge_pair = (dlg.master, dlg.duplicate)
 
+        def job() -> MergeResult:
+            return crm.merge_contacts(dlg.master, dlg.duplicate)
+
+        self._worker = BackgroundWorker(job)
+        self._worker.signals.result.connect(self._on_merge_done)
+        self._worker.signals.error.connect(self._on_merge_error)
+        self._worker.start()
+
+    def _on_merge_done(self, result: object) -> None:
+        if not isinstance(result, MergeResult):
+            return
         updated: list[ContactRecord] = []
         for row in self._contacts:
             if row.id in (result.master_id, result.duplicate_id):
@@ -310,6 +326,9 @@ class CrmView(QWidget):
         updated.append(result.merged)
         self._contacts = updated
         self._populate_contacts_table(self._contacts)
+        self._status_lbl.setText("Merge abgeschlossen")
+        self._sync_btn.setEnabled(True)
+        self._scan_btn.setEnabled(True)
         self._run_scan()
 
         QMessageBox.information(
@@ -319,7 +338,15 @@ class CrmView(QWidget):
                 f"Duplikat zusammengefuehrt.\n"
                 f"Master: {result.master_id}\n"
                 f"Entfernt: {result.duplicate_id}\n"
-                "Hinweis: Live-Writeback zu sevDesk folgt in einer weiteren Phase."
+                "Aenderungen wurden bei Live-Verbindung zu sevDesk geschrieben."
             ),
         )
+
+    def _on_merge_error(self, exc: BaseException) -> None:
+        self._status_lbl.setText(f"Merge-Fehler: {exc}")
+        self._sync_btn.setEnabled(True)
+        self._scan_btn.setEnabled(True)
+        self._merge_btn.setEnabled(bool(self._dup_candidates))
+        logger.exception("CRM merge failed: %s", exc)
+        QMessageBox.warning(self, "CRM Merge", str(exc))
 
