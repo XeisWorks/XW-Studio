@@ -1,4 +1,4 @@
-"""Optional local HTTP ingress for Outlook add-in requests.
+﻿"""Optional local HTTP ingress for Outlook add-in requests.
 
 Runs a minimal HTTPServer in a BackgroundWorker (QThread) so the UI stays
 responsive. The server handles POST /api/xw-copilot, validates HMAC when a
@@ -35,7 +35,7 @@ class XWCopilotIngress:
 
     Usage::
 
-        ingress = XWCopilotIngress(dry_run_service, hmac_secret="…")
+        ingress = XWCopilotIngress(dry_run_service, hmac_secret="â€¦")
         ingress.start(port=8765)
         # later:
         ingress.stop()
@@ -69,6 +69,7 @@ class XWCopilotIngress:
         dry_run = self._dry_run
         secret = self._hmac_secret
         signals = self.signals
+        get_config = self._dry_run._config_service.load_config
 
         class _Handler(BaseHTTPRequestHandler):
             def log_message(self, fmt: str, *args: object) -> None:  # type: ignore[override]
@@ -78,6 +79,16 @@ class XWCopilotIngress:
                 if self.path != _PATH:
                     self.send_error(404, "Not found")
                     return
+
+                    # IP-allowlist check (skip when list is empty)
+                    allowed_ips_raw = get_config().allowed_ips.strip()
+                    if allowed_ips_raw:
+                        allowed = {ip.strip() for ip in allowed_ips_raw.split(",") if ip.strip()}
+                        client_ip = self.client_address[0]
+                        if client_ip not in allowed:
+                            logger.warning("Ingress: rejected request from %s (not in allowlist)", client_ip)
+                            self.send_error(403, "Forbidden")
+                            return
 
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > _MAX_BODY:

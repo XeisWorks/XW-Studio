@@ -5,6 +5,8 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import re
+from pathlib import Path
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 
@@ -34,6 +36,7 @@ class XWCopilotConfig:
     mailbox_address: str = ""
     webhook_url: str = ""
     default_project: str = ""
+    allowed_ips: str = ""
 
 
 class XWCopilotService:
@@ -66,6 +69,7 @@ class XWCopilotService:
             mailbox_address=str(data.get("mailbox_address") or ""),
             webhook_url=str(data.get("webhook_url") or ""),
             default_project=str(data.get("default_project") or ""),
+                allowed_ips=str(data.get("allowed_ips") or ""),
         )
 
     def save_config(self, config: XWCopilotConfig) -> None:
@@ -79,6 +83,7 @@ class XWCopilotService:
             "mailbox_address": config.mailbox_address,
             "webhook_url": config.webhook_url,
             "default_project": config.default_project,
+                "allowed_ips": config.allowed_ips,
         }
         self._repo.set_value_json(_CONFIG_KEY, json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -179,3 +184,33 @@ class XWCopilotService:
     @staticmethod
     def utc_now() -> str:
         return datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # ------------------------------------------------------------------
+        # Template rendering
+        # ------------------------------------------------------------------
+
+        @staticmethod
+        def render_template(content: str, variables: dict[str, str]) -> str:
+            """Substitute ``{{key}}`` placeholders in *content* with *variables* values.
+
+            Unknown keys are left unchanged so partial renders are safe.
+            """
+            def _replacer(match: re.Match[str]) -> str:
+                key = match.group(1).strip()
+                return variables.get(key, match.group(0))
+
+            return re.sub(r"\{\{([^}]+)\}\}", _replacer, content)
+
+        # ------------------------------------------------------------------
+        # JSON Schema export
+        # ------------------------------------------------------------------
+
+        @staticmethod
+        def export_request_schema(path: Path) -> None:
+            """Write XWCopilotRequest JSON Schema to *path* (created/overwritten)."""
+            from xw_studio.services.xw_copilot.contracts import XWCopilotRequest
+
+            schema = XWCopilotRequest.model_json_schema()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(schema, indent=2, ensure_ascii=False), encoding="utf-8")
+            logger.info("XWCopilotRequest schema exported to %s", path)

@@ -1,4 +1,4 @@
-"""Main application window with sidebar navigation and stacked content."""
+﻿"""Main application window with sidebar navigation and stacked content."""
 from __future__ import annotations
 
 import logging
@@ -126,7 +126,34 @@ class MainWindow(QMainWindow):
         signals.navigate_to_module.connect(self._navigate_to)
         signals.show_home.connect(lambda: self._navigate_to(ModuleKey.HOME.value))
         signals.status_message.connect(self._status_bar.showMessage)
+        signals.theme_changed.connect(self._apply_theme)
 
+        def _apply_theme(self, theme_name: str) -> None:
+            """Apply a qt-material theme at runtime."""
+            try:
+                from qt_material import apply_stylesheet
+                from PySide6.QtWidgets import QApplication
+
+                app = QApplication.instance()
+                if app is not None:
+                    apply_stylesheet(app, theme=f"{theme_name}.xml")
+                    logger.info("Theme switched to %s", theme_name)
+            except Exception as exc:
+                logger.warning("Theme switch failed: %s", exc)
+
+
+    def _apply_theme(self, theme_name: str) -> None:
+        """Apply a qt-material theme at runtime."""
+        try:
+            from qt_material import apply_stylesheet
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None:
+                apply_stylesheet(app, theme=f"{theme_name}.xml")
+                logger.info("Theme switched to %s", theme_name)
+        except Exception as exc:
+            logger.warning("Theme switch failed: %s", exc)
     def _apply_printer_status(self) -> None:
         """Traffic light in status bar; gate print actions via AppSignals."""
         names = list(self._container.config.printing.configured_printer_names)
@@ -138,7 +165,7 @@ class MainWindow(QMainWindow):
         elif status == PrinterStatus.YELLOW:
             color, tooltip = "yellow", "Drucker: teilweise (Ampel gelb)"
         else:
-            color, tooltip = "red", "Drucker: nicht verfuegbar – Druck deaktiviert (Ampel rot)"
+            color, tooltip = "red", "Drucker: nicht verfuegbar â€“ Druck deaktiviert (Ampel rot)"
 
         self._status_bar.set_printer_status(color, tooltip)
         signals = self._container.resolve(AppSignals)

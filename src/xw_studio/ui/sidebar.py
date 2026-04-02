@@ -1,4 +1,4 @@
-"""Collapsible sidebar with icon navigation, badges, and theme toggle."""
+﻿"""Collapsible sidebar with icon navigation, badges, and theme toggle."""
 from __future__ import annotations
 
 import logging
@@ -95,6 +95,7 @@ class Sidebar(QFrame):
         self._container = container
         self._buttons: dict[str, SidebarButton] = {}
         self._collapsed = container.config.app.sidebar.default_collapsed
+        self._current_theme: str = container.config.app.theme
         self._build_ui()
         from xw_studio.core.signals import AppSignals
 
@@ -118,7 +119,7 @@ class Sidebar(QFrame):
         header.addWidget(self._title_label)
         header.addStretch()
 
-        self._toggle_btn = QPushButton("☰")
+        self._toggle_btn = QPushButton("â˜°")
         self._toggle_btn.setFixedSize(32, 32)
         self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle_btn.clicked.connect(self._toggle_collapse)
@@ -163,10 +164,11 @@ class Sidebar(QFrame):
         footer.addWidget(settings_btn)
         footer.addStretch()
 
-        self._theme_btn = QPushButton("◐")
+        self._theme_btn = QPushButton("â—")
         self._theme_btn.setFixedSize(32, 32)
         self._theme_btn.setToolTip("Theme wechseln")
         self._theme_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._theme_btn.clicked.connect(self._toggle_theme)
         footer.addWidget(self._theme_btn)
         main_layout.addLayout(footer)
 
@@ -198,3 +200,27 @@ class Sidebar(QFrame):
         if btn is None:
             return
         btn.set_badge(max(0, int(count)))
+
+    def _toggle_theme(self) -> None:
+        """Cycle between dark and light variant of the current material palette."""
+        if "dark" in self._current_theme:
+            self._current_theme = self._current_theme.replace("dark", "light")
+        else:
+            self._current_theme = self._current_theme.replace("light", "dark")
+        from xw_studio.core.signals import AppSignals
+
+        self._container.resolve(AppSignals).theme_changed.emit(self._current_theme)
+        icon = "○" if "light" in self._current_theme else "◉"
+        self._theme_btn.setText(icon)
+
+        def _toggle_theme(self) -> None:
+            """Cycle between dark and light variant of the current material palette."""
+            if "dark" in self._current_theme:
+                self._current_theme = self._current_theme.replace("dark", "light")
+            else:
+                self._current_theme = self._current_theme.replace("light", "dark")
+            from xw_studio.core.signals import AppSignals
+
+            self._container.resolve(AppSignals).theme_changed.emit(self._current_theme)
+            icon = "â—‹" if "light" in self._current_theme else "â—‰"
+            self._theme_btn.setText(icon)
