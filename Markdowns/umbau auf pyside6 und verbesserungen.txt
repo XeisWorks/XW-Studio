@@ -1,0 +1,44 @@
+ich möchte mein UI im repository
+XeisWorks/sevDesk
+von tkinter auf pyside6 umstellen.
+das alte tkinter-projekt wurde zigfach erweitert und umfakturiert, deshalb möchte ich im zuge der umstellung alles alles nochmal neu denken, überarbeiten, vereinfachen, verbessern, anders aufteilen. Es soll also ein kompletter neubau werden - mit allen vorteilen, die so ein neubau bringt (komplette neustrukturierung auf möglichst wenig unterschiedliche engines).
+
+ich möchte das alte projekt derzeit noch weiterlaufen lassen, um keine prozessunterbrechungen zu haben. somit soll der neue code von grund auf komplett überdenkt und neu aufgesetzt werden, niemals ein blindes kopieren.
+
+folgende änderungen habe ich noch zusätzlich angedacht:
+
+daily business soll auf "rechnungen" (oder so ähnlich) umbenannt werden und mein kernmodul werden. die erste ansicht sollten die offenen und abgeschlossenen rechnungen sein (wie derzeit ja auch). die ganzen unterpunkte wie mollie-auth, gutscheine, download-links, etc sollten irgendwie in die restliche struktur eingebunden werden (ohne, dass ich zwingend auf menüpunkt "rechnungen" gehe) und alle mit methodik versehen, dass ich gleich sehe, sollte hier was anstehen (ähnlich wie derzeit, dass die buttons rot werden, nur eben etwas moderner).
+
+"layout" sollte ein eigener punkt auf der startseite werden, hier  sollten bereiche wie leerseiten einfügen, notenbeispiele, covers, deckblätter erstellen und so weiter möglich sein! Auch qr-codes erstellen, isbn-codes, etc sollte hier untergebracht sein.
+
+thema "produkte" komplett neu denken und zusammenfassen: inventar besser mit sevdesk syncen, wix/sevdesk-bestand verändern können, neue produkte erzeugen, abgleichen, auch druckpläne (printing plans in pdf-printer.py) hier rein.
+es soll also ein großer menüpunkt "produkte" sein, wo ich alles machen kann. hier möchte ich auch neue covers oder deckblätter für produkte erstellen können - dieser punkt ist derzeit in "media" verankert - wo würdest du ihn eher sehen?
+
+dazu druckpläne immer mit inventar abklären: nur drucken wenn kein bestand oder für den auftrag zu wenig bestand da ist, dafür immer gleich 3stk. drucken, damit immer kleiner bestand aufgebaut wird und nicht jedesmal gedruckt werden muss. nach klick auf button START ALL soll in popup aufscheinen, welche produkte vorhanden sind und welche automatisch nachgedruckt werden. bei "start all" sollte dann auch funktion "print all" integriert sein. dafür auch möglichkeit, nur rechnungen abzuarbeiten (neuer name für button) oder nur zu druckenb (PRINT ALL beibehalten).
+
+ausserdem punkt "crm" (auf startseite von launcher.py) neu denken - ich möchte kunden sauber pflegen können und die bestehenden kunden und rechnungen gut zusammenfassen, um keine doppelten kunden zu haben. hierbei die bestehenden funktionen übersichtlicher und klarer machen und funktionalität verbessern. Die bestehenden funktionen waren leider nicht ganz klar für mich und haben somit auch nicht meine hoffnung, eindeutige kunden in sevdesk zu haben umgesetzt. Dies sollte bei der neuen app möglich sein.
+
+beim drucken von rechnungen oder noten flackert acrobat derzeit - programm poppt immer wieder auf, somit der pc über minuten nicht manövrierbar. soll verbessert werden. beim druck auf hohe qualität achten, es geht um hochwertigen musiknoten-druck. Möglicherweise sollten wir uns von acrobat verabschieden und ein anderes modul suchen, das hochwertigen druck möglich macht.
+
+modernere übersichtlichere optik des UIs gewünscht! Evlt mit sidebar und cards. ich möchte viel mit symbolen und sauberen tooltipps arbeiten, sowenig textbuttons wie nötig. ausserdem auch eine einstellungs-ebene installieren, wo ich von allen pcs einstellungen ändern kann (auch drucker, etc) und möglicherweise auch die tokens eingeben kann, damit sie im repo in env gespeichert werden (falls das sicher ist). evtl auch eine schnittstelle zu clickup andenken, damit ich meine to-do's gut deponieren kann. auch hell/dark-mode berücksichtigen. Ui-sprache deutsch, coding-sprache englisch. Auch Backend neu strukturieren! 
+
+
+wichtiger punkt: gleich beim aufsetzen der app berücksichtigen, dass sich das UI sehr flüssig bedienen lässt. alle zeitfresser lazy einbauen, damit die wartezeit nach klicks minimal ist. dies auch mit tests sicherstellen und verbessern. Es könnte auch nach laden der ersten seite ein cache aufgebaut werden, der die anderen seite "vor-"ladet, um sehr flüssig alle sachen öffnen zu können. Recherchiere, wie das bei modernen apps gemacht wird. 
+
+neuer punkt marketing! hier sollen alle infos über firma für die erstellung von geeignetem content gespeichert sein. marketingplan, cnnect zu dalle oder canva fur foto/videoerstellung, einfaches posting auf insta, facebook, tiktok und anbindung newsletter mit daten aus dem CRM (mailadresse) und verbindung mit sicheren servern, damit meine marketing-mails nicht im SPAM landen. hierzu bitte nur einen button auf der startseite errichten und ideen dafür sammeln, was ich hier alles machen könnte (evtl mit API zu facebook/insta, damit ich direkt im UI posten kann).
+
+neuer punkt notensatz... hier sollen etüden geschrieben werden, melodien, transpositionen in andere tonarten, digitalisierung von bestehenden pdf noten, etc. hier auch einen button auf der startseite reservieren und ideen dafür sammeln.
+
+punkt reisekosten (repo 
+XeisWorks/Reisekosten in github) auch in startseite integrieren, soll aber eine verknüpfung (qwidget??) auf ein anderes repo sein!
+
+punkt provisionen/kalkulation neu denken. Es geht ja irgendwie ums gleiche, aber irgendwie auch nicht. Jedenfalls sollten diese punkte innerhalb eines untermenüs klar aufgeteilt sein und sehr leicht erweiterbar (neue kunden!).
+
+ausserdem möchte ich auf diese große app zuverlässig von mehreren pc's zugreifen können und überall die aktuellsten daten haben - also alle daten des laufenden betriebs über postgres syncen (falls du dieses system auch für gut findest - ich hätte bereits ein railway-abo dafür). github-sync nur bei echten codeänderungen, rest über postgres (oder andere in railway verfügbare module). Überlege auch, wie die app installiert werden kann, damit sie auf allen pcs zuverlässig im venv läuft und bei codeänderungen von einem anderen pcs diese "updates" automatisch (und ohne mein zutun) bei appstart eingespielt werden, also von github gepullt werden. Commit und push sollte nicht nötig sein, weil ja alle dateien des laufenden betriebs über server (railway??) laufen sollten und nach "echter" codeänderung ohnehin von mir comitted und gepushed wird.
+
+bitte auch alle verbesserungen auflisten, die dir bei der recherche des alten repos [XeisWorks/sevDesk](https://github.com/XeisWorks/sevDesk) auffallen.
+
+stelle sicher, dass diese app zukunftssicher ist, soweit wie möglich auf zentralen engines fährt (keine parallelwelten) und gut erweiterbar ist - meine firma wächst, und somit auch die anforderungen. Hol dir tipps von modernen apps, die wir uns abschauen könnten.
+falls du weitere für mich hilfreiche menüs siehst, bitte integriere sie in deine gedanken und struktur. ausarbeitung von diesen möglichen neuen menüs dann in einer späteren phase. der plan wäre, die struktur hinsichtlich ordner des repos und der app-optik gleich mal festzulegen und  menü "rechnungen" sauber zu integrieren. dann schritt für schritt jedes ttk-menü/thema nach pyside6 integrieren.
+
+Analysiere meine wünsche, recherchiere nach optimaler umsetzung und stelle mir fragen, bevor du eine präzise und sehr detaillierte umbauskizze in md- und/oder yaml-dateien erzeugst.
