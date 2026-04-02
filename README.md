@@ -49,6 +49,21 @@ python -m xw_studio
 - **Config:** YAML defaults + .env secrets + DB settings
 - **Auto-Update:** git pull + pip install at startup
 
+## Database (PostgreSQL / Alembic)
+
+With `DATABASE_URL` and optional `FERNET_MASTER_KEY` set in `.env` (see [.env.example](.env.example)):
+
+```bash
+alembic upgrade head
+```
+
+Initial schema covers registry, key-value settings, and encrypted API secrets. Apply migrations before relying on DB-backed features in production.
+
+## Performance notes
+
+- Network and heavy CPU work run off the UI thread via workers (see `xw_studio.core.worker`).
+- CRM duplicate detection is pairwise O(n²); intended for modest contact lists until a batched strategy is added.
+
 ## Development
 
 ```bash

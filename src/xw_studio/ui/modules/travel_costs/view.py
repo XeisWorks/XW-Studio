@@ -17,9 +17,13 @@ class TravelCostsView(QWidget):
         _ = container
         layout = QVBoxLayout(self)
         label = QLabel(
-            "Reisekosten-Modul: Git-Submodule unter reisekosten/ einbinden und "
-            "hier als QWidget einbetten (siehe README und docs/copilot_migration_plan.md)."
+            "Reisekosten-Modul:\n\n"
+            "1) Git-Submodule: git submodule add https://github.com/XeisWorks/Reisekosten.git reisekosten\n"
+            "2) Bridge: QWidget einbetten, das das Reisekosten-Qt-UI laedt.\n"
+            "3) Bis dahin weiterhin eigenstaendiges Repo nutzen.\n\n"
+            "Siehe README — App startet ohne Submodule."
         )
         label.setWordWrap(True)
         label.setStyleSheet("font-size: 14px; color: #888; padding: 24px;")
         layout.addWidget(label)
+        layout.addStretch()

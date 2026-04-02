@@ -62,21 +62,58 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Bereit", 5000)
 
         from xw_studio.ui.home_view import HomeView
-        home = HomeView(self._container)
-        self._register_page(ModuleKey.HOME, home)
+
+        self._register_page(ModuleKey.HOME, HomeView(self._container))
 
         from xw_studio.ui.modules.rechnungen.view import RechnungenView
-        rechnungen = RechnungenView(self._container)
-        self._register_page(ModuleKey.RECHNUNGEN, rechnungen)
+
+        self._register_page(ModuleKey.RECHNUNGEN, RechnungenView(self._container))
+
+        from xw_studio.ui.modules.products.view import ProductsView
+
+        self._register_page(ModuleKey.PRODUCTS, ProductsView(self._container))
+
+        from xw_studio.ui.modules.crm.view import CrmView
+
+        self._register_page(ModuleKey.CRM, CrmView(self._container))
 
         from xw_studio.ui.modules.taxes.view import TaxesView
-        taxes = TaxesView(self._container)
-        self._register_page(ModuleKey.TAXES, taxes)
+
+        self._register_page(ModuleKey.TAXES, TaxesView(self._container))
+
+        from xw_studio.ui.modules.statistics.view import StatisticsView
+
+        self._register_page(ModuleKey.STATISTICS, StatisticsView(self._container))
+
+        from xw_studio.ui.modules.calculation.view import CalculationView
+
+        self._register_page(ModuleKey.CALCULATION, CalculationView(self._container))
+
+        from xw_studio.ui.modules.layout.view import LayoutView
+
+        self._register_page(ModuleKey.LAYOUT, LayoutView(self._container))
+
+        from xw_studio.ui.modules.wuedaramusi.view import WuedaraMusiView
+
+        self._register_page(ModuleKey.WUEDARAMUSI, WuedaraMusiView(self._container))
 
         from xw_studio.ui.modules.travel_costs.view import TravelCostsView
-        travel = TravelCostsView(self._container)
-        self._register_page(ModuleKey.TRAVEL_COSTS, travel)
 
+        self._register_page(ModuleKey.TRAVEL_COSTS, TravelCostsView(self._container))
+
+        from xw_studio.ui.modules.marketing.view import MarketingView
+
+        self._register_page(ModuleKey.MARKETING, MarketingView(self._container))
+
+        from xw_studio.ui.modules.notation.view import NotationView
+
+        self._register_page(ModuleKey.NOTATION, NotationView(self._container))
+
+        from xw_studio.ui.modules.settings.view import SettingsView
+
+        self._register_page(ModuleKey.SETTINGS, SettingsView(self._container))
+
+        home = self._pages[ModuleKey.HOME.value]
         self._stack.setCurrentWidget(home)
 
     def _connect_signals(self) -> None:
@@ -119,6 +156,7 @@ class MainWindow(QMainWindow):
 
     def _create_placeholder(self, module_key: str) -> QWidget:
         from PySide6.QtWidgets import QLabel, QVBoxLayout
+
         page = QWidget()
         layout = QVBoxLayout(page)
         label = QLabel(f"Modul '{module_key}' wird geladen...")

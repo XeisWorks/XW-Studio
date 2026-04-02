@@ -1,0 +1,19 @@
+"""Smoke-test: MainWindow can be constructed (pytest-qt)."""
+from __future__ import annotations
+
+from xw_studio.bootstrap import register_default_services
+from xw_studio.core.config import AppConfig
+from xw_studio.core.container import Container
+from xw_studio.core.signals import AppSignals
+from xw_studio.ui.main_window import MainWindow
+
+
+def test_main_window_opens(qtbot: object) -> None:
+    cfg = AppConfig()
+    container = Container(cfg)
+    container.register(AppSignals, lambda _: AppSignals())
+    register_default_services(container)
+    window = MainWindow(container)
+    qtbot.addWidget(window)
+    window.show()
+    assert "XeisWorks" in window.windowTitle() or "Studio" in window.windowTitle()

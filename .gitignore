@@ -17,3 +17,4 @@ resources/resources_rc.py
 node_modules/
 .railway/
 test-results/
+data/
