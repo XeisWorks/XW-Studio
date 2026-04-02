@@ -1,5 +1,5 @@
 """Statistics aggregates."""
 
-from xw_studio.services.statistics.service import StatisticsService
+from xw_studio.services.statistics.service import MonthlyRevenue, StatsSummary, StatisticsService
 
-__all__ = ["StatisticsService"]
+__all__ = ["MonthlyRevenue", "StatsSummary", "StatisticsService"]

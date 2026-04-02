@@ -25,6 +25,7 @@ from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.statistics.service import StatisticsService
+from xw_studio.services.wix.client import WixProductsClient
 from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, SettingKvRepository
 
 
@@ -70,7 +71,14 @@ def register_default_services(container: Container) -> None:
     )
     container.register(PaymentClearingService, lambda c: PaymentClearingService())
     container.register(ExpenseAuditService, lambda c: ExpenseAuditService())
-    container.register(StatisticsService, lambda c: StatisticsService())
+    container.register(
+        StatisticsService,
+        lambda c: StatisticsService(c.resolve(InvoiceClient)),
+    )
+    container.register(
+        WixProductsClient,
+        lambda c: WixProductsClient(secret_service=c.resolve(SecretService)),
+    )
     container.register(
         CrmService,
         lambda c: CrmService(

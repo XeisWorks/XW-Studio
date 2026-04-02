@@ -54,3 +54,10 @@ class IdeasStore:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = [asdict(r) for r in rows]
             self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def replace_all(self, entries: list[IdeaEntry]) -> None:
+        """Overwrite the full list (e.g. after a delete)."""
+        with self._lock:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            payload = [asdict(r) for r in entries]
+            self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
