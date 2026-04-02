@@ -1,0 +1,144 @@
+"""Unified configuration: YAML defaults + .env secrets."""
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WindowConfig:
+    width: int = 1600
+    height: int = 1000
+    remember_geometry: bool = True
+
+
+@dataclass(frozen=True)
+class SidebarConfig:
+    default_collapsed: bool = False
+    width_expanded: int = 220
+    width_collapsed: int = 60
+
+
+@dataclass(frozen=True)
+class AppSection:
+    name: str = "XeisWorks Studio"
+    theme: str = "dark_teal"
+    language: str = "de"
+    window: WindowConfig = field(default_factory=WindowConfig)
+    sidebar: SidebarConfig = field(default_factory=SidebarConfig)
+
+
+@dataclass(frozen=True)
+class RateLimitConfig:
+    requests_per_second: int = 2
+    cooldown_seconds: int = 5
+
+
+@dataclass(frozen=True)
+class SevdeskSection:
+    base_url: str = "https://my.sevdesk.de/api/v1"
+    api_token: str = ""
+    rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    cache_ttl_seconds: int = 180
+
+
+@dataclass(frozen=True)
+class WixSection:
+    base_url_v1: str = "https://www.wixapis.com/stores/v1"
+    base_url_v3: str = "https://www.wixapis.com/stores/v3"
+    api_key: str = ""
+    site_id: str = ""
+    account_id: str = ""
+
+
+@dataclass(frozen=True)
+class PrintingSection:
+    music_dpi: int = 600
+    invoice_dpi: int = 300
+    buffer_quantity: int = 3
+    rate_limit_seconds: int = 1
+
+
+@dataclass(frozen=True)
+class InventorySection:
+    alarm_threshold: int = 5
+    auto_sync_on_start: bool = True
+
+
+@dataclass(frozen=True)
+class CrmSection:
+    fuzzy_match_threshold: int = 75
+    duplicate_scan_on_sync: bool = True
+
+
+@dataclass(frozen=True)
+class SkuRulesSection:
+    print_prefixes: list[str] = field(default_factory=lambda: ["XW-4", "XW-6", "XW-7"])
+    unreleased_prefixes: list[str] = field(default_factory=lambda: ["XW-600"])
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    """Immutable application configuration assembled from YAML + env."""
+    app: AppSection = field(default_factory=AppSection)
+    sevdesk: SevdeskSection = field(default_factory=SevdeskSection)
+    wix: WixSection = field(default_factory=WixSection)
+    printing: PrintingSection = field(default_factory=PrintingSection)
+    inventory: InventorySection = field(default_factory=InventorySection)
+    crm: CrmSection = field(default_factory=CrmSection)
+    sku_rules: SkuRulesSection = field(default_factory=SkuRulesSection)
+    database_url: str = ""
+    fernet_master_key: str = ""
+
+
+def _merge_dataclass(cls: type, data: dict[str, Any]) -> Any:
+    """Recursively build a frozen dataclass from a dict."""
+    field_types = {f.name: f.type for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+    kwargs: dict[str, Any] = {}
+    for key, value in data.items():
+        if key not in field_types:
+            continue
+        ft = field_types[key]
+        if isinstance(ft, str):
+            ft = eval(ft)  # noqa: S307 — resolve forward refs
+        if isinstance(value, dict) and hasattr(ft, "__dataclass_fields__"):
+            kwargs[key] = _merge_dataclass(ft, value)
+        elif isinstance(value, list):
+            kwargs[key] = list(value)
+        else:
+            kwargs[key] = value
+    return cls(**kwargs)
+
+
+def load_config(config_path: str | Path | None = None) -> AppConfig:
+    """Load config from YAML + .env, return frozen AppConfig."""
+    load_dotenv()
+
+    if config_path is None:
+        root = Path(__file__).resolve().parents[3]
+        config_path = root / "config" / "default.yaml"
+
+    yaml_data: dict[str, Any] = {}
+    config_file = Path(config_path)
+    if config_file.exists():
+        with open(config_file, encoding="utf-8") as f:
+            yaml_data = yaml.safe_load(f) or {}
+    else:
+        logger.warning("Config file not found: %s — using defaults", config_path)
+
+    yaml_data.setdefault("sevdesk", {})["api_token"] = os.getenv("SEVDESK_API_TOKEN", "")
+    yaml_data.setdefault("wix", {})["api_key"] = os.getenv("WIX_API_KEY", "")
+    yaml_data.setdefault("wix", {})["site_id"] = os.getenv("WIX_SITE_ID", "")
+    yaml_data.setdefault("wix", {})["account_id"] = os.getenv("WIX_ACCOUNT_ID", "")
+    yaml_data["database_url"] = os.getenv("DATABASE_URL", "")
+    yaml_data["fernet_master_key"] = os.getenv("FERNET_MASTER_KEY", "")
+
+    return _merge_dataclass(AppConfig, yaml_data)

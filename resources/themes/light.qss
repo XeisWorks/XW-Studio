@@ -1,0 +1,41 @@
+/* XeisWorks Studio — Light Theme Overrides */
+/* Applied on top of qt-material light_blue theme */
+
+Sidebar {
+    background-color: #f5f5f5;
+}
+
+SidebarButton {
+    color: #333;
+}
+
+SidebarButton:checked {
+    background-color: rgba(33, 150, 243, 0.1);
+}
+
+DashboardCard {
+    background-color: #ffffff;
+    border-color: #e0e0e0;
+}
+
+Toast {
+    background-color: #ffffff;
+    border: 1px solid #2196f3;
+}
+
+QTableView {
+    gridline-color: #e0e0e0;
+    selection-background-color: rgba(33, 150, 243, 0.15);
+}
+
+QScrollBar:vertical {
+    width: 8px;
+}
+
+QScrollBar:horizontal {
+    height: 8px;
+}
+
+QStatusBar {
+    border-top: 1px solid #e0e0e0;
+}

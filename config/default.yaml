@@ -1,0 +1,41 @@
+app:
+  name: "XeisWorks Studio"
+  theme: "dark_teal"
+  language: "de"
+  window:
+    width: 1600
+    height: 1000
+    remember_geometry: true
+  sidebar:
+    default_collapsed: false
+    width_expanded: 220
+    width_collapsed: 60
+
+sevdesk:
+  base_url: "https://my.sevdesk.de/api/v1"
+  rate_limit:
+    requests_per_second: 2
+    cooldown_seconds: 5
+  cache_ttl_seconds: 180
+
+wix:
+  base_url_v1: "https://www.wixapis.com/stores/v1"
+  base_url_v3: "https://www.wixapis.com/stores/v3"
+
+printing:
+  music_dpi: 600
+  invoice_dpi: 300
+  buffer_quantity: 3
+  rate_limit_seconds: 1
+
+inventory:
+  alarm_threshold: 5
+  auto_sync_on_start: true
+
+crm:
+  fuzzy_match_threshold: 75
+  duplicate_scan_on_sync: true
+
+sku_rules:
+  print_prefixes: ["XW-4", "XW-6", "XW-7"]
+  unreleased_prefixes: ["XW-600"]

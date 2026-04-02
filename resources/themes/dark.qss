@@ -1,0 +1,67 @@
+/* XeisWorks Studio — Dark Theme Overrides */
+/* Applied on top of qt-material dark_teal theme */
+
+/* Sidebar specific */
+Sidebar {
+    background-color: #16213e;
+}
+
+SidebarButton {
+    color: #e8e8e8;
+    background: transparent;
+}
+
+SidebarButton:checked {
+    background-color: rgba(79, 195, 247, 0.15);
+}
+
+/* Dashboard cards */
+DashboardCard {
+    background-color: #1e2746;
+}
+
+/* Toast notifications */
+Toast {
+    background-color: #2a2a4a;
+    border: 1px solid #4fc3f7;
+}
+
+/* Data tables */
+QTableView {
+    gridline-color: #2a2a4a;
+    selection-background-color: rgba(79, 195, 247, 0.2);
+}
+
+QTableView::item:alternate {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+QHeaderView::section {
+    padding: 6px 8px;
+    font-weight: bold;
+}
+
+/* Search bar */
+SearchBar {
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 6px 12px;
+}
+
+SearchBar:focus {
+    border-color: #4fc3f7;
+}
+
+/* Scroll bars */
+QScrollBar:vertical {
+    width: 8px;
+}
+
+QScrollBar:horizontal {
+    height: 8px;
+}
+
+/* Status bar */
+QStatusBar {
+    border-top: 1px solid #2a2a4a;
+}

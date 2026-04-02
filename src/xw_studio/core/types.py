@@ -1,0 +1,33 @@
+"""Shared type definitions and enums."""
+from enum import Enum, auto
+
+
+class ModuleKey(str, Enum):
+    """Sidebar module identifiers."""
+    HOME = "home"
+    RECHNUNGEN = "rechnungen"
+    PRODUCTS = "products"
+    CRM = "crm"
+    TAXES = "taxes"
+    STATISTICS = "statistics"
+    LAYOUT = "layout"
+    CALCULATION = "calculation"
+    TRAVEL_COSTS = "travel_costs"
+    MARKETING = "marketing"
+    NOTATION = "notation"
+    WUEDARAMUSI = "wuedaramusi"
+    SETTINGS = "settings"
+
+
+class PrinterStatus(Enum):
+    """Traffic light printer status."""
+    GREEN = auto()
+    YELLOW = auto()
+    RED = auto()
+
+
+class BadgeSeverity(str, Enum):
+    """Badge notification severity."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
