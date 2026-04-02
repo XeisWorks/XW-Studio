@@ -1,27 +1,41 @@
 """Key-value settings in PostgreSQL."""
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from contextlib import contextmanager
+from collections.abc import Generator
+
+from sqlalchemy.orm import Session, sessionmaker
 
 from xw_studio.models.settings_kv import SettingKV
+from xw_studio.core.database import session_scope
 
 
 class SettingKvRepository:
     """Read/write JSON text blobs by string key."""
 
-    def __init__(self, session: Session) -> None:
-        self._session = session
+    def __init__(self, session_or_factory: Session | sessionmaker[Session]) -> None:
+        self._session_or_factory = session_or_factory
+
+    @contextmanager
+    def _scope(self) -> Generator[Session, None, None]:
+        if isinstance(self._session_or_factory, Session):
+            yield self._session_or_factory
+        else:
+            with session_scope(self._session_or_factory) as session:
+                yield session
 
     def get_value_json(self, key: str) -> str | None:
-        row = self._session.get(SettingKV, key)
-        return None if row is None else row.value_json
+        with self._scope() as session:
+            row = session.get(SettingKV, key)
+            return None if row is None else row.value_json
 
     def set_value_json(self, key: str, value_json: str) -> SettingKV:
-        row = self._session.get(SettingKV, key)
-        if row is not None:
-            row.value_json = value_json
-            return row
-        entity = SettingKV(key=key, value_json=value_json)
-        self._session.add(entity)
-        self._session.flush()
-        return entity
+        with self._scope() as session:
+            row = session.get(SettingKV, key)
+            if row is not None:
+                row.value_json = value_json
+                return row
+            entity = SettingKV(key=key, value_json=value_json)
+            session.add(entity)
+            session.flush()
+            return entity

@@ -1,7 +1,10 @@
 """Register application services on the DI container."""
 from __future__ import annotations
 
+from sqlalchemy.orm import sessionmaker as SessionMaker
+
 from xw_studio.core.container import Container
+from xw_studio.core.database import create_session_factory
 from xw_studio.services.calculation.service import CalculationService
 from xw_studio.services.clearing.service import PaymentClearingService
 from xw_studio.services.crm.service import CrmService
@@ -20,6 +23,7 @@ from xw_studio.services.layout.service import LayoutToolsService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.statistics.service import StatisticsService
+from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, SettingKvRepository
 
 
 def register_default_services(container: Container) -> None:
@@ -59,3 +63,17 @@ def register_default_services(container: Container) -> None:
         NotationIdeasStore,
         lambda c: NotationIdeasStore(default_notation_ideas_path()),
     )
+
+    # PostgreSQL persistence layer: only register when DATABASE_URL is configured.
+    # This keeps local dev/test environments (no DB) working without needing env vars.
+    if (container.config.database_url or "").strip():
+        container.register(SessionMaker, lambda c: create_session_factory(c.config))
+        container.register(PcRegistryRepository, lambda c: PcRegistryRepository(c.resolve(SessionMaker)))
+        container.register(
+            SettingKvRepository,
+            lambda c: SettingKvRepository(c.resolve(SessionMaker)),
+        )
+        container.register(
+            ApiSecretRepository,
+            lambda c: ApiSecretRepository(c.resolve(SessionMaker)),
+        )
