@@ -45,6 +45,8 @@ def evaluate_printer_status(
 ) -> PrinterStatus:
     """Determine traffic-light status based on available vs configured printers."""
     if not configured_names:
+        if not available:
+            return PrinterStatus.RED
         return PrinterStatus.GREEN
 
     available_names = {p.name for p in available}

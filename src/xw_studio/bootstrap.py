@@ -8,6 +8,7 @@ from xw_studio.core.database import create_session_factory
 from xw_studio.services.calculation.service import CalculationService
 from xw_studio.services.clearing.service import PaymentClearingService
 from xw_studio.services.crm.service import CrmService
+from xw_studio.services.daily_business.service import DailyBusinessService
 from xw_studio.services.expenses.service import ExpenseAuditService
 from xw_studio.services.finanzonline import FinanzOnlineClient, UvaService
 from xw_studio.services.http_client import SevdeskConnection, build_sevdesk_connection
@@ -20,6 +21,7 @@ from xw_studio.services.ideas.stores import (
 from xw_studio.services.inventory.service import InventoryService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.layout.service import LayoutToolsService
+from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.statistics.service import StatisticsService
@@ -28,7 +30,20 @@ from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, Se
 
 def register_default_services(container: Container) -> None:
     """Wire default singletons (Phase 1–6 baseline)."""
-    container.register(SevdeskConnection, lambda c: build_sevdesk_connection(c.config))
+    container.register(
+        SecretService,
+        lambda c: SecretService(
+            c.config,
+            c.resolve(ApiSecretRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
+    container.register(
+        SevdeskConnection,
+        lambda c: build_sevdesk_connection(
+            c.config,
+            api_token=c.resolve(SecretService).get_secret("SEVDESK_API_TOKEN"),
+        ),
+    )
     container.register(
         InvoiceClient,
         lambda c: InvoiceClient(c.resolve(SevdeskConnection)),
@@ -53,6 +68,12 @@ def register_default_services(container: Container) -> None:
     container.register(CrmService, lambda c: CrmService(c.config))
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
     container.register(CalculationService, lambda c: CalculationService())
+    container.register(
+        DailyBusinessService,
+        lambda c: DailyBusinessService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
     container.register(
         InventoryService,
         lambda c: InventoryService(

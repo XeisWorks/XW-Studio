@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.repositories.settings_kv import SettingKvRepository
+from xw_studio.services.secrets.service import SecretService
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -32,6 +34,23 @@ _WARN_STYLE = "color: #ffa726; font-weight: bold;"
 _ERR_STYLE = "color: #ef5350; font-weight: bold;"
 _INV_STOCK_KEY = "inventory.stock_levels"
 _PENDING_REQ_KEY = "daily_business.pending_requirements"
+_PENDING_COUNTS_KEY = "daily_business.pending_counts"
+_QUEUE_MOLLIE_KEY = "daily_business.queue.mollie"
+_QUEUE_GUTSCHEINE_KEY = "daily_business.queue.gutscheine"
+_QUEUE_DOWNLOADS_KEY = "daily_business.queue.downloads"
+_QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
+_EXTRA_SECRET_KEYS: tuple[str, ...] = (
+    "MOLLIE_ACCESS_TOKEN",
+    "STRIPE_SECRET_KEY",
+    "OPENAI_API_KEY",
+    "CLICKUP_API_TOKEN",
+    "GOOGLE_MAPS_API_KEY",
+    "MS_GRAPH_CLIENT_ID",
+    "MS_GRAPH_TENANT_ID",
+    "FON_TEILNEHMER_ID",
+    "FON_BENUTZER_ID",
+    "FON_PIN",
+)
 
 
 def _pill(text: str, ok: bool) -> QLabel:
@@ -80,13 +99,46 @@ class SettingsView(QWidget):
         # --- Secrets / API-Token ---
         gb_secrets = QGroupBox("API-Zugangsdaten")
         form_sec = QFormLayout(gb_secrets)
-        sevdesk_ok = bool((cfg.sevdesk.api_token or "").strip())
-        wix_ok = bool((cfg.wix.api_key or "").strip())
+        secret_service: SecretService = self._container.resolve(SecretService)
+        sevdesk_ok = bool(secret_service.get_secret("SEVDESK_API_TOKEN"))
+        wix_ok = bool(secret_service.get_secret("WIX_API_KEY"))
         fernet_ok = bool((cfg.fernet_master_key or "").strip())
         form_sec.addRow("SEVDESK_API_TOKEN:", _pill("gesetzt ✓", sevdesk_ok) if sevdesk_ok else _pill("fehlt ✗", False))
         form_sec.addRow("WIX_API_KEY:", _pill("gesetzt ✓", wix_ok) if wix_ok else _pill("fehlt ✗", False))
         form_sec.addRow("FERNET_MASTER_KEY:", _pill("gesetzt ✓", fernet_ok) if fernet_ok else _pill("fehlt ✗", False))
         main.addWidget(gb_secrets)
+
+        gb_secret_edit = QGroupBox("Token-Verwaltung (DB verschluesselt)")
+        sec_edit = QFormLayout(gb_secret_edit)
+        self._inp_sevdesk = QLineEdit(secret_service.get_secret("SEVDESK_API_TOKEN"))
+        self._inp_sevdesk.setEchoMode(QLineEdit.EchoMode.Password)
+        self._inp_wix = QLineEdit(secret_service.get_secret("WIX_API_KEY"))
+        self._inp_wix.setEchoMode(QLineEdit.EchoMode.Password)
+        self._inp_wix_site = QLineEdit(secret_service.get_secret("WIX_SITE_ID"))
+        self._inp_wix_account = QLineEdit(secret_service.get_secret("WIX_ACCOUNT_ID"))
+        sec_edit.addRow("sevDesk Token:", self._inp_sevdesk)
+        sec_edit.addRow("Wix API Key:", self._inp_wix)
+        sec_edit.addRow("Wix Site ID:", self._inp_wix_site)
+        sec_edit.addRow("Wix Account ID:", self._inp_wix_account)
+        self._extra_tokens_json = QPlainTextEdit()
+        extra_tokens_obj = {
+            key: secret_service.get_secret(key)
+            for key in _EXTRA_SECRET_KEYS
+            if secret_service.get_secret(key)
+        }
+        self._extra_tokens_json.setPlaceholderText(
+            '{"MOLLIE_ACCESS_TOKEN": "...", "STRIPE_SECRET_KEY": "..."}'
+        )
+        self._extra_tokens_json.setPlainText(json.dumps(extra_tokens_obj, ensure_ascii=False, indent=2))
+        self._extra_tokens_json.setMinimumHeight(120)
+        sec_edit.addRow("Weitere Tokens (JSON):", self._extra_tokens_json)
+        self._secret_status = QLabel("—")
+        self._secret_status.setStyleSheet("color: #9e9e9e;")
+        sec_edit.addRow("Status:", self._secret_status)
+        btn_save_tokens = QPushButton("Tokens sicher speichern")
+        btn_save_tokens.clicked.connect(self._save_tokens)
+        sec_edit.addRow("", btn_save_tokens)
+        main.addWidget(gb_secret_edit)
 
         # --- Drucker ---
         gb_printer = QGroupBox("Drucker (konfiguriert)")
@@ -121,6 +173,35 @@ class SettingsView(QWidget):
         self._pending_json.setPlaceholderText('{"XW-4-001": 7, "XW-6-003": 2}')
         self._pending_json.setMinimumHeight(90)
         queue_layout.addWidget(self._pending_json)
+        queue_layout.addWidget(QLabel(f"{_PENDING_COUNTS_KEY}:"))
+        self._pending_counts_json = QPlainTextEdit()
+        self._pending_counts_json.setPlaceholderText(
+            '{"mollie": 3, "gutscheine": 1, "downloads": 2, "refunds": 0}'
+        )
+        self._pending_counts_json.setMinimumHeight(80)
+        queue_layout.addWidget(self._pending_counts_json)
+        queue_layout.addWidget(QLabel(f"{_QUEUE_MOLLIE_KEY}:"))
+        self._queue_mollie_json = QPlainTextEdit()
+        self._queue_mollie_json.setPlaceholderText(
+            '[{"ref": "MOL-1001", "customer": "Max Mustermann", "amount": "19.90", "status": "Authorized", "note": "wartet auf Rechnung"}]'
+        )
+        self._queue_mollie_json.setMinimumHeight(90)
+        queue_layout.addWidget(self._queue_mollie_json)
+        queue_layout.addWidget(QLabel(f"{_QUEUE_GUTSCHEINE_KEY}:"))
+        self._queue_gutscheine_json = QPlainTextEdit()
+        self._queue_gutscheine_json.setPlaceholderText('[{"ref": "GUT-23", "customer": "Erika Muster", "status": "Offen"}]')
+        self._queue_gutscheine_json.setMinimumHeight(80)
+        queue_layout.addWidget(self._queue_gutscheine_json)
+        queue_layout.addWidget(QLabel(f"{_QUEUE_DOWNLOADS_KEY}:"))
+        self._queue_downloads_json = QPlainTextEdit()
+        self._queue_downloads_json.setPlaceholderText('[{"ref": "DL-1", "customer": "Demo", "status": "Bereit"}]')
+        self._queue_downloads_json.setMinimumHeight(80)
+        queue_layout.addWidget(self._queue_downloads_json)
+        queue_layout.addWidget(QLabel(f"{_QUEUE_REFUNDS_KEY}:"))
+        self._queue_refunds_json = QPlainTextEdit()
+        self._queue_refunds_json.setPlaceholderText('[{"ref": "RF-77", "customer": "Demo", "amount": "-9.90", "status": "Offen"}]')
+        self._queue_refunds_json.setMinimumHeight(80)
+        queue_layout.addWidget(self._queue_refunds_json)
         self._queue_status = QLabel("—")
         self._queue_status.setStyleSheet("color: #9e9e9e;")
         queue_layout.addWidget(self._queue_status)
@@ -191,8 +272,18 @@ class SettingsView(QWidget):
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
         stock = repo.get_value_json(_INV_STOCK_KEY) or "{}"
         pending = repo.get_value_json(_PENDING_REQ_KEY) or "{}"
+        pending_counts = repo.get_value_json(_PENDING_COUNTS_KEY) or "{}"
+        queue_mollie = repo.get_value_json(_QUEUE_MOLLIE_KEY) or "[]"
+        queue_gutscheine = repo.get_value_json(_QUEUE_GUTSCHEINE_KEY) or "[]"
+        queue_downloads = repo.get_value_json(_QUEUE_DOWNLOADS_KEY) or "[]"
+        queue_refunds = repo.get_value_json(_QUEUE_REFUNDS_KEY) or "[]"
         self._stock_json.setPlainText(stock)
         self._pending_json.setPlainText(pending)
+        self._pending_counts_json.setPlainText(pending_counts)
+        self._queue_mollie_json.setPlainText(queue_mollie)
+        self._queue_gutscheine_json.setPlainText(queue_gutscheine)
+        self._queue_downloads_json.setPlainText(queue_downloads)
+        self._queue_refunds_json.setPlainText(queue_refunds)
         self._queue_status.setText("Aktueller Stand aus DB geladen.")
         self._queue_status.setStyleSheet(_OK_STYLE)
 
@@ -202,25 +293,85 @@ class SettingsView(QWidget):
             return
         stock_raw = self._stock_json.toPlainText().strip() or "{}"
         pending_raw = self._pending_json.toPlainText().strip() or "{}"
+        pending_counts_raw = self._pending_counts_json.toPlainText().strip() or "{}"
+        queue_mollie_raw = self._queue_mollie_json.toPlainText().strip() or "[]"
+        queue_gutscheine_raw = self._queue_gutscheine_json.toPlainText().strip() or "[]"
+        queue_downloads_raw = self._queue_downloads_json.toPlainText().strip() or "[]"
+        queue_refunds_raw = self._queue_refunds_json.toPlainText().strip() or "[]"
         try:
             stock_obj = json.loads(stock_raw)
             pending_obj = json.loads(pending_raw)
+            pending_counts_obj = json.loads(pending_counts_raw)
+            queue_mollie_obj = json.loads(queue_mollie_raw)
+            queue_gutscheine_obj = json.loads(queue_gutscheine_raw)
+            queue_downloads_obj = json.loads(queue_downloads_raw)
+            queue_refunds_obj = json.loads(queue_refunds_raw)
         except json.JSONDecodeError as exc:
             QMessageBox.warning(self, "JSON-Fehler", f"Ungueltiges JSON:\n\n{exc}")
             return
-        if not isinstance(stock_obj, dict) or not isinstance(pending_obj, dict):
+        if (
+            not isinstance(stock_obj, dict)
+            or not isinstance(pending_obj, dict)
+            or not isinstance(pending_counts_obj, dict)
+            or not isinstance(queue_mollie_obj, list)
+            or not isinstance(queue_gutscheine_obj, list)
+            or not isinstance(queue_downloads_obj, list)
+            or not isinstance(queue_refunds_obj, list)
+        ):
             QMessageBox.warning(
                 self,
                 "Formatfehler",
-                "Beide Felder muessen JSON-Objekte sein (Key=SKU, Value=Menge).",
+                "Stock/Pending/Counts muessen Objekte sein; Queue-Felder muessen Listen sein.",
             )
             return
 
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
         repo.set_value_json(_INV_STOCK_KEY, json.dumps(stock_obj))
         repo.set_value_json(_PENDING_REQ_KEY, json.dumps(pending_obj))
+        repo.set_value_json(_PENDING_COUNTS_KEY, json.dumps(pending_counts_obj))
+        repo.set_value_json(_QUEUE_MOLLIE_KEY, json.dumps(queue_mollie_obj))
+        repo.set_value_json(_QUEUE_GUTSCHEINE_KEY, json.dumps(queue_gutscheine_obj))
+        repo.set_value_json(_QUEUE_DOWNLOADS_KEY, json.dumps(queue_downloads_obj))
+        repo.set_value_json(_QUEUE_REFUNDS_KEY, json.dumps(queue_refunds_obj))
         self._queue_status.setText("Queue-Daten gespeichert.")
         self._queue_status.setStyleSheet(_OK_STYLE)
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("START-Preflight-Daten gespeichert", 4000)
+
+    def _save_tokens(self) -> None:
+        service: SecretService = self._container.resolve(SecretService)
+        extra_raw = self._extra_tokens_json.toPlainText().strip() or "{}"
+        try:
+            extra_obj = json.loads(extra_raw)
+        except json.JSONDecodeError as exc:
+            self._secret_status.setText(f"JSON-Fehler: {exc}")
+            self._secret_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "JSON-Fehler", f"Ungueltiges Token-JSON:\n\n{exc}")
+            return
+        if not isinstance(extra_obj, dict):
+            self._secret_status.setText("Formatfehler bei weiteren Tokens")
+            self._secret_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "Formatfehler", "Weitere Tokens muessen ein JSON-Objekt sein.")
+            return
+
+        try:
+            service.save_secret("SEVDESK_API_TOKEN", self._inp_sevdesk.text())
+            service.save_secret("WIX_API_KEY", self._inp_wix.text())
+            service.save_secret("WIX_SITE_ID", self._inp_wix_site.text())
+            service.save_secret("WIX_ACCOUNT_ID", self._inp_wix_account.text())
+            for key in _EXTRA_SECRET_KEYS:
+                value = extra_obj.get(key)
+                if value is None:
+                    continue
+                service.save_secret(key, str(value))
+        except Exception as exc:
+            self._secret_status.setText(f"Fehler: {exc}")
+            self._secret_status.setStyleSheet(_ERR_STYLE)
+            QMessageBox.warning(self, "Speichern fehlgeschlagen", str(exc))
+            return
+
+        self._secret_status.setText("Tokens verschluesselt gespeichert.")
+        self._secret_status.setStyleSheet(_OK_STYLE)
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Tokens wurden in der DB gespeichert", 4500)

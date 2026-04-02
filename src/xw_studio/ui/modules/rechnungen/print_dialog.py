@@ -5,9 +5,11 @@ import logging
 from typing import TYPE_CHECKING
 
 import fitz
-from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
+from xw_studio.core.printer_detect import discover_printers, evaluate_printer_status
+from xw_studio.core.types import PrinterStatus
 from xw_studio.services.printing.pdf_renderer import (
     INVOICE_DPI,
     MUSIC_DPI,
@@ -21,6 +23,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _check_printer_runtime(parent: QWidget, container: Container, printer: QPrinter | None = None) -> bool:
+    configured = list(container.config.printing.configured_printer_names)
+    discovered = discover_printers()
+    status = evaluate_printer_status(discovered, configured)
+    if status == PrinterStatus.RED:
+        QMessageBox.warning(
+            parent,
+            "Druck nicht verfuegbar",
+            "Kein konfigurierter Drucker ist verfuegbar (Ampel rot).",
+        )
+        return False
+
+    if printer is not None and configured:
+        name = (printer.printerName() or "").strip()
+        if name and name not in configured:
+            QMessageBox.warning(
+                parent,
+                "Falscher Drucker",
+                "Der gewaehlt Drucker ist nicht in den konfigurierten Druckern enthalten.",
+            )
+            return False
+    return True
+
+
 def _print_with_dialog(
     parent: QWidget,
     container: Container,
@@ -28,6 +54,9 @@ def _print_with_dialog(
     title: str,
     dpi: int,
 ) -> None:
+    if not _check_printer_runtime(parent, container):
+        return
+
     path, _ = QFileDialog.getOpenFileName(
         parent,
         title,
@@ -38,8 +67,14 @@ def _print_with_dialog(
         return
 
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    default_name = QPrinterInfo.defaultPrinter().printerName()
+    if default_name:
+        printer.setPrinterName(default_name)
     dialog = QPrintDialog(printer, parent)
     if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+        return
+
+    if not _check_printer_runtime(parent, container, printer):
         return
 
     doc = fitz.open(path)

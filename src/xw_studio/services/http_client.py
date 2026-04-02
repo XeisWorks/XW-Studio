@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
-def build_sevdesk_http_client(config: AppConfig) -> httpx.Client:
+def build_sevdesk_http_client(config: AppConfig, *, api_token: str | None = None) -> httpx.Client:
     """Create a configured httpx client for sevDesk API v1.
 
     Authentication: raw API token in ``Authorization`` header (sevDesk convention).
     """
-    token = (config.sevdesk.api_token or "").strip()
+    token = (api_token if api_token is not None else config.sevdesk.api_token or "").strip()
     base = config.sevdesk.base_url.rstrip("/")
     headers = {
         "Authorization": token,
@@ -117,6 +117,9 @@ class SevdeskConnection:
         return sevdesk_get_with_retry(self.client, self.config, path, **kwargs)
 
 
-def build_sevdesk_connection(config: AppConfig) -> SevdeskConnection:
+def build_sevdesk_connection(config: AppConfig, *, api_token: str | None = None) -> SevdeskConnection:
     """Factory for DI registration."""
-    return SevdeskConnection(client=build_sevdesk_http_client(config), config=config)
+    return SevdeskConnection(
+        client=build_sevdesk_http_client(config, api_token=api_token),
+        config=config,
+    )

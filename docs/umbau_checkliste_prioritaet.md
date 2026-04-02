@@ -39,7 +39,7 @@ Legende:
   - API-Secret-Repository kann lesen/schreiben (Smoke-Test).
 
 ### P0.3 Drucker-Subsystem robust machen (ohne Acrobat-Flackern)
-- Status: TODO
+- Status: IN PROGRESS
 - Warum: Druck ist geschaeftskritisch und muss jederzeit nutzbar sein.
 - Aufgaben:
   - Druckerampel mit echter Sperrlogik fuer alle Druck-Entry-Points vereinheitlichen.
@@ -128,7 +128,7 @@ Legende:
   - Produkte-Modul deckt Inventar + Sync + Druckplanung ab.
 
 ### P1.3 Settings als echte Zentrale
-- Status: TODO
+- Status: IN PROGRESS
 - Aufgaben:
   - Druckerzuordnung, API-Token-Verwaltung, DB-Status, Sync-Optionen.
   - Sichere Speicherung ueber verschluesselte Secrets.
@@ -176,6 +176,17 @@ Legende:
 - 2026-04-02: Settings-Modul neu: DB-Ping-Button, Secrets-Status, Druckerkonfiguration.
 - 2026-04-02: TagesgeschaeftView erstellt: 5 Tabs (Rechnungen, Mollie, Gutscheine, Downloads, Refunds).
 - 2026-04-02: START-Button (▶ START) mit Pre-Flight-Dialog (Modus: Nur Rechnungen / Rechnungen + Druck).
+- 2026-04-02: START-Preflight-Engine umgesetzt (Bestand vs Bedarf, Fehlmenge, Druck inkl. Puffer +3).
+- 2026-04-02: Daily-Business Badges erweitert (Rechnungen + Mollie/Gutscheine/Downloads/Refunds via DB-JSON).
+- 2026-04-02: Sidebar-Badge-Update ueber AppSignals.badge_updated verdrahtet.
+- 2026-04-02: SecretService eingefuehrt (DB-verschluesselt mit Fernet, .env-Fallback).
+- 2026-04-02: Settings um sichere Token-Speicherung (SEVDESK/WIX) in DB erweitert.
+- 2026-04-02: Print-Dialog runtime-gehaertet (Druckerverfuegbarkeit + konfigurierter Drucker geprueft).
+- 2026-04-02: DailyBusinessService eingefuehrt; Mollie/Gutscheine/Downloads/Refunds Tabs nun mit Queue-Views statt Placeholdern.
+- 2026-04-02: Settings-Queue-Felder fuer alle vier Daily-Business-Queues ergaenzt (DB-JSON editierbar).
+- 2026-04-02: SecretService um weitere Schluessel erweitert (Mollie/Stripe/OpenAI/ClickUp/MS/FON/Maps) inkl. ENV-Fallback.
+- 2026-04-02: Druckampel-Regel korrigiert (ohne konfigurierte Namen + ohne lokale Drucker nun rot statt gruen).
+- 2026-04-02: Neue Unit-Tests fuer Druckampel + SecretService hinzugefuegt (8 Tests gruen).
 
 ## Sofort-Fokus (naechster Arbeitsblock)
 - Block A: P0.2 + P0.3 abschliessen (DB + Druck robust).

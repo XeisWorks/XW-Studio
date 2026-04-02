@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
@@ -208,16 +209,16 @@ class RechnungenView(QWidget):
             return None
 
     def _on_status_filter_changed(self, _index: int) -> None:
-        if not (self._container.config.sevdesk.api_token or "").strip():
+        if not self._has_sevdesk_token():
             return
         self._reload_first_page()
 
     def _update_token_hint(self) -> None:
-        token = (self._container.config.sevdesk.api_token or "").strip()
+        token = self._current_sevdesk_token()
         if not token:
             self._hint.setText(
-                "Kein sevDesk-API-Token gesetzt. Bitte SEVDESK_API_TOKEN in der "
-                "Umgebung oder in .env eintragen."
+                "Kein sevDesk-API-Token gesetzt. Bitte Token in Settings (DB) "
+                "oder in .env eintragen."
             )
             self._hint.setStyleSheet("color: #ffa726; padding: 8px;")
             self._hint.show()
@@ -228,7 +229,7 @@ class RechnungenView(QWidget):
         super().showEvent(event)
         if not self._did_initial_load:
             self._did_initial_load = True
-            if (self._container.config.sevdesk.api_token or "").strip():
+            if self._has_sevdesk_token():
                 self._reload_first_page()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -251,13 +252,13 @@ class RechnungenView(QWidget):
         self._start_load()
 
     def _load_more(self) -> None:
-        if not (self._container.config.sevdesk.api_token or "").strip():
+        if not self._has_sevdesk_token():
             return
         self._append_mode = True
         self._start_load()
 
     def _start_load(self) -> None:
-        if not (self._container.config.sevdesk.api_token or "").strip():
+        if not self._has_sevdesk_token():
             return
 
         service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
@@ -285,6 +286,13 @@ class RechnungenView(QWidget):
         self._worker.signals.error.connect(self._on_load_error)
         self._worker.signals.finished.connect(self._on_load_finished)
         self._worker.start()
+
+    def _current_sevdesk_token(self) -> str:
+        service: SecretService = self._container.resolve(SecretService)
+        return service.get_secret("SEVDESK_API_TOKEN").strip()
+
+    def _has_sevdesk_token(self) -> bool:
+        return bool(self._current_sevdesk_token())
 
     def _on_load_result(self, payload: object) -> None:
         if not isinstance(payload, tuple) or len(payload) != 3:

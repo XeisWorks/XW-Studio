@@ -23,24 +23,104 @@ from PySide6.QtWidgets import (
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
+from xw_studio.services.daily_business.service import DailyBusinessService
 from xw_studio.services.inventory.service import InventoryService, StartPreflight
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
+from xw_studio.ui.widgets.data_table import DataTable
+from xw_studio.ui.widgets.search_bar import SearchBar
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
 
 logger = logging.getLogger(__name__)
 
+_QUEUE_COLUMNS = ["Ref", "Kunde", "Betrag", "Status", "Hinweis"]
 
-def _placeholder_tab(label: str) -> QWidget:
-    w = QWidget()
-    lay = QVBoxLayout(w)
-    lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    hint = QLabel(f"{label} — Implementierung folgt")
-    hint.setStyleSheet("color: #9e9e9e; font-size: 15px;")
-    lay.addWidget(hint)
-    return w
+
+class _QueueTabView(QWidget):
+    """Generic queue tab for Mollie/Gutscheine/Downloads/Refunds."""
+
+    def __init__(self, container: Container, queue_name: str, title: str) -> None:
+        super().__init__()
+        self._container = container
+        self._queue_name = queue_name
+        self._title = title
+        self._worker: BackgroundWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self._caption = QLabel(self._title)
+        self._caption.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(self._caption)
+
+        row = QHBoxLayout()
+        self._search = SearchBar("Suchen…")
+        self._search.search_changed.connect(self._on_search)
+        row.addWidget(self._search, stretch=1)
+        self._count_lbl = QLabel("0 Eintraege")
+        row.addWidget(self._count_lbl)
+        self._btn_refresh = QPushButton("Aktualisieren")
+        self._btn_refresh.clicked.connect(lambda: self.reload())
+        row.addWidget(self._btn_refresh)
+        layout.addLayout(row)
+
+        self._table = DataTable(_QUEUE_COLUMNS)
+        layout.addWidget(self._table, stretch=1)
+        self._detail = QLabel("Zeile waehlen fuer Details …")
+        self._detail.setWordWrap(True)
+        self._detail.setStyleSheet("color: #9e9e9e; padding: 6px 2px;")
+        layout.addWidget(self._detail)
+
+        sel = self._table.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(self._on_selection_changed)
+
+    def reload(self, fallback_count: int = 0) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self._btn_refresh.setEnabled(False)
+
+        def job() -> list[dict[str, str]]:
+            service: DailyBusinessService = self._container.resolve(DailyBusinessService)
+            return service.load_queue_rows(self._queue_name, fallback_count=fallback_count)
+
+        self._worker = BackgroundWorker(job)
+        self._worker.signals.result.connect(self._on_load_result)
+        self._worker.signals.error.connect(self._on_load_error)
+        self._worker.signals.finished.connect(lambda: self._btn_refresh.setEnabled(True))
+        self._worker.start()
+
+    def _on_load_result(self, result: object) -> None:
+        rows = result if isinstance(result, list) else []
+        norm_rows = [r for r in rows if isinstance(r, dict)]
+        self._table.set_data(norm_rows)
+        self._count_lbl.setText(f"{len(norm_rows)} Eintraege")
+        self._detail.setText("Zeile waehlen fuer Details …")
+
+    def _on_load_error(self, exc: Exception) -> None:
+        logger.warning("Queue '%s' load failed: %s", self._queue_name, exc)
+        self._count_lbl.setText("Fehler")
+
+    def _on_search(self, text: str) -> None:
+        self._table.set_filter(text, column=0)
+
+    def _on_selection_changed(self, _selected: object, _deselected: object) -> None:
+        row = self._table.selected_row_data() or {}
+        if not row:
+            self._detail.setText("Zeile waehlen fuer Details …")
+            return
+        self._detail.setText(
+            f"Ref: {row.get('Ref', '—')}\n"
+            f"Kunde: {row.get('Kunde', '—')}\n"
+            f"Betrag: {row.get('Betrag', '—')}\n"
+            f"Status: {row.get('Status', '—')}\n"
+            f"Hinweis: {row.get('Hinweis', '—')}"
+        )
 
 
 class _StartDialog(QDialog):
@@ -181,11 +261,16 @@ class TagesgeschaeftView(QWidget):
         self._tabs.setDocumentMode(True)
 
         self._rechnungen_view = RechnungenView(self._container)
+        self._mollie_view = _QueueTabView(self._container, "mollie", "Mollie Authorized")
+        self._gutscheine_view = _QueueTabView(self._container, "gutscheine", "Gutscheine")
+        self._downloads_view = _QueueTabView(self._container, "downloads", "Download-Links")
+        self._refunds_view = _QueueTabView(self._container, "refunds", "Rueckerstattungen")
+
         self._tabs.addTab(self._rechnungen_view, "📋  Rechnungen")
-        self._tabs.addTab(_placeholder_tab("Mollie 💳"), "💳  Mollie")
-        self._tabs.addTab(_placeholder_tab("Gutscheine 🎁"), "🎁  Gutscheine")
-        self._tabs.addTab(_placeholder_tab("Download-Links 📥"), "📥  Downloads")
-        self._tabs.addTab(_placeholder_tab("Rückerstattungen ↩"), "↩  Refunds")
+        self._tabs.addTab(self._mollie_view, "💳  Mollie")
+        self._tabs.addTab(self._gutscheine_view, "🎁  Gutscheine")
+        self._tabs.addTab(self._downloads_view, "📥  Downloads")
+        self._tabs.addTab(self._refunds_view, "↩  Refunds")
 
         main_layout.addWidget(self._tabs, stretch=1)
 
@@ -193,10 +278,11 @@ class TagesgeschaeftView(QWidget):
         if self._badge_worker is not None and self._badge_worker.isRunning():
             return
 
-        def job() -> int:
+        def job() -> dict[str, int]:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
             open_invoices = invoice_service.load_invoice_summaries(status=200, limit=100, offset=0)
-            return len(open_invoices)
+            service: DailyBusinessService = self._container.resolve(DailyBusinessService)
+            return service.load_counts(open_invoice_count=len(open_invoices))
 
         self._badge_worker = BackgroundWorker(job)
         self._badge_worker.signals.result.connect(self._on_badges_result)
@@ -204,8 +290,17 @@ class TagesgeschaeftView(QWidget):
         self._badge_worker.start()
 
     def _on_badges_result(self, result: object) -> None:
-        open_count = max(0, int(result) if isinstance(result, int) else 0)
+        counts = result if isinstance(result, dict) else {}
+        open_count = max(0, int(counts.get("rechnungen", 0)))
         self._tabs.setTabText(0, f"📋  Rechnungen ({open_count})")
+        self._tabs.setTabText(1, f"💳  Mollie ({max(0, int(counts.get('mollie', 0)))})")
+        self._tabs.setTabText(2, f"🎁  Gutscheine ({max(0, int(counts.get('gutscheine', 0)))})")
+        self._tabs.setTabText(3, f"📥  Downloads ({max(0, int(counts.get('downloads', 0)))})")
+        self._tabs.setTabText(4, f"↩  Refunds ({max(0, int(counts.get('refunds', 0)))})")
+        self._mollie_view.reload(max(0, int(counts.get("mollie", 0))))
+        self._gutscheine_view.reload(max(0, int(counts.get("gutscheine", 0))))
+        self._downloads_view.reload(max(0, int(counts.get("downloads", 0))))
+        self._refunds_view.reload(max(0, int(counts.get("refunds", 0))))
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.badge_updated.emit(ModuleKey.RECHNUNGEN.value, open_count)
 
