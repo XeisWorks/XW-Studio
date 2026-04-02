@@ -37,6 +37,10 @@ copy .env.example .env
 python -m xw_studio
 ```
 
+## Roadmap / Copilot
+
+- **[docs/copilot_migration_plan.md](docs/copilot_migration_plan.md)** — Phasenplan, DoD und kopierfertige Copilot-Prompts für die nächsten Umbauten.
+
 ## Architecture
 
 - **UI Framework:** PySide6 + qt-material

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from xw_studio.bootstrap import register_default_services
 from xw_studio.core.config import load_config
 from xw_studio.core.container import Container
 from xw_studio.core.logging_setup import setup_logging
@@ -54,6 +55,7 @@ def create_application() -> QApplication:
 
     container = Container(config)
     container.register(AppSignals, lambda _: AppSignals())
+    register_default_services(container)
 
     from xw_studio.ui.main_window import MainWindow
     window = MainWindow(container)

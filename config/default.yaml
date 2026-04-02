@@ -27,6 +27,7 @@ printing:
   invoice_dpi: 300
   buffer_quantity: 3
   rate_limit_seconds: 1
+  configured_printer_names: []
 
 inventory:
   alarm_threshold: 5

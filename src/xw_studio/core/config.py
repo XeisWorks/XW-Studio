@@ -61,10 +61,13 @@ class WixSection:
 
 @dataclass(frozen=True)
 class PrintingSection:
+    """Print settings. ``configured_printer_names`` = expected Windows printer names on print PC."""
+
     music_dpi: int = 600
     invoice_dpi: int = 300
     buffer_quantity: int = 3
     rate_limit_seconds: int = 1
+    configured_printer_names: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

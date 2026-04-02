@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -96,6 +95,10 @@ class Sidebar(QFrame):
         self._buttons: dict[str, SidebarButton] = {}
         self._collapsed = container.config.app.sidebar.default_collapsed
         self._build_ui()
+        from xw_studio.core.signals import AppSignals
+
+        app_signals = self._container.resolve(AppSignals)
+        app_signals.navigate_to_module.connect(self._sync_sidebar_checkstate)
         self._select_module(ModuleKey.HOME.value)
 
     def _build_ui(self) -> None:
@@ -175,6 +178,13 @@ class Sidebar(QFrame):
         self._title_label.setVisible(not self._collapsed)
         for btn in self._buttons.values():
             btn.setText("" if self._collapsed else btn.entry.label)
+
+    def _sync_sidebar_checkstate(self, key: str) -> None:
+        """Highlight sidebar entry when navigation comes from dashboard cards."""
+        if key not in self._buttons:
+            return
+        for k, btn in self._buttons.items():
+            btn.setChecked(k == key)
 
     def _select_module(self, key: str) -> None:
         for k, btn in self._buttons.items():

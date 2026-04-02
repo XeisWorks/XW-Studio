@@ -9,6 +9,7 @@ def test_default_config_values() -> None:
     assert config.printing.music_dpi == 600
     assert config.printing.invoice_dpi == 300
     assert config.printing.buffer_quantity == 3
+    assert config.printing.configured_printer_names == []
     assert config.crm.fuzzy_match_threshold == 75
 
 
