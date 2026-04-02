@@ -99,6 +99,7 @@ class Sidebar(QFrame):
 
         app_signals = self._container.resolve(AppSignals)
         app_signals.navigate_to_module.connect(self._sync_sidebar_checkstate)
+        app_signals.badge_updated.connect(self._on_badge_updated)
         self._select_module(ModuleKey.HOME.value)
 
     def _build_ui(self) -> None:
@@ -190,3 +191,9 @@ class Sidebar(QFrame):
         for k, btn in self._buttons.items():
             btn.setChecked(k == key)
         self.module_selected.emit(key)
+
+    def _on_badge_updated(self, module_key: str, count: int) -> None:
+        btn = self._buttons.get(module_key)
+        if btn is None:
+            return
+        btn.set_badge(max(0, int(count)))

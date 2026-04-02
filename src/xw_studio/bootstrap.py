@@ -53,7 +53,13 @@ def register_default_services(container: Container) -> None:
     container.register(CrmService, lambda c: CrmService(c.config))
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
     container.register(CalculationService, lambda c: CalculationService())
-    container.register(InventoryService, lambda c: InventoryService())
+    container.register(
+        InventoryService,
+        lambda c: InventoryService(
+            c.config,
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
 
     container.register(
         MarketingIdeasStore,

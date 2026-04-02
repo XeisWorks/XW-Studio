@@ -1,6 +1,7 @@
 """App-wide settings — DB status, secrets overview, printer config."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -9,13 +10,17 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
+from xw_studio.repositories.settings_kv import SettingKvRepository
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -25,6 +30,8 @@ logger = logging.getLogger(__name__)
 _OK_STYLE = "color: #4caf50; font-weight: bold;"
 _WARN_STYLE = "color: #ffa726; font-weight: bold;"
 _ERR_STYLE = "color: #ef5350; font-weight: bold;"
+_INV_STOCK_KEY = "inventory.stock_levels"
+_PENDING_REQ_KEY = "daily_business.pending_requirements"
 
 
 def _pill(text: str, ok: bool) -> QLabel:
@@ -95,6 +102,36 @@ class SettingsView(QWidget):
             form_pr.addRow("Drucker:", _pill("keine konfiguriert", False))
         main.addWidget(gb_printer)
 
+        # --- START-Queue / Inventar JSON ---
+        gb_queue = QGroupBox("START-Preflight Daten (JSON)")
+        queue_layout = QVBoxLayout(gb_queue)
+        queue_layout.addWidget(
+            QLabel(
+                "Definiert die Druckentscheidung im START-Dialog. "
+                "Format: JSON-Objekt mit SKU als Key und Menge als Zahl."
+            )
+        )
+        queue_layout.addWidget(QLabel(f"{_INV_STOCK_KEY}:"))
+        self._stock_json = QPlainTextEdit()
+        self._stock_json.setPlaceholderText('{"XW-4-001": 5, "XW-6-003": 1}')
+        self._stock_json.setMinimumHeight(90)
+        queue_layout.addWidget(self._stock_json)
+        queue_layout.addWidget(QLabel(f"{_PENDING_REQ_KEY}:"))
+        self._pending_json = QPlainTextEdit()
+        self._pending_json.setPlaceholderText('{"XW-4-001": 7, "XW-6-003": 2}')
+        self._pending_json.setMinimumHeight(90)
+        queue_layout.addWidget(self._pending_json)
+        self._queue_status = QLabel("—")
+        self._queue_status.setStyleSheet("color: #9e9e9e;")
+        queue_layout.addWidget(self._queue_status)
+        save_queue = QPushButton("Queue speichern")
+        save_queue.clicked.connect(self._save_queue_settings)
+        save_queue.setEnabled(self._has_settings_repo())
+        queue_layout.addWidget(save_queue)
+        main.addWidget(gb_queue)
+
+        self._load_queue_settings()
+
         main.addStretch()
         scroll.setWidget(content)
         outer = QVBoxLayout(self)
@@ -138,3 +175,52 @@ class SettingsView(QWidget):
         logger.error("DB ping failed: %s", exc)
         self._db_status_lbl.setText(f"Fehler: {exc}")
         self._db_status_lbl.setStyleSheet(_ERR_STYLE)
+
+    def _has_settings_repo(self) -> bool:
+        try:
+            self._container.resolve(SettingKvRepository)
+            return True
+        except KeyError:
+            return False
+
+    def _load_queue_settings(self) -> None:
+        if not self._has_settings_repo():
+            self._queue_status.setText("DB-Repository nicht aktiv (DATABASE_URL fehlt oder Migration fehlt).")
+            self._queue_status.setStyleSheet(_WARN_STYLE)
+            return
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        stock = repo.get_value_json(_INV_STOCK_KEY) or "{}"
+        pending = repo.get_value_json(_PENDING_REQ_KEY) or "{}"
+        self._stock_json.setPlainText(stock)
+        self._pending_json.setPlainText(pending)
+        self._queue_status.setText("Aktueller Stand aus DB geladen.")
+        self._queue_status.setStyleSheet(_OK_STYLE)
+
+    def _save_queue_settings(self) -> None:
+        if not self._has_settings_repo():
+            QMessageBox.warning(self, "Fehler", "DB-Repository nicht verfuegbar.")
+            return
+        stock_raw = self._stock_json.toPlainText().strip() or "{}"
+        pending_raw = self._pending_json.toPlainText().strip() or "{}"
+        try:
+            stock_obj = json.loads(stock_raw)
+            pending_obj = json.loads(pending_raw)
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(self, "JSON-Fehler", f"Ungueltiges JSON:\n\n{exc}")
+            return
+        if not isinstance(stock_obj, dict) or not isinstance(pending_obj, dict):
+            QMessageBox.warning(
+                self,
+                "Formatfehler",
+                "Beide Felder muessen JSON-Objekte sein (Key=SKU, Value=Menge).",
+            )
+            return
+
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        repo.set_value_json(_INV_STOCK_KEY, json.dumps(stock_obj))
+        repo.set_value_json(_PENDING_REQ_KEY, json.dumps(pending_obj))
+        self._queue_status.setText("Queue-Daten gespeichert.")
+        self._queue_status.setStyleSheet(_OK_STYLE)
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("START-Preflight-Daten gespeichert", 4000)
