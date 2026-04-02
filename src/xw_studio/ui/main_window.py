@@ -109,6 +109,10 @@ class MainWindow(QMainWindow):
 
         self._register_page(ModuleKey.NOTATION, NotationView(self._container))
 
+        from xw_studio.ui.modules.xw_copilot.view import XWCopilotView
+
+        self._register_page(ModuleKey.XW_COPILOT, XWCopilotView(self._container))
+
         from xw_studio.ui.modules.settings.view import SettingsView
 
         self._register_page(ModuleKey.SETTINGS, SettingsView(self._container))

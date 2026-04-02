@@ -1,0 +1,192 @@
+"""XW-Copilot panel for Outlook add-in integration and text blocks."""
+from __future__ import annotations
+
+import json
+import logging
+from typing import TYPE_CHECKING
+
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from xw_studio.services.xw_copilot.service import XWCopilotConfig, XWCopilotService
+
+if TYPE_CHECKING:
+    from xw_studio.core.container import Container
+
+logger = logging.getLogger(__name__)
+
+
+class XWCopilotView(QWidget):
+    """Manage Outlook add-in settings and reusable copilot blocks."""
+
+    def __init__(self, container: Container, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._container = container
+        self._service: XWCopilotService = container.resolve(XWCopilotService)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._build_settings_tab(), "Einstellungen")
+        tabs.addTab(self._build_templates_tab(), "Bausteine")
+        tabs.addTab(self._build_notes_tab(), "Integration")
+        root.addWidget(tabs)
+
+        self._load_config_into_form()
+        self._load_templates_into_editor()
+
+    def _build_settings_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        group = QGroupBox("Outlook Add-in Konfiguration")
+        form = QFormLayout(group)
+
+        self._enabled = QCheckBox("XW-Copilot aktiv")
+        form.addRow("Status:", self._enabled)
+
+        self._mode = QComboBox()
+        self._mode.addItems(["dry_run", "live"])
+        form.addRow("Modus:", self._mode)
+
+        self._tenant_id = QLineEdit()
+        self._tenant_id.setPlaceholderText("Azure Tenant ID")
+        form.addRow("Tenant ID:", self._tenant_id)
+
+        self._client_id = QLineEdit()
+        self._client_id.setPlaceholderText("App Client ID")
+        form.addRow("Client ID:", self._client_id)
+
+        self._mailbox = QLineEdit()
+        self._mailbox.setPlaceholderText("z. B. info@xeisworks.at")
+        form.addRow("Mailbox:", self._mailbox)
+
+        self._webhook = QLineEdit()
+        self._webhook.setPlaceholderText("Webhook URL (optional)")
+        form.addRow("Webhook:", self._webhook)
+
+        self._project = QLineEdit()
+        self._project.setPlaceholderText("Standardprojekt / Board")
+        form.addRow("Default Projekt:", self._project)
+
+        self._settings_status = QLabel("—")
+        form.addRow("Status:", self._settings_status)
+
+        btn_row = QHBoxLayout()
+        load_btn = QPushButton("Laden")
+        load_btn.clicked.connect(self._load_config_into_form)
+        btn_row.addWidget(load_btn)
+        save_btn = QPushButton("Speichern")
+        save_btn.clicked.connect(self._save_config_from_form)
+        btn_row.addWidget(save_btn)
+        btn_row.addStretch()
+        form.addRow("", btn_row)
+
+        lay.addWidget(group)
+        lay.addStretch()
+        return page
+
+    def _build_templates_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.addWidget(QLabel("Prompt-/Mail-Bausteine als JSON-Liste (name/kind/content)."))
+
+        self._templates_editor = QPlainTextEdit()
+        self._templates_editor.setPlaceholderText(
+            '[{"name": "Antwort - Rechnung", "kind": "mail", "content": "Vielen Dank ..."}]'
+        )
+        lay.addWidget(self._templates_editor, stretch=1)
+
+        row = QHBoxLayout()
+        load_btn = QPushButton("Bausteine laden")
+        load_btn.clicked.connect(self._load_templates_into_editor)
+        row.addWidget(load_btn)
+        save_btn = QPushButton("Bausteine speichern")
+        save_btn.clicked.connect(self._save_templates_from_editor)
+        row.addWidget(save_btn)
+        row.addStretch()
+        lay.addLayout(row)
+
+        self._templates_status = QLabel("—")
+        lay.addWidget(self._templates_status)
+        return page
+
+    def _build_notes_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        txt = QPlainTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(
+            "XW-Copilot Integrationshinweise:\n\n"
+            "1) Outlook Add-in spricht per Webhook/API mit XW-Studio.\n"
+            "2) Modus dry_run: nur Vorschau/Logging, keine Live-Aktionen.\n"
+            "3) Modus live: Aktionen gegen produktive Endpunkte aktiv.\n"
+            "4) Bausteine werden zentral in DB gehalten (mehrere PCs).\n"
+            "5) Tokens weiterhin ueber Settings/SecretService pflegen."
+        )
+        lay.addWidget(txt)
+        return page
+
+    def _load_config_into_form(self) -> None:
+        cfg = self._service.load_config()
+        self._enabled.setChecked(cfg.enabled)
+        mode_idx = self._mode.findText(cfg.mode)
+        self._mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        self._tenant_id.setText(cfg.outlook_tenant_id)
+        self._client_id.setText(cfg.outlook_client_id)
+        self._mailbox.setText(cfg.mailbox_address)
+        self._webhook.setText(cfg.webhook_url)
+        self._project.setText(cfg.default_project)
+        self._settings_status.setText("Konfiguration geladen")
+
+    def _save_config_from_form(self) -> None:
+        if not self._service.has_storage():
+            QMessageBox.warning(self, "XW-Copilot", "Kein DB-Storage verfuegbar (DATABASE_URL fehlt).")
+            return
+        cfg = XWCopilotConfig(
+            enabled=self._enabled.isChecked(),
+            mode=self._mode.currentText(),
+            outlook_tenant_id=self._tenant_id.text().strip(),
+            outlook_client_id=self._client_id.text().strip(),
+            mailbox_address=self._mailbox.text().strip(),
+            webhook_url=self._webhook.text().strip(),
+            default_project=self._project.text().strip(),
+        )
+        self._service.save_config(cfg)
+        self._settings_status.setText("Konfiguration gespeichert")
+        QMessageBox.information(self, "XW-Copilot", "Einstellungen gespeichert.")
+
+    def _load_templates_into_editor(self) -> None:
+        rows = self._service.load_templates()
+        self._templates_editor.setPlainText(json.dumps(rows, ensure_ascii=False, indent=2))
+        self._templates_status.setText(f"{len(rows)} Bausteine geladen")
+
+    def _save_templates_from_editor(self) -> None:
+        if not self._service.has_storage():
+            QMessageBox.warning(self, "XW-Copilot", "Kein DB-Storage verfuegbar (DATABASE_URL fehlt).")
+            return
+        raw = self._templates_editor.toPlainText().strip() or "[]"
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            QMessageBox.warning(self, "XW-Copilot", f"Ungueltiges JSON: {exc}")
+            return
+        if not isinstance(data, list):
+            QMessageBox.warning(self, "XW-Copilot", "Erwartet wird ein JSON-Array aus Objekten.")
+            return
+        self._service.save_templates([row for row in data if isinstance(row, dict)])
+        self._templates_status.setText(f"{len(data)} Bausteine gespeichert")
+        QMessageBox.information(self, "XW-Copilot", "Bausteine gespeichert.")

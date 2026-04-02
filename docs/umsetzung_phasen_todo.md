@@ -225,6 +225,10 @@ Aktueller Fortschritt:
 - Abgeschlossen: A1, A2, B1, B2, C1, C2, D1, D2, D3, E1, E2, E3.
 - Naechste Hauptpakete: produktiver Live-Writeback fuer CRM-Merge (sevDesk), vertiefte Steuer-Endpunkte und optionale Connectoren fuer Marketing.
 
+Ergaenzung 2026-04-02:
+- XW-Copilot Untermenue + Panel fuer Outlook-Add-in Integration umgesetzt.
+- Verbesserte Integrationsskizze: docs/xw_copilot_outlook_integration.md
+
 ---
 
 ## 8) Arbeitsmodus pro Ticket (verbindlich)

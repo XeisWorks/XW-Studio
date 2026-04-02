@@ -28,6 +28,7 @@ from xw_studio.services.sevdesk.part_client import PartClient
 from xw_studio.services.statistics.service import StatisticsService
 from xw_studio.services.wix.client import WixProductsClient
 from xw_studio.services.clickup.client import ClickUpClient
+from xw_studio.services.xw_copilot.service import XWCopilotService
 from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, SettingKvRepository
 
 
@@ -98,6 +99,12 @@ def register_default_services(container: Container) -> None:
     container.register(
         ClickUpClient,
         lambda c: ClickUpClient(secret_service=c.resolve(SecretService)),
+    )
+    container.register(
+        XWCopilotService,
+        lambda c: XWCopilotService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
     )
     container.register(
         CrmService,

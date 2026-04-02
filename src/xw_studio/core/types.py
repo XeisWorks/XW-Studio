@@ -15,6 +15,7 @@ class ModuleKey(str, Enum):
     TRAVEL_COSTS = "travel_costs"
     MARKETING = "marketing"
     NOTATION = "notation"
+    XW_COPILOT = "xw_copilot"
     WUEDARAMUSI = "wuedaramusi"
     SETTINGS = "settings"
 
