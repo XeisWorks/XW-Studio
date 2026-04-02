@@ -6,6 +6,7 @@ from typing import Any
 
 from xw_studio.core.config import AppConfig
 from xw_studio.services.finanzonline.client import FinanzOnlineClient
+from xw_studio.services.finanzonline.uva_soap import UvaSubmitResult
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,6 @@ class UvaService:
         """Deterministic placeholder for UI/tests (no network)."""
         return {"jahr": year, "monat": month, "status": "entwurf", "quelle": "xw_studio"}
 
-    def submit_uva(self, payload: dict[str, Any]) -> None:
-        """Delegate to SOAP client (raises until implemented)."""
-        self._client.submit_uva(payload)
+    def submit_uva(self, payload: dict[str, Any]) -> UvaSubmitResult:
+        """Delegate to SOAP client (mock backend or zeep when configured)."""
+        return self._client.submit_uva(payload)

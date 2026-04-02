@@ -1,23 +1,27 @@
-"""FinanzOnline / UVA SOAP integration (stub for future zeep client)."""
+"""FinanzOnline / UVA SOAP integration (injectable backend for zeep or mocks)."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from xw_studio.core.config import AppConfig
-
-logger = logging.getLogger(__name__)
-
+from xw_studio.services.finanzonline.uva_soap import (
+    UnconfiguredUvaSoapBackend,
+    UvaSoapBackend,
+    UvaSubmitResult,
+)
 
 class FinanzOnlineClient:
-    """SOAP entry point; wire :func:`zeep.Client` here when credentials are available."""
+    """SOAP entry point; production wires :class:`ZeepUvaSoapBackend` when ready."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        uva_backend: UvaSoapBackend | None = None,
+    ) -> None:
         self._config = config
+        self._uva_backend: UvaSoapBackend = uva_backend or UnconfiguredUvaSoapBackend()
 
-    def submit_uva(self, payload: dict[str, Any]) -> None:
-        """SOAP UVA submission — not implemented in scaffold."""
-        logger.warning("FinanzOnline UVA submission not implemented: %s", payload.keys())
-        raise NotImplementedError(
-            "FinanzOnline SOAP client: implement with zeep and FinanzOnline credentials",
-        )
+    def submit_uva(self, payload: dict[str, Any]) -> UvaSubmitResult:
+        """Submit UVA payload via configured SOAP backend."""
+        return self._uva_backend.submit_uva(payload)

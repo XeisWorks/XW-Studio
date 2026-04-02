@@ -21,7 +21,7 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.clearing.service import PaymentClearingService
 from xw_studio.services.expenses.service import ExpenseAuditService
-from xw_studio.services.finanzonline import UvaService
+from xw_studio.services.finanzonline import UvaService, UvaSubmitResult
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -81,15 +81,23 @@ class TaxesView(QWidget):
         def on_submit() -> None:
             payload = uva.mock_build_payload(year.value(), month.value())
 
-            def job() -> None:
-                uva.submit_uva(payload)
+            def job() -> UvaSubmitResult:
+                return uva.submit_uva(payload)
 
             self._worker = BackgroundWorker(job)
+
+            def on_uva_result(res: object) -> None:
+                if not isinstance(res, UvaSubmitResult) or not res.ok:
+                    return
+                text = res.message + (f" (Ref. {res.reference_id})" if res.reference_id else "")
+                QMessageBox.information(self, "UVA", f"Erfolg: {text}")
+
+            self._worker.signals.result.connect(on_uva_result)
             self._worker.signals.error.connect(
                 lambda exc: QMessageBox.information(
                     self,
                     "UVA",
-                    f"Erwarteter Fehler (Stub): {exc}",
+                    f"Fehler: {exc}",
                 )
             )
             self._worker.signals.finished.connect(
