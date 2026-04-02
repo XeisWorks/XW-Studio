@@ -17,6 +17,8 @@ sevdesk:
     requests_per_second: 2
     cooldown_seconds: 5
   cache_ttl_seconds: 180
+  http_max_retries: 3
+  http_retry_backoff_seconds: 0.75
 
 wix:
   base_url_v1: "https://www.wixapis.com/stores/v1"

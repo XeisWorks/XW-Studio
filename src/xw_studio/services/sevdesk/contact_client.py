@@ -3,10 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, ConfigDict
 
-from xw_studio.services.http_client import raise_for_sevdesk
+from xw_studio.services.http_client import SevdeskConnection
 
 
 class ContactSummary(BaseModel):
@@ -21,13 +20,12 @@ class ContactSummary(BaseModel):
 class ContactClient:
     """Fetch contact details by id (e.g. when Invoice embed is insufficient)."""
 
-    def __init__(self, client: httpx.Client) -> None:
-        self._client = client
+    def __init__(self, connection: SevdeskConnection) -> None:
+        self._conn = connection
 
     def get_contact(self, contact_id: str) -> ContactSummary:
         """GET ``/Contact/{id}`` — raises if not found or API error."""
-        response = self._client.get(f"/Contact/{contact_id}")
-        raise_for_sevdesk(response)
+        response = self._conn.get(f"/Contact/{contact_id}")
         data = response.json()
         obj: dict[str, Any]
         if isinstance(data, dict) and "objects" in data:

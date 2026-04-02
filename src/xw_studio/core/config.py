@@ -44,10 +44,14 @@ class RateLimitConfig:
 
 @dataclass(frozen=True)
 class SevdeskSection:
+    """sevDesk REST settings. HTTP retry applies to idempotent GET calls in clients."""
+
     base_url: str = "https://my.sevdesk.de/api/v1"
     api_token: str = ""
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     cache_ttl_seconds: int = 180
+    http_max_retries: int = 3
+    http_retry_backoff_seconds: float = 0.75
 
 
 @dataclass(frozen=True)

@@ -4,12 +4,24 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent, QShowEvent
-from PySide6.QtWidgets import QLabel, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -29,6 +41,8 @@ _TABLE_COLUMNS = [
     "ID",
 ]
 
+_PAGE_SIZE = 50
+
 
 class RechnungenView(QWidget):
     """Load and display sevDesk invoices (non-blocking)."""
@@ -39,6 +53,9 @@ class RechnungenView(QWidget):
         self._worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
+        self._next_offset = 0
+        self._summaries: list[InvoiceSummary] = []
+        self._append_mode = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -54,34 +71,94 @@ class RechnungenView(QWidget):
         refresh = toolbar.add_button(
             "refresh",
             "Aktualisieren",
-            tooltip="Rechnungen von sevDesk laden",
+            tooltip="Erste Seite neu laden (aktueller Statusfilter)",
         )
-        refresh.clicked.connect(self._load_invoices)
+        refresh.clicked.connect(self._reload_first_page)
         self._btn_print = toolbar.add_button(
             "print",
             "PDF drucken…",
-            tooltip="PDF-Datei mit dem konfigurierten Drucker drucken",
+            tooltip="PDF mit Rechnungs-DPI (und Seitenbereich aus dem Druckdialog)",
         )
         self._btn_print.clicked.connect(self._on_print_clicked)
         self._btn_print.setEnabled(False)
+        self._btn_print_music = toolbar.add_button(
+            "print_music",
+            "Noten drucken…",
+            tooltip="PDF mit 600 DPI fuer Noten (Seitenbereich aus dem Druckdialog)",
+        )
+        self._btn_print_music.clicked.connect(self._on_print_music_clicked)
+        self._btn_print_music.setEnabled(False)
         toolbar.add_stretch()
         layout.addWidget(toolbar)
+
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(8)
+        filter_row.addWidget(QLabel("Status:"))
+        self._status_combo = QComboBox()
+        self._status_combo.setMinimumWidth(220)
+        self._status_combo.blockSignals(True)
+        for label, code in [
+            ("Alle", None),
+            ("Offen", 200),
+            ("Bezahlt", 1000),
+            ("Entwurf", 100),
+            ("Teilweise bezahlt", 300),
+        ]:
+            self._status_combo.addItem(label, code)
+        self._status_combo.blockSignals(False)
+        self._status_combo.currentIndexChanged.connect(self._on_status_filter_changed)
+        filter_row.addWidget(self._status_combo)
+        filter_row.addStretch()
+        self._btn_more = QPushButton("Weitere laden")
+        self._btn_more.setToolTip(f"Naechste bis zu {_PAGE_SIZE} Rechnungen anhaengen")
+        self._btn_more.clicked.connect(self._load_more)
+        filter_row.addWidget(self._btn_more)
+        layout.addLayout(filter_row)
 
         self._search = SearchBar("Suchen…")
         layout.addWidget(self._search)
 
+        splitter = QSplitter(Qt.Orientation.Horizontal)
         self._table = DataTable(_TABLE_COLUMNS)
-        layout.addWidget(self._table, stretch=1)
+        splitter.addWidget(self._table)
+
+        self._detail = QPlainTextEdit()
+        self._detail.setReadOnly(True)
+        self._detail.setPlaceholderText("Zeile waehlen fuer Details …")
+        self._detail.setMinimumWidth(260)
+        splitter.addWidget(self._detail)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, stretch=1)
 
         self._overlay = ProgressOverlay(self)
         self._overlay.hide()
 
         self._search.search_changed.connect(self._on_search)
+        sel = self._table.selectionModel()
+        if sel is not None:
+            sel.selectionChanged.connect(self._on_table_selection_changed)
 
         self._update_token_hint()
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.printer_status_changed.connect(self._on_printer_status)
+
+    def _current_status(self) -> int | None:
+        data = self._status_combo.currentData()
+        if data is None:
+            return None
+        if isinstance(data, int):
+            return data
+        try:
+            return int(data)
+        except (TypeError, ValueError):
+            return None
+
+    def _on_status_filter_changed(self, _index: int) -> None:
+        if not (self._container.config.sevdesk.api_token or "").strip():
+            return
+        self._reload_first_page()
 
     def _update_token_hint(self) -> None:
         token = (self._container.config.sevdesk.api_token or "").strip()
@@ -100,7 +177,7 @@ class RechnungenView(QWidget):
         if not self._did_initial_load:
             self._did_initial_load = True
             if (self._container.config.sevdesk.api_token or "").strip():
-                self._load_invoices()
+                self._reload_first_page()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -113,33 +190,78 @@ class RechnungenView(QWidget):
     def _on_printer_status(self, printing_allowed: bool) -> None:
         self._print_allowed = printing_allowed
         self._btn_print.setEnabled(printing_allowed)
+        self._btn_print_music.setEnabled(printing_allowed)
 
-    def _load_invoices(self) -> None:
+    def _reload_first_page(self) -> None:
+        self._next_offset = 0
+        self._append_mode = False
+        self._start_load()
+
+    def _load_more(self) -> None:
+        if not (self._container.config.sevdesk.api_token or "").strip():
+            return
+        self._append_mode = True
+        self._start_load()
+
+    def _start_load(self) -> None:
         if not (self._container.config.sevdesk.api_token or "").strip():
             return
 
         service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-        self._overlay.show_with_message("Rechnungen werden geladen…")
+        status = self._current_status()
+        offset = self._next_offset if self._append_mode else 0
+        append = self._append_mode
+
+        self._overlay.show_with_message(
+            "Rechnungen werden geladen…" if not append else "Weitere Rechnungen werden geladen…",
+        )
         self._overlay.setGeometry(self.rect())
         self._overlay.raise_()
 
-        def job() -> list[dict[str, str]]:
-            return service.load_invoice_table_rows()
+        def job() -> tuple[list[dict[str, str]], list[InvoiceSummary], bool]:
+            rows, sums = service.load_invoice_batch(
+                status=status,
+                limit=_PAGE_SIZE,
+                offset=offset,
+            )
+            has_more = len(sums) >= _PAGE_SIZE
+            return rows, sums, has_more
 
         self._worker = BackgroundWorker(job)
-        self._worker.signals.result.connect(self._on_loaded)
+        self._worker.signals.result.connect(self._on_load_result)
         self._worker.signals.error.connect(self._on_load_error)
         self._worker.signals.finished.connect(self._on_load_finished)
         self._worker.start()
 
-    def _on_loaded(self, rows: object) -> None:
-        if not isinstance(rows, list):
-            logger.warning("Unexpected invoice load result type: %s", type(rows))
+    def _on_load_result(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 3:
+            logger.warning("Unexpected invoice load payload: %s", type(payload))
             return
-        typed: list[dict[str, Any]] = [r for r in rows if isinstance(r, dict)]
-        self._table.set_data(typed)
+        rows_obj, sums_obj, has_more_obj = payload
+        if not isinstance(rows_obj, list) or not isinstance(sums_obj, list):
+            return
+        rows: list[dict[str, Any]] = [r for r in rows_obj if isinstance(r, dict)]
+        summaries: list[InvoiceSummary] = [s for s in sums_obj if isinstance(s, InvoiceSummary)]
+        has_more = bool(has_more_obj)
+
+        if self._append_mode:
+            self._table.append_rows(rows)
+            self._summaries.extend(summaries)
+        else:
+            self._table.set_data(rows)
+            self._summaries = summaries
+
+        self._next_offset = len(self._summaries)
+        self._btn_more.setEnabled(has_more)
+
         signals: AppSignals = self._container.resolve(AppSignals)
-        signals.status_message.emit(f"{len(typed)} Rechnungen geladen", 4000)
+        mode = "angehaengt" if self._append_mode else "geladen"
+        signals.status_message.emit(
+            f"{len(rows)} Rechnungen {mode} ({self._next_offset} gesamt in Liste)",
+            5000,
+        )
+        self._append_mode = False
+        self._refresh_detail_for_selection()
 
     def _on_load_error(self, exc: Exception) -> None:
         logger.error("Invoice load failed: %s", exc)
@@ -148,6 +270,7 @@ class RechnungenView(QWidget):
             "Fehler",
             f"Rechnungen konnten nicht geladen werden:\n\n{exc}",
         )
+        self._append_mode = False
 
     def _on_load_finished(self) -> None:
         self._overlay.hide()
@@ -158,3 +281,24 @@ class RechnungenView(QWidget):
         from xw_studio.ui.modules.rechnungen.print_dialog import run_invoice_pdf_print
 
         run_invoice_pdf_print(self, self._container)
+
+    def _on_print_music_clicked(self) -> None:
+        if not self._print_allowed:
+            return
+        from xw_studio.ui.modules.rechnungen.print_dialog import run_music_pdf_print
+
+        run_music_pdf_print(self, self._container)
+
+    def _on_table_selection_changed(
+        self,
+        _selected: Any,
+        _deselected: Any,
+    ) -> None:
+        self._refresh_detail_for_selection()
+
+    def _refresh_detail_for_selection(self) -> None:
+        row = self._table.selected_source_row()
+        if row is None or row < 0 or row >= len(self._summaries):
+            self._detail.setPlainText("")
+            return
+        self._detail.setPlainText(self._summaries[row].detail_lines())

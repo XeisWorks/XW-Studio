@@ -1,6 +1,8 @@
 """Tests for sevDesk invoice DTO parsing."""
 import httpx
 
+from xw_studio.core.config import AppConfig
+from xw_studio.services.http_client import SevdeskConnection
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient, InvoiceSummary
 
 
@@ -22,11 +24,12 @@ def test_invoice_summary_from_api_object() -> None:
     assert row["Rechnungsnr."] == "R-99"
     assert row["Status"] == "Offen"
     assert row["Brutto EUR"] == "19.99"
+    assert "Test GmbH" in summary.detail_lines()
 
 
 def test_invoice_client_list_parses_objects() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/Invoice")
+        assert "/Invoice" in str(request.url)
         body = {
             "objects": [
                 {
@@ -43,7 +46,9 @@ def test_invoice_client_list_parses_objects() -> None:
 
     transport = httpx.MockTransport(handler)
     client = httpx.Client(transport=transport, base_url="https://example.test/api/v1")
-    inv = InvoiceClient(client)
+    cfg = AppConfig()
+    conn = SevdeskConnection(client=client, config=cfg)
+    inv = InvoiceClient(conn)
     rows = inv.list_invoice_summaries(embed_contact=False)
     assert len(rows) == 1
     assert rows[0].invoice_number == "A"

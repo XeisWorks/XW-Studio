@@ -4,10 +4,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from xw_studio.services.http_client import raise_for_sevdesk
+from xw_studio.services.http_client import SevdeskConnection
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +76,24 @@ class InvoiceSummary(BaseModel):
             "ID": self.id,
         }
 
+    def detail_lines(self) -> str:
+        """Multi-line description for the detail panel."""
+        lines = [
+            f"ID: {self.id}",
+            f"Nummer: {self.invoice_number or '—'}",
+            f"Datum: {self.invoice_date or '—'}",
+            f"Status: {self.status_label()} ({self.status_code if self.status_code is not None else '—'})",
+            f"Brutto: {self.sum_gross if self.sum_gross is not None else '—'}",
+            f"Kunde: {self.contact_name or '—'}",
+        ]
+        return "\n".join(lines)
+
 
 class InvoiceClient:
     """List and fetch invoices from sevDesk."""
 
-    def __init__(self, client: httpx.Client) -> None:
-        self._client = client
+    def __init__(self, connection: SevdeskConnection) -> None:
+        self._conn = connection
 
     def list_invoice_summaries(
         self,
@@ -90,20 +101,37 @@ class InvoiceClient:
         limit: int = 100,
         offset: int = 0,
         embed_contact: bool = True,
+        status: int | None = None,
     ) -> list[InvoiceSummary]:
-        """Return invoice rows (newest first by API default)."""
+        """Return invoice rows (newest first by API default).
+
+        If *status* is set, it is passed to the API as ``status`` (sevDesk may support
+        filtering). If the API ignores it, filter client-side.
+        """
         params: dict[str, str | int] = {"limit": limit, "offset": offset}
         if embed_contact:
             params["embed"] = "contact"
-        response = self._client.get("/Invoice", params=params)
-        raise_for_sevdesk(response)
+        if status is not None:
+            params["status"] = status
+
+        response = self._conn.get("/Invoice", params=params)
         payload = response.json()
         objects = payload.get("objects")
         if not isinstance(objects, list):
             logger.warning("Unexpected Invoice list payload: %s", type(objects))
             return []
+
         result: list[InvoiceSummary] = []
         for obj in objects:
             if isinstance(obj, dict):
-                result.append(InvoiceSummary.from_api_object(obj))
+                summary = InvoiceSummary.from_api_object(obj)
+                if status is not None and summary.status_code != status:
+                    continue
+                result.append(summary)
+
+        if status is not None and not result and objects:
+            logger.debug(
+                "Status filter %s yielded no rows after parse; API may ignore query param.",
+                status,
+            )
         return result

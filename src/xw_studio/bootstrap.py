@@ -13,11 +13,11 @@ def register_default_services(container: Container) -> None:
     container.register(SevdeskConnection, lambda c: build_sevdesk_connection(c.config))
     container.register(
         InvoiceClient,
-        lambda c: InvoiceClient(c.resolve(SevdeskConnection).client),
+        lambda c: InvoiceClient(c.resolve(SevdeskConnection)),
     )
     container.register(
         ContactClient,
-        lambda c: ContactClient(c.resolve(SevdeskConnection).client),
+        lambda c: ContactClient(c.resolve(SevdeskConnection)),
     )
     container.register(
         InvoiceProcessingService,

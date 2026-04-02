@@ -36,9 +36,10 @@ Vor jeder Session:
 | 1.2 | sevDesk Invoice-Client               | [services/sevdesk/invoice_client.py](../src/xw_studio/services/sevdesk/invoice_client.py) | Liste + Pydantic, Fehler-Mapping |
 | 1.3 | sevDesk Contact-Client               | [services/sevdesk/contact_client.py](../src/xw_studio/services/sevdesk/contact_client.py) | Minimal |
 | 1.4 | InvoiceProcessing Facade             | [services/invoice_processing/service.py](../src/xw_studio/services/invoice_processing/service.py) | Keine UI-Logik |
-| 1.5 | Rechnungen View                      | [ui/modules/rechnungen/view.py](../src/xw_studio/ui/modules/rechnungen/view.py) | Worker, Tabelle, DE-Labels |
-| 1.6 | pdf_renderer                         | [services/printing/pdf_renderer.py](../src/xw_studio/services/printing/pdf_renderer.py) | 600 DPI Musik, 300 Rechnung |
+| 1.5 | Rechnungen View                      | [ui/modules/rechnungen/view.py](../src/xw_studio/ui/modules/rechnungen/view.py) | Worker, Tabelle, DE-Labels, Statusfilter, „Weitere laden“, Detailpanel |
+| 1.6 | pdf_renderer                         | [services/printing/pdf_renderer.py](../src/xw_studio/services/printing/pdf_renderer.py) | 600 DPI Musik, 300 Rechnung, Druckdialog-Seitenbereich |
 | 1.7 | Drucker-Ampel + Druck sperren        | [main_window.py](../src/xw_studio/ui/main_window.py), `printing.configured_printer_names` | Rot = Druck deaktiviert |
+| 1.8 | sevDesk HTTP-Retries + Fehlertexte    | [services/http_client.py](../src/xw_studio/services/http_client.py), `sevdesk.http_max_retries` in config | 429/5xx mit Backoff, deutschsprachige Hinweise |
 
 **Abhängigkeit:** 1.1 → 1.2/1.3 → 1.4 → 1.5; 1.6 parallel; 1.7 nach 1.5 oder parallel.
 

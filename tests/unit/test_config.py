@@ -10,6 +10,8 @@ def test_default_config_values() -> None:
     assert config.printing.invoice_dpi == 300
     assert config.printing.buffer_quantity == 3
     assert config.printing.configured_printer_names == []
+    assert config.sevdesk.http_max_retries == 3
+    assert config.sevdesk.http_retry_backoff_seconds == 0.75
     assert config.crm.fuzzy_match_threshold == 75
 
 

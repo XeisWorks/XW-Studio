@@ -20,6 +20,16 @@ class SimpleTableModel(QAbstractTableModel):
         self._rows = list(rows)
         self.endResetModel()
 
+    def append_rows(self, rows: Sequence[dict[str, Any]]) -> None:
+        """Append rows without clearing existing data."""
+        row_list = list(rows)
+        if not row_list:
+            return
+        n = len(self._rows)
+        self.beginInsertRows(QModelIndex(), n, n + len(row_list) - 1)
+        self._rows.extend(row_list)
+        self.endInsertRows()
+
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return len(self._rows)
 
@@ -68,6 +78,10 @@ class DataTable(QTableView):
     def set_data(self, rows: Sequence[dict[str, Any]]) -> None:
         self._model.set_data(rows)
 
+    def append_rows(self, rows: Sequence[dict[str, Any]]) -> None:
+        """Append rows to the underlying model."""
+        self._model.append_rows(rows)
+
     def set_filter(self, text: str, column: int = 0) -> None:
         self._proxy.setFilterKeyColumn(column)
         self._proxy.setFilterFixedString(text)
@@ -78,3 +92,10 @@ class DataTable(QTableView):
             return None
         source_idx = self._proxy.mapToSource(indexes[0])
         return self._model.row_data(source_idx.row())
+
+    def selected_source_row(self) -> int | None:
+        """0-based row index in the source model (proxy sort/filter aware)."""
+        indexes = self.selectionModel().selectedRows()
+        if not indexes:
+            return None
+        return int(self._proxy.mapToSource(indexes[0]).row())
