@@ -5,13 +5,19 @@ import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -19,8 +25,8 @@ from PySide6.QtWidgets import (
 
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
-from xw_studio.services.clearing.service import PaymentClearingService
-from xw_studio.services.expenses.service import ExpenseAuditService
+from xw_studio.services.clearing.service import ClearingRow, PaymentClearingService
+from xw_studio.services.expenses.service import ExpenseAuditService, ExpenseRow
 from xw_studio.services.finanzonline import UvaService, UvaSubmitResult
 
 if TYPE_CHECKING:
@@ -36,6 +42,10 @@ class TaxesView(QWidget):
         super().__init__(parent)
         self._container = container
         self._worker: BackgroundWorker | None = None
+        self._clearing_worker: BackgroundWorker | None = None
+        self._expenses_worker: BackgroundWorker | None = None
+        self._clearing_rows: list[ClearingRow] = []
+        self._expenses_rows: list[ExpenseRow] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -118,27 +128,197 @@ class TaxesView(QWidget):
         box = QGroupBox("Zahlungsclearing")
         bl = QVBoxLayout(box)
         bl.addWidget(QLabel(svc.describe()))
-        status = QLabel("Offene Zuordnungen (Mock): 0")
-        bl.addWidget(status)
-        refresh = QPushButton("Platzhalter aktualisieren")
 
-        def on_refresh() -> None:
-            pending = svc.list_pending_mock()
-            status.setText(f"Offene Zuordnungen (Mock): {len(pending)}")
+        filters = QHBoxLayout()
+        self._clearing_search = QLineEdit()
+        self._clearing_search.setPlaceholderText("Suchen (Ref, Kunde, Betrag, Hinweis)")
+        self._clearing_search.textChanged.connect(self._apply_clearing_filter)
+        filters.addWidget(self._clearing_search)
+        self._clearing_status_filter = QComboBox()
+        self._clearing_status_filter.addItems(["", "offen", "authorized", "zugeordnet", "done"])
+        self._clearing_status_filter.currentTextChanged.connect(self._apply_clearing_filter)
+        filters.addWidget(self._clearing_status_filter)
+        refresh = QPushButton("Neu laden")
+        refresh.clicked.connect(self._load_clearing_rows)
+        filters.addWidget(refresh)
+        export = QPushButton("CSV exportieren")
+        export.clicked.connect(self._export_clearing_csv)
+        filters.addWidget(export)
+        bl.addLayout(filters)
 
-        refresh.clicked.connect(on_refresh)
-        bl.addWidget(refresh)
+        self._clearing_table = QTableWidget(0, 5)
+        self._clearing_table.setHorizontalHeaderLabels(["Ref", "Kunde", "Betrag", "Status", "Hinweis"])
+        self._clearing_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._clearing_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._clearing_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._clearing_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        bl.addWidget(self._clearing_table)
+
+        self._clearing_status = QLabel("Noch nicht geladen.")
+        bl.addWidget(self._clearing_status)
         layout.addWidget(box)
         layout.addStretch()
+        self._load_clearing_rows()
         return page
 
     def _build_expenses_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
         svc: ExpenseAuditService = self._container.resolve(ExpenseAuditService)
-        layout.addWidget(QLabel(svc.describe()))
-        btn = QPushButton("Offene Belege (Mock)")
-        btn.clicked.connect(lambda: QMessageBox.information(self, "Ausgaben", str(svc.list_open_mock())))
-        layout.addWidget(btn)
+        box = QGroupBox("Ausgaben")
+        bl = QVBoxLayout(box)
+        bl.addWidget(QLabel(svc.describe()))
+
+        filters = QHBoxLayout()
+        self._expenses_search = QLineEdit()
+        self._expenses_search.setPlaceholderText("Suchen (Ref, Lieferant, Kategorie, Hinweis)")
+        self._expenses_search.textChanged.connect(self._apply_expenses_filter)
+        filters.addWidget(self._expenses_search)
+        self._expenses_status_filter = QComboBox()
+        self._expenses_status_filter.addItems(["", "offen", "in_pruefung", "gebucht", "done"])
+        self._expenses_status_filter.currentTextChanged.connect(self._apply_expenses_filter)
+        filters.addWidget(self._expenses_status_filter)
+        refresh = QPushButton("Neu laden")
+        refresh.clicked.connect(self._load_expense_rows)
+        filters.addWidget(refresh)
+        export = QPushButton("CSV exportieren")
+        export.clicked.connect(self._export_expenses_csv)
+        filters.addWidget(export)
+        bl.addLayout(filters)
+
+        self._expenses_table = QTableWidget(0, 6)
+        self._expenses_table.setHorizontalHeaderLabels(
+            ["Ref", "Lieferant", "Brutto", "Kategorie", "Status", "Hinweis"]
+        )
+        self._expenses_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._expenses_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self._expenses_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._expenses_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        bl.addWidget(self._expenses_table)
+
+        self._expenses_status = QLabel("Noch nicht geladen.")
+        bl.addWidget(self._expenses_status)
+
+        layout.addWidget(box)
         layout.addStretch()
+        self._load_expense_rows()
         return page
+
+    def _load_clearing_rows(self) -> None:
+        if self._clearing_worker is not None and self._clearing_worker.isRunning():
+            return
+        svc: PaymentClearingService = self._container.resolve(PaymentClearingService)
+        self._clearing_status.setText("Lade Clearing-Daten...")
+
+        def job() -> list[ClearingRow]:
+            return svc.list_pending()
+
+        self._clearing_worker = BackgroundWorker(job)
+        self._clearing_worker.signals.result.connect(self._on_clearing_loaded)
+        self._clearing_worker.signals.error.connect(
+            lambda exc: QMessageBox.warning(self, "Clearing", str(exc))
+        )
+        self._clearing_worker.start()
+
+    def _on_clearing_loaded(self, rows: object) -> None:
+        if not isinstance(rows, list):
+            return
+        self._clearing_rows = [row for row in rows if isinstance(row, ClearingRow)]
+        self._apply_clearing_filter()
+
+    def _apply_clearing_filter(self) -> None:
+        svc: PaymentClearingService = self._container.resolve(PaymentClearingService)
+        filtered = svc.filter_rows(
+            self._clearing_rows,
+            needle=self._clearing_search.text(),
+            status=self._clearing_status_filter.currentText(),
+        )
+        self._populate_clearing_table(filtered)
+        self._clearing_status.setText(f"{len(filtered)} von {len(self._clearing_rows)} Eintraegen")
+
+    def _populate_clearing_table(self, rows: list[ClearingRow]) -> None:
+        tbl = self._clearing_table
+        tbl.setRowCount(0)
+        for row in rows:
+            r = tbl.rowCount()
+            tbl.insertRow(r)
+            tbl.setItem(r, 0, QTableWidgetItem(row.ref))
+            tbl.setItem(r, 1, QTableWidgetItem(row.customer))
+            tbl.setItem(r, 2, QTableWidgetItem(row.amount))
+            tbl.setItem(r, 3, QTableWidgetItem(row.status))
+            tbl.setItem(r, 4, QTableWidgetItem(row.note))
+
+    def _export_clearing_csv(self) -> None:
+        svc: PaymentClearingService = self._container.resolve(PaymentClearingService)
+        rows = svc.filter_rows(
+            self._clearing_rows,
+            needle=self._clearing_search.text(),
+            status=self._clearing_status_filter.currentText(),
+        )
+        payload = svc.export_csv(rows)
+        path, _ = QFileDialog.getSaveFileName(self, "Clearing CSV speichern", "clearing.csv", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(payload)
+        QMessageBox.information(self, "Clearing", f"CSV exportiert:\n{path}")
+
+    def _load_expense_rows(self) -> None:
+        if self._expenses_worker is not None and self._expenses_worker.isRunning():
+            return
+        svc: ExpenseAuditService = self._container.resolve(ExpenseAuditService)
+        self._expenses_status.setText("Lade Ausgaben...")
+
+        def job() -> list[ExpenseRow]:
+            return svc.list_open()
+
+        self._expenses_worker = BackgroundWorker(job)
+        self._expenses_worker.signals.result.connect(self._on_expenses_loaded)
+        self._expenses_worker.signals.error.connect(
+            lambda exc: QMessageBox.warning(self, "Ausgaben", str(exc))
+        )
+        self._expenses_worker.start()
+
+    def _on_expenses_loaded(self, rows: object) -> None:
+        if not isinstance(rows, list):
+            return
+        self._expenses_rows = [row for row in rows if isinstance(row, ExpenseRow)]
+        self._apply_expenses_filter()
+
+    def _apply_expenses_filter(self) -> None:
+        svc: ExpenseAuditService = self._container.resolve(ExpenseAuditService)
+        filtered = svc.filter_rows(
+            self._expenses_rows,
+            needle=self._expenses_search.text(),
+            status=self._expenses_status_filter.currentText(),
+        )
+        self._populate_expenses_table(filtered)
+        self._expenses_status.setText(f"{len(filtered)} von {len(self._expenses_rows)} Eintraegen")
+
+    def _populate_expenses_table(self, rows: list[ExpenseRow]) -> None:
+        tbl = self._expenses_table
+        tbl.setRowCount(0)
+        for row in rows:
+            r = tbl.rowCount()
+            tbl.insertRow(r)
+            tbl.setItem(r, 0, QTableWidgetItem(row.ref))
+            tbl.setItem(r, 1, QTableWidgetItem(row.supplier))
+            tbl.setItem(r, 2, QTableWidgetItem(row.gross_amount))
+            tbl.setItem(r, 3, QTableWidgetItem(row.category))
+            tbl.setItem(r, 4, QTableWidgetItem(row.status))
+            tbl.setItem(r, 5, QTableWidgetItem(row.note))
+
+    def _export_expenses_csv(self) -> None:
+        svc: ExpenseAuditService = self._container.resolve(ExpenseAuditService)
+        rows = svc.filter_rows(
+            self._expenses_rows,
+            needle=self._expenses_search.text(),
+            status=self._expenses_status_filter.currentText(),
+        )
+        payload = svc.export_csv(rows)
+        path, _ = QFileDialog.getSaveFileName(self, "Ausgaben CSV speichern", "expenses.csv", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(payload)
+        QMessageBox.information(self, "Ausgaben", f"CSV exportiert:\n{path}")

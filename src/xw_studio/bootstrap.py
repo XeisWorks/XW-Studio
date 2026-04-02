@@ -75,8 +75,18 @@ def register_default_services(container: Container) -> None:
         UvaService,
         lambda c: UvaService(c.config, c.resolve(FinanzOnlineClient)),
     )
-    container.register(PaymentClearingService, lambda c: PaymentClearingService())
-    container.register(ExpenseAuditService, lambda c: ExpenseAuditService())
+    container.register(
+        PaymentClearingService,
+        lambda c: PaymentClearingService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
+    container.register(
+        ExpenseAuditService,
+        lambda c: ExpenseAuditService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
     container.register(
         StatisticsService,
         lambda c: StatisticsService(c.resolve(InvoiceClient)),

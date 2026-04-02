@@ -76,7 +76,7 @@ Tests:
 ## 3) Phase B - Produkte als Arbeitszentrale (P1)
 
 ### B1. Wix/sevDesk Sync produktiv machen
-Status: TODO
+Status: DONE (2026-04-02)
 
 Aufgaben:
 - Mapping-Tabelle fuer lokale SKU <-> Wix <-> sevDesk
@@ -95,7 +95,7 @@ Tests:
 - Integration: Mock API Flows fuer Wix/sevDesk
 
 ### B2. Druckplaene in Produkte integrieren
-Status: TODO
+Status: DONE (2026-04-02)
 
 Aufgaben:
 - Druckplan-Editor im Produkte-Modul bereitstellen
@@ -110,7 +110,7 @@ DoD:
 ## 4) Phase C - Finance/Tax produktiv (P1/P2)
 
 ### C1. UVA SOAP live backend (Zeep)
-Status: TODO
+Status: DONE (2026-04-02)
 
 Aufgaben:
 - Zeep-Backend in FinanzOnline-Service integrieren
@@ -126,7 +126,7 @@ Tests:
 - Contract-Tests fuer relevante Filing-Varianten
 
 ### C2. Clearing/Ausgaben weiter vertiefen
-Status: TODO
+Status: DONE (2026-04-02)
 
 Aufgaben:
 - Endpunkte/Importpfade vervollstaendigen
@@ -151,7 +151,7 @@ DoD:
 - Bei vorhandenem Submodule wird das Widget eingebettet.
 
 ### D2. Marketing von Idee zu Workflow
-Status: TODO
+Status: DONE (2026-04-02, strukturierte Eintraege + Workflow-Felder)
 
 Aufgaben:
 - Strukturierte Content-Objekte (Plan, Kanal, Status, Termin)
@@ -162,7 +162,7 @@ DoD:
 - Marketing-Modul liefert echte Arbeitsablaeufe statt nur Notizen.
 
 ### D3. Notensatz ausbauen
-Status: TODO
+Status: DONE (2026-04-02, strukturierte Projekt-Workflows)
 
 Aufgaben:
 - Funktionsroadmap in technische Inkremente aufteilen:
@@ -222,8 +222,8 @@ DoD:
 6. Sprint 6: D2/D3 + E2 (Marketing/Notensatz + Performance SLOs)
 
 Aktueller Fortschritt:
-- Abgeschlossen: A1, A2, D1, E1, E2, E3.
-- Naechste Hauptpakete: B1/B2 (Produkte-Sync + Druckplanung), C1/C2 (UVA live + Steuermodul), D2/D3 (Marketing/Notensatz produktiv).
+- Abgeschlossen: A1, A2, B1, B2, C1, C2, D1, D2, D3, E1, E2, E3.
+- Naechste Hauptpakete: produktiver Live-Writeback fuer CRM-Merge (sevDesk), vertiefte Steuer-Endpunkte und optionale Connectoren fuer Marketing.
 
 ---
 
