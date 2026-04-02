@@ -26,6 +26,7 @@ from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.statistics.service import StatisticsService
 from xw_studio.services.wix.client import WixProductsClient
+from xw_studio.services.clickup.client import ClickUpClient
 from xw_studio.repositories import ApiSecretRepository, PcRegistryRepository, SettingKvRepository
 
 
@@ -80,6 +81,10 @@ def register_default_services(container: Container) -> None:
         lambda c: WixProductsClient(secret_service=c.resolve(SecretService)),
     )
     container.register(
+        ClickUpClient,
+        lambda c: ClickUpClient(secret_service=c.resolve(SecretService)),
+    )
+    container.register(
         CrmService,
         lambda c: CrmService(
             c.config,
@@ -87,7 +92,12 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
-    container.register(CalculationService, lambda c: CalculationService())
+    container.register(
+        CalculationService,
+        lambda c: CalculationService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
     container.register(
         DailyBusinessService,
         lambda c: DailyBusinessService(
