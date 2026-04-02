@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from xw_studio.core.config import AppConfig
@@ -12,6 +13,15 @@ if TYPE_CHECKING:
     from xw_studio.services.sevdesk.contact_client import ContactClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """Result of a CRM duplicate merge decision."""
+
+    master_id: str
+    duplicate_id: str
+    merged: ContactRecord
 
 
 class CrmService:
@@ -43,3 +53,28 @@ class CrmService:
         dups = find_duplicate_candidates(rows, threshold=self.duplicate_threshold())
         logger.info("CRM duplicate scan: %s candidates from %s contacts", len(dups), len(rows))
         return dups
+
+    def merge_contacts(
+        self,
+        master: ContactRecord,
+        duplicate: ContactRecord,
+    ) -> MergeResult:
+        """Merge duplicate into master using deterministic field fallback rules.
+
+        This is an in-memory merge operation used by the CRM wizard.
+        Live sevDesk writeback can be added in a following step.
+        """
+
+        merged = ContactRecord(
+            id=master.id,
+            name=(master.name or "").strip() or (duplicate.name or "").strip(),
+            email=(master.email or "").strip() or (duplicate.email or "").strip() or None,
+            phone=(master.phone or "").strip() or (duplicate.phone or "").strip() or None,
+            city=(master.city or "").strip() or (duplicate.city or "").strip() or None,
+        )
+        logger.info("CRM merge prepared: master=%s duplicate=%s", master.id, duplicate.id)
+        return MergeResult(
+            master_id=master.id,
+            duplicate_id=duplicate.id,
+            merged=merged,
+        )

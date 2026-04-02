@@ -64,6 +64,14 @@ Initial schema covers registry, key-value settings, and encrypted API secrets. A
 - Network and heavy CPU work run off the UI thread via workers (see `xw_studio.core.worker`).
 - CRM duplicate detection is pairwise O(n²); intended for modest contact lists until a batched strategy is added.
 
+## Performance SLOs
+
+- UI response after click: first visible feedback in under 200 ms.
+- Module switch: target under 500 ms to first painted content on reference hardware.
+- Network actions: always in workers, never blocking the UI thread.
+- sevDesk API calls: timeout defaults to 30 s with retry policy for 429/5xx.
+- START preflight: target under 2 s for common queue sizes (< 100 invoice rows).
+
 ## Development
 
 ```bash

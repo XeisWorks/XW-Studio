@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -20,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from xw_studio.core.worker import BackgroundWorker
-from xw_studio.services.crm import ContactRecord, CrmService
+from xw_studio.services.crm import ContactRecord, CrmService, MergeResult
 from xw_studio.services.crm.types import DuplicateCandidate
 
 if TYPE_CHECKING:
@@ -38,6 +41,60 @@ _DEMO_CONTACTS: list[ContactRecord] = [
 ]
 
 
+class _MergeWizardDialog(QDialog):
+    """Simple master/duplicate chooser for CRM merge."""
+
+    def __init__(self, candidate: DuplicateCandidate, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._candidate = candidate
+        self.setWindowTitle("Duplikat zusammenfuehren")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel("Waehle den Hauptkontakt (Master), der erhalten bleiben soll.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        group = QGroupBox("Master-Auswahl")
+        g_lay = QVBoxLayout(group)
+        self._a_btn = QPushButton(self._label_for(candidate.a))
+        self._a_btn.setCheckable(True)
+        self._a_btn.setChecked(True)
+        self._b_btn = QPushButton(self._label_for(candidate.b))
+        self._b_btn.setCheckable(True)
+        self._a_btn.toggled.connect(lambda checked: self._b_btn.setChecked(not checked) if checked else None)
+        self._b_btn.toggled.connect(lambda checked: self._a_btn.setChecked(not checked) if checked else None)
+        g_lay.addWidget(self._a_btn)
+        g_lay.addWidget(self._b_btn)
+        layout.addWidget(group)
+
+        note = QLabel(
+            "Feldregel: Name/E-Mail/Telefon/Stadt bleiben beim Master, "
+            "fehlende Felder werden vom Duplikat ergaenzt."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _label_for(row: ContactRecord) -> str:
+        return f"{row.name}  ({row.email or 'keine E-Mail'})"
+
+    @property
+    def master(self) -> ContactRecord:
+        return self._candidate.a if self._a_btn.isChecked() else self._candidate.b
+
+    @property
+    def duplicate(self) -> ContactRecord:
+        return self._candidate.b if self._a_btn.isChecked() else self._candidate.a
+
+
 class CrmView(QWidget):
     """Customer maintenance with live sevDesk contact sync and duplicate detection."""
 
@@ -45,6 +102,7 @@ class CrmView(QWidget):
         super().__init__(parent)
         self._container = container
         self._contacts: list[ContactRecord] = []
+        self._dup_candidates: list[DuplicateCandidate] = []
         self._worker: BackgroundWorker | None = None
 
         root = QVBoxLayout(self)
@@ -76,6 +134,10 @@ class CrmView(QWidget):
         self._scan_btn = QPushButton("Duplikat-Scan")
         self._scan_btn.clicked.connect(self._run_scan)
         search_row.addWidget(self._scan_btn)
+        self._merge_btn = QPushButton("Merge-Wizard")
+        self._merge_btn.clicked.connect(self._open_merge_wizard)
+        self._merge_btn.setEnabled(False)
+        search_row.addWidget(self._merge_btn)
         root.addLayout(search_row)
 
         # --- contacts table ---
@@ -205,6 +267,8 @@ class CrmView(QWidget):
         self._scan_btn.setEnabled(True)
         if not isinstance(dups, list):
             return
+        self._dup_candidates = [d for d in dups if isinstance(d, DuplicateCandidate)]
+        self._merge_btn.setEnabled(bool(self._dup_candidates))
         tbl = self._dup_table
         tbl.setRowCount(0)
         for dup in dups:
@@ -224,4 +288,38 @@ class CrmView(QWidget):
             QMessageBox.information(
                 self, "CRM", "Keine Duplikate über dem Schwellwert gefunden."
             )
+
+    def _open_merge_wizard(self) -> None:
+        idx = self._dup_table.currentRow()
+        if idx < 0 or idx >= len(self._dup_candidates):
+            QMessageBox.information(self, "CRM", "Bitte zuerst ein Duplikat in der Tabelle waehlen.")
+            return
+        candidate = self._dup_candidates[idx]
+        dlg = _MergeWizardDialog(candidate, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        crm: CrmService = self._container.resolve(CrmService)
+        result: MergeResult = crm.merge_contacts(dlg.master, dlg.duplicate)
+
+        updated: list[ContactRecord] = []
+        for row in self._contacts:
+            if row.id in (result.master_id, result.duplicate_id):
+                continue
+            updated.append(row)
+        updated.append(result.merged)
+        self._contacts = updated
+        self._populate_contacts_table(self._contacts)
+        self._run_scan()
+
+        QMessageBox.information(
+            self,
+            "CRM Merge",
+            (
+                f"Duplikat zusammengefuehrt.\n"
+                f"Master: {result.master_id}\n"
+                f"Entfernt: {result.duplicate_id}\n"
+                "Hinweis: Live-Writeback zu sevDesk folgt in einer weiteren Phase."
+            ),
+        )
 

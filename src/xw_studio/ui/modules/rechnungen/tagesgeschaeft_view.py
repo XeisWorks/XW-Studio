@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QDialog,
@@ -24,7 +23,12 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
-from xw_studio.services.inventory.service import InventoryService, StartPreflight
+from xw_studio.services.inventory.service import (
+    InventoryService,
+    StartExecutionReport,
+    StartMode,
+    StartPreflight,
+)
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
 from xw_studio.ui.widgets.data_table import DataTable
@@ -218,6 +222,7 @@ class TagesgeschaeftView(QWidget):
         self._container = container
         self._badge_worker: BackgroundWorker | None = None
         self._start_worker: BackgroundWorker | None = None
+        self._start_exec_worker: BackgroundWorker | None = None
         self._build_ui()
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -332,22 +337,53 @@ class TagesgeschaeftView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        mode = "full" if dlg.full_mode else "invoices"
-        if mode == "full" and result.missing_position_data:
+        mode = StartMode.INVOICES_AND_PRINT if dlg.full_mode else StartMode.INVOICES_ONLY
+        if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
             QMessageBox.information(
                 self,
                 "Hinweis",
                 "Für den Druckplan fehlen noch Positionsdaten. "
                 "Der START läuft daher im Modus 'Nur Rechnungen'.",
             )
-            mode = "invoices"
+            mode = StartMode.INVOICES_ONLY
 
-        logger.info("Tagesgeschäft START: mode=%s", mode)
+        logger.info("Tagesgeschäft START: mode=%s", mode.value)
+
+        if self._start_exec_worker is not None and self._start_exec_worker.isRunning():
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("START wird ausgefuehrt…", 2500)
+
+        def job() -> StartExecutionReport:
+            inventory_service: InventoryService = self._container.resolve(InventoryService)
+            return inventory_service.execute_start_workflow(result, mode)
+
+        self._start_exec_worker = BackgroundWorker(job)
+        self._start_exec_worker.signals.result.connect(self._on_start_executed)
+        self._start_exec_worker.signals.error.connect(self._on_start_preflight_error)
+        self._start_exec_worker.start()
+
+    def _on_start_executed(self, result: object) -> None:
+        if not isinstance(result, StartExecutionReport):
+            return
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit(
-            f"START ausgeführt: {result.open_invoice_count} offene Rechnungen ({mode})",
+            f"START ausgefuehrt: {result.open_invoice_count} offene Rechnungen "
+            f"({result.mode.value}), Druckjobs: {len(result.printed_skus)}",
             5000,
+        )
+
+        QMessageBox.information(
+            self,
+            "START abgeschlossen",
+            (
+                f"Modus: {result.mode.value}\n"
+                f"Offene Rechnungen: {result.open_invoice_count}\n"
+                f"Druckjobs: {len(result.printed_skus)}\n"
+                f"Betroffene SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}"
+            ),
         )
 
         self._tabs.setCurrentIndex(0)

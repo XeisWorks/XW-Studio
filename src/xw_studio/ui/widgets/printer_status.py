@@ -1,7 +1,6 @@
 """Printer traffic light status widget."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from xw_studio.core.types import PrinterStatus

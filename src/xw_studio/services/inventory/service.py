@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from enum import Enum
 
 from xw_studio.core.config import AppConfig
 from xw_studio.repositories.settings_kv import SettingKvRepository
@@ -34,6 +35,25 @@ class StartPreflight:
     open_invoice_count: int
     decisions: list[StartDecision]
     missing_position_data: bool
+
+
+class StartMode(str, Enum):
+    """Execution mode selected in START dialog."""
+
+    INVOICES_ONLY = "invoices"
+    INVOICES_AND_PRINT = "full"
+
+
+@dataclass(frozen=True)
+class StartExecutionReport:
+    """Result payload for START execution after dialog confirmation."""
+
+    mode: StartMode
+    open_invoice_count: int
+    decisions_count: int
+    printed_skus: list[str]
+    consumed_skus: list[str]
+    stock_updated: bool
 
 
 @dataclass(frozen=True)
@@ -146,6 +166,73 @@ class InventoryService:
             decisions=decisions,
             missing_position_data=False,
         )
+
+    def execute_start_workflow(
+        self,
+        preflight: StartPreflight,
+        mode: StartMode,
+    ) -> StartExecutionReport:
+        """Execute START side effects for the selected *mode*.
+
+        In ``INVOICES_AND_PRINT`` mode this updates inventory.stock_levels with
+        post-run amounts (required quantities consumed, shortage printed with
+        configured buffer).
+        """
+        if mode == StartMode.INVOICES_ONLY:
+            return StartExecutionReport(
+                mode=mode,
+                open_invoice_count=preflight.open_invoice_count,
+                decisions_count=len(preflight.decisions),
+                printed_skus=[],
+                consumed_skus=[],
+                stock_updated=False,
+            )
+
+        if preflight.missing_position_data or not preflight.decisions:
+            return StartExecutionReport(
+                mode=mode,
+                open_invoice_count=preflight.open_invoice_count,
+                decisions_count=len(preflight.decisions),
+                printed_skus=[],
+                consumed_skus=[],
+                stock_updated=False,
+            )
+
+        stock_levels = self.load_stock_levels()
+        printed_skus: list[str] = []
+        consumed_skus: list[str] = []
+
+        for decision in preflight.decisions:
+            current = max(0, int(stock_levels.get(decision.sku, decision.on_hand_qty)))
+            produced = max(0, int(decision.final_print_qty)) if decision.will_print else 0
+            consumed = max(0, int(decision.required_qty))
+            final_stock = max(0, current + produced - consumed)
+            stock_levels[decision.sku] = final_stock
+
+            if produced > 0:
+                printed_skus.append(decision.sku)
+            if consumed > 0:
+                consumed_skus.append(decision.sku)
+
+        self._save_stock_levels(stock_levels)
+        return StartExecutionReport(
+            mode=mode,
+            open_invoice_count=preflight.open_invoice_count,
+            decisions_count=len(preflight.decisions),
+            printed_skus=printed_skus,
+            consumed_skus=consumed_skus,
+            stock_updated=True,
+        )
+
+    def _save_stock_levels(self, stock_levels: dict[str, int]) -> None:
+        if self._settings_repo is None:
+            return
+        clean: dict[str, int] = {}
+        for sku, qty in stock_levels.items():
+            if not isinstance(sku, str) or not sku:
+                continue
+            clean[sku] = max(0, int(qty))
+        self._settings_repo.set_value_json(_STOCK_KEY, json.dumps(clean, ensure_ascii=False))
 
     def describe(self) -> str:
         return (

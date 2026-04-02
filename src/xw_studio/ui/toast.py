@@ -1,7 +1,7 @@
 """Non-blocking toast notification overlay."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPropertyAnimation, QTimer, Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QWidget
 
 

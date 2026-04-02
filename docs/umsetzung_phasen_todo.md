@@ -32,7 +32,7 @@ Groesste verbleibende Luecken:
 ## 2) Phase A - Core-Workflow schliessen (P0/P1)
 
 ### A1. START-Flow mit Inventar-Entscheidung finalisieren
-Status: TODO
+Status: DONE (2026-04-02)
 
 Aufgaben:
 - Druckentscheidung im Start-Preflight hart umsetzen:
@@ -53,7 +53,7 @@ Tests:
 - Integration: Start-Dialog -> Ausfuehrung -> Inventarupdate
 
 ### A2. CRM Merge-Wizard liefern
-Status: TODO
+Status: DONE (2026-04-02, in-memory merge; live writeback folgt)
 
 Aufgaben:
 - Service-API fuer Merge-Strategien bauen (Master/Source Feldregeln)
@@ -140,7 +140,7 @@ DoD:
 ## 5) Phase D - Integrationen und Wachstum (P2)
 
 ### D1. Reisekosten Bridge
-Status: TODO
+Status: DONE (2026-04-02, optional loader mit Fallback)
 
 Aufgaben:
 - Optionalen Loader fuer Reisekosten-Submodule implementieren
@@ -179,7 +179,7 @@ DoD:
 ## 6) Phase E - Qualitaet, Betrieb, Zukunftssicherheit (P0 querliegend)
 
 ### E1. CI-Qualitaetsgates schaerfen
-Status: TODO
+Status: DONE (2026-04-02, Ruff in CI)
 
 Aufgaben:
 - CI um `ruff check src/` erweitern
@@ -189,7 +189,7 @@ DoD:
 - PRs laufen reproduzierbar durch gleiche Quality-Gates.
 
 ### E2. Performance-/UX-SLOs definieren
-Status: TODO
+Status: DONE (2026-04-02, README erweitert)
 
 Aufgaben:
 - Konkrete Zielwerte in README dokumentieren, z.B.:
@@ -201,7 +201,7 @@ DoD:
 - Performance ist messbar und regressionsfaehig testbar.
 
 ### E3. Multi-PC Betriebsleitfaden
-Status: TODO
+Status: DONE (2026-04-02, docs/multi_pc_betriebsleitfaden.md)
 
 Aufgaben:
 - Klare Betriebsdoku fuer Railway + lokale venv Instanzen
@@ -220,6 +220,10 @@ DoD:
 4. Sprint 4: C1 (UVA SOAP live)
 5. Sprint 5: D1 + E1 (Reisekosten Bridge + CI Gates)
 6. Sprint 6: D2/D3 + E2 (Marketing/Notensatz + Performance SLOs)
+
+Aktueller Fortschritt:
+- Abgeschlossen: A1, A2, D1, E1, E2, E3.
+- Naechste Hauptpakete: B1/B2 (Produkte-Sync + Druckplanung), C1/C2 (UVA live + Steuermodul), D2/D3 (Marketing/Notensatz produktiv).
 
 ---
 
