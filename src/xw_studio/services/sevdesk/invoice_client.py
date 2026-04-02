@@ -30,6 +30,8 @@ class InvoiceSummary(BaseModel):
     status_code: int | None = Field(default=None, alias="status")
     sum_gross: str | float | None = Field(default=None, alias="sumGross")
     contact_name: str = ""
+    buyer_note: str = ""
+    address_country_code: str = ""
 
     @field_validator("status_code", mode="before")
     @classmethod
@@ -57,7 +59,23 @@ class InvoiceSummary(BaseModel):
                 or ""
             ).strip()
         cid = raw.get("id")
-        payload = {**raw, "id": str(cid) if cid is not None else "", "contact_name": contact_name}
+
+        country = raw.get("addressCountry")
+        country_code = ""
+        if isinstance(country, dict):
+            country_code = str(
+                country.get("translationCode") or country.get("code") or ""
+            ).strip()
+
+        buyer_note = str(raw.get("buyerNote") or "").strip()
+
+        payload = {
+            **raw,
+            "id": str(cid) if cid is not None else "",
+            "contact_name": contact_name,
+            "buyer_note": buyer_note,
+            "address_country_code": country_code,
+        }
         return cls.model_validate(payload)
 
     def status_label(self) -> str:
@@ -73,6 +91,8 @@ class InvoiceSummary(BaseModel):
             "Status": self.status_label(),
             "Brutto EUR": "—" if self.sum_gross is None else str(self.sum_gross),
             "Kunde": self.contact_name or "—",
+            "Land": self.address_country_code or "—",
+            "Notiz": "\u270e" if self.buyer_note.strip() else "",
             "ID": self.id,
         }
 
@@ -85,7 +105,10 @@ class InvoiceSummary(BaseModel):
             f"Status: {self.status_label()} ({self.status_code if self.status_code is not None else '—'})",
             f"Brutto: {self.sum_gross if self.sum_gross is not None else '—'}",
             f"Kunde: {self.contact_name or '—'}",
+            f"Land: {self.address_country_code or '—'}",
         ]
+        if self.buyer_note.strip():
+            lines.append(f"Notiz: {self.buyer_note}")
         return "\n".join(lines)
 
 

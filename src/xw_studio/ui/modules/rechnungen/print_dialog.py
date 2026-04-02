@@ -71,6 +71,17 @@ def run_invoice_pdf_print(parent: QWidget, container: Container) -> None:
     )
 
 
+def run_label_pdf_print(parent: QWidget, container: Container) -> None:
+    """Pick a label PDF, show print dialog, print at invoice DPI."""
+    dpi = int(container.config.printing.invoice_dpi or INVOICE_DPI)
+    _print_with_dialog(
+        parent,
+        container,
+        title="PDF auswählen (Label)",
+        dpi=dpi,
+    )
+
+
 def run_music_pdf_print(parent: QWidget, container: Container) -> None:
     """Pick a PDF, show print dialog, print at music DPI for score quality."""
     dpi = int(container.config.printing.music_dpi or MUSIC_DPI)

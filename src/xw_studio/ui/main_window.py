@@ -65,9 +65,9 @@ class MainWindow(QMainWindow):
 
         self._register_page(ModuleKey.HOME, HomeView(self._container))
 
-        from xw_studio.ui.modules.rechnungen.view import RechnungenView
+        from xw_studio.ui.modules.rechnungen.tagesgeschaeft_view import TagesgeschaeftView
 
-        self._register_page(ModuleKey.RECHNUNGEN, RechnungenView(self._container))
+        self._register_page(ModuleKey.RECHNUNGEN, TagesgeschaeftView(self._container))
 
         from xw_studio.ui.modules.products.view import ProductsView
 
@@ -121,6 +121,7 @@ class MainWindow(QMainWindow):
         signals = self._container.resolve(AppSignals)
         signals.navigate_to_module.connect(self._navigate_to)
         signals.show_home.connect(lambda: self._navigate_to(ModuleKey.HOME.value))
+        signals.status_message.connect(self._status_bar.showMessage)
 
     def _apply_printer_status(self) -> None:
         """Traffic light in status bar; gate print actions via AppSignals."""

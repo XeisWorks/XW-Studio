@@ -5,16 +5,31 @@ import logging
 import sys
 from pathlib import Path
 
+from sqlalchemy import text
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from xw_studio.bootstrap import register_default_services
-from xw_studio.core.config import load_config
+from xw_studio.core.config import AppConfig, load_config
 from xw_studio.core.container import Container
+from xw_studio.core.database import create_engine_from_config
 from xw_studio.core.logging_setup import setup_logging
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.updater import check_and_update
 
 logger = logging.getLogger(__name__)
+
+
+def _check_database_connection(config: AppConfig) -> str | None:
+    """Return an error string when DB ping fails, else ``None``."""
+    if not (config.database_url or "").strip():
+        return None
+    try:
+        engine = create_engine_from_config(config)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return None
+    except Exception as exc:
+        return str(exc)
 
 
 def _handle_exception(exc_type, exc_value, exc_tb):  # type: ignore[no-untyped-def]
@@ -56,6 +71,17 @@ def create_application() -> QApplication:
     container = Container(config)
     container.register(AppSignals, lambda _: AppSignals())
     register_default_services(container)
+
+    db_error = _check_database_connection(config)
+    if db_error:
+        logger.warning("Database connectivity check failed: %s", db_error)
+        QMessageBox.warning(
+            None,
+            "Datenbank",
+            "PostgreSQL-Verbindung fehlgeschlagen. Die App startet trotzdem, "
+            "aber DB-gestuetzte Funktionen sind eingeschraenkt.\n\n"
+            f"Fehler: {db_error}",
+        )
 
     from xw_studio.ui.main_window import MainWindow
     window = MainWindow(container)

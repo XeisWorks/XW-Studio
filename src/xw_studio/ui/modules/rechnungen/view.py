@@ -8,11 +8,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -38,6 +40,8 @@ _TABLE_COLUMNS = [
     "Status",
     "Brutto EUR",
     "Kunde",
+    "Land",
+    "Notiz",
     "ID",
 ]
 
@@ -81,6 +85,13 @@ class RechnungenView(QWidget):
         )
         self._btn_print.clicked.connect(self._on_print_clicked)
         self._btn_print.setEnabled(False)
+        self._btn_print_label = toolbar.add_button(
+            "print_label",
+            "Label drucken…",
+            tooltip="PDF fuer Versandetiketten drucken (Seitenbereich aus dem Druckdialog)",
+        )
+        self._btn_print_label.clicked.connect(self._on_print_label_clicked)
+        self._btn_print_label.setEnabled(False)
         self._btn_print_music = toolbar.add_button(
             "print_music",
             "Noten drucken…",
@@ -105,6 +116,7 @@ class RechnungenView(QWidget):
             ("Teilweise bezahlt", 300),
         ]:
             self._status_combo.addItem(label, code)
+        self._status_combo.setCurrentIndex(1)
         self._status_combo.blockSignals(False)
         self._status_combo.currentIndexChanged.connect(self._on_status_filter_changed)
         filter_row.addWidget(self._status_combo)
@@ -122,11 +134,51 @@ class RechnungenView(QWidget):
         self._table = DataTable(_TABLE_COLUMNS)
         splitter.addWidget(self._table)
 
-        self._detail = QPlainTextEdit()
-        self._detail.setReadOnly(True)
-        self._detail.setPlaceholderText("Zeile waehlen fuer Details …")
-        self._detail.setMinimumWidth(260)
-        splitter.addWidget(self._detail)
+        # --- Structured detail panel ---
+        detail_scroll = QScrollArea()
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setMinimumWidth(260)
+
+        detail_content = QWidget()
+        detail_main = QVBoxLayout(detail_content)
+        detail_main.setContentsMargins(8, 8, 8, 8)
+        detail_main.setSpacing(10)
+
+        gb_invoice = QGroupBox("Rechnung")
+        form_inv = QFormLayout(gb_invoice)
+        self._dl_number = QLabel("—")
+        self._dl_date = QLabel("—")
+        self._dl_status = QLabel("—")
+        self._dl_brutto = QLabel("—")
+        form_inv.addRow("Nummer:", self._dl_number)
+        form_inv.addRow("Datum:", self._dl_date)
+        form_inv.addRow("Status:", self._dl_status)
+        form_inv.addRow("Brutto:", self._dl_brutto)
+        detail_main.addWidget(gb_invoice)
+
+        gb_contact = QGroupBox("Kunde")
+        form_con = QFormLayout(gb_contact)
+        self._dl_contact = QLabel("—")
+        self._dl_contact.setWordWrap(True)
+        self._dl_country = QLabel("—")
+        self._dl_id = QLabel("—")
+        form_con.addRow("Name:", self._dl_contact)
+        form_con.addRow("Land:", self._dl_country)
+        form_con.addRow("ID:", self._dl_id)
+        detail_main.addWidget(gb_contact)
+
+        self._gb_note = QGroupBox("Käufernotiz")
+        note_layout = QVBoxLayout(self._gb_note)
+        self._dl_note = QLabel()
+        self._dl_note.setWordWrap(True)
+        note_layout.addWidget(self._dl_note)
+        self._gb_note.hide()
+        detail_main.addWidget(self._gb_note)
+
+        detail_main.addStretch()
+        detail_scroll.setWidget(detail_content)
+
+        splitter.addWidget(detail_scroll)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, stretch=1)
@@ -190,6 +242,7 @@ class RechnungenView(QWidget):
     def _on_printer_status(self, printing_allowed: bool) -> None:
         self._print_allowed = printing_allowed
         self._btn_print.setEnabled(printing_allowed)
+        self._btn_print_label.setEnabled(printing_allowed)
         self._btn_print_music.setEnabled(printing_allowed)
 
     def _reload_first_page(self) -> None:
@@ -282,6 +335,13 @@ class RechnungenView(QWidget):
 
         run_invoice_pdf_print(self, self._container)
 
+    def _on_print_label_clicked(self) -> None:
+        if not self._print_allowed:
+            return
+        from xw_studio.ui.modules.rechnungen.print_dialog import run_label_pdf_print
+
+        run_label_pdf_print(self, self._container)
+
     def _on_print_music_clicked(self) -> None:
         if not self._print_allowed:
             return
@@ -299,6 +359,28 @@ class RechnungenView(QWidget):
     def _refresh_detail_for_selection(self) -> None:
         row = self._table.selected_source_row()
         if row is None or row < 0 or row >= len(self._summaries):
-            self._detail.setPlainText("")
+            self._reset_detail()
             return
-        self._detail.setPlainText(self._summaries[row].detail_lines())
+        s = self._summaries[row]
+        self._dl_number.setText(s.invoice_number or "—")
+        self._dl_date.setText(s.invoice_date or "—")
+        self._dl_status.setText(s.status_label())
+        self._dl_brutto.setText(str(s.sum_gross) if s.sum_gross is not None else "—")
+        self._dl_contact.setText(s.contact_name or "—")
+        self._dl_country.setText(s.address_country_code or "—")
+        self._dl_id.setText(s.id)
+        if s.buyer_note.strip():
+            self._dl_note.setText(s.buyer_note)
+            self._gb_note.show()
+        else:
+            self._dl_note.setText("")
+            self._gb_note.hide()
+
+    def _reset_detail(self) -> None:
+        for lbl in (
+            self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
+            self._dl_contact, self._dl_country, self._dl_id,
+        ):
+            lbl.setText("—")
+        self._dl_note.setText("")
+        self._gb_note.hide()
