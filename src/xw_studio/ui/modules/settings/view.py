@@ -40,6 +40,7 @@ _QUEUE_MOLLIE_KEY = "daily_business.queue.mollie"
 _QUEUE_GUTSCHEINE_KEY = "daily_business.queue.gutscheine"
 _QUEUE_DOWNLOADS_KEY = "daily_business.queue.downloads"
 _QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
+_SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
 _CLICKUP_LIST_ID_KEY = "clickup.default_list_id"
 _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "MOLLIE_ACCESS_TOKEN",
@@ -227,6 +228,11 @@ class SettingsView(QWidget):
         self._queue_refunds_json.setPlaceholderText('[{"ref": "RF-77", "customer": "Demo", "amount": "-9.90", "status": "Offen"}]')
         self._queue_refunds_json.setMinimumHeight(80)
         queue_layout.addWidget(self._queue_refunds_json)
+        queue_layout.addWidget(QLabel(f"{_SENSITIVE_COUNTRIES_KEY}:"))
+        self._sensitive_countries_json = QPlainTextEdit()
+        self._sensitive_countries_json.setPlaceholderText('["RU", "IR", "SY"]')
+        self._sensitive_countries_json.setMinimumHeight(70)
+        queue_layout.addWidget(self._sensitive_countries_json)
         self._queue_status = QLabel("—")
         self._queue_status.setStyleSheet("color: #9e9e9e;")
         queue_layout.addWidget(self._queue_status)
@@ -314,6 +320,7 @@ class SettingsView(QWidget):
         queue_gutscheine = repo.get_value_json(_QUEUE_GUTSCHEINE_KEY) or "[]"
         queue_downloads = repo.get_value_json(_QUEUE_DOWNLOADS_KEY) or "[]"
         queue_refunds = repo.get_value_json(_QUEUE_REFUNDS_KEY) or "[]"
+        sensitive_countries = repo.get_value_json(_SENSITIVE_COUNTRIES_KEY) or '["AF", "BY", "IQ", "IR", "KP", "RU", "SY"]'
         self._stock_json.setPlainText(stock)
         self._pending_json.setPlainText(pending)
         self._pending_counts_json.setPlainText(pending_counts)
@@ -321,6 +328,7 @@ class SettingsView(QWidget):
         self._queue_gutscheine_json.setPlainText(queue_gutscheine)
         self._queue_downloads_json.setPlainText(queue_downloads)
         self._queue_refunds_json.setPlainText(queue_refunds)
+        self._sensitive_countries_json.setPlainText(sensitive_countries)
         self._queue_status.setText("Aktueller Stand aus DB geladen.")
         self._queue_status.setStyleSheet(_OK_STYLE)
 
@@ -335,6 +343,7 @@ class SettingsView(QWidget):
         queue_gutscheine_raw = self._queue_gutscheine_json.toPlainText().strip() or "[]"
         queue_downloads_raw = self._queue_downloads_json.toPlainText().strip() or "[]"
         queue_refunds_raw = self._queue_refunds_json.toPlainText().strip() or "[]"
+        sensitive_countries_raw = self._sensitive_countries_json.toPlainText().strip() or "[]"
         try:
             stock_obj = json.loads(stock_raw)
             pending_obj = json.loads(pending_raw)
@@ -343,6 +352,7 @@ class SettingsView(QWidget):
             queue_gutscheine_obj = json.loads(queue_gutscheine_raw)
             queue_downloads_obj = json.loads(queue_downloads_raw)
             queue_refunds_obj = json.loads(queue_refunds_raw)
+            sensitive_countries_obj = json.loads(sensitive_countries_raw)
         except json.JSONDecodeError as exc:
             QMessageBox.warning(self, "JSON-Fehler", f"Ungueltiges JSON:\n\n{exc}")
             return
@@ -354,13 +364,20 @@ class SettingsView(QWidget):
             or not isinstance(queue_gutscheine_obj, list)
             or not isinstance(queue_downloads_obj, list)
             or not isinstance(queue_refunds_obj, list)
+            or not isinstance(sensitive_countries_obj, list)
         ):
             QMessageBox.warning(
                 self,
                 "Formatfehler",
-                "Stock/Pending/Counts muessen Objekte sein; Queue-Felder muessen Listen sein.",
+                "Stock/Pending/Counts muessen Objekte sein; Queue- und Sensitive-Countries-Felder muessen Listen sein.",
             )
             return
+
+        normalized_sensitive = [
+            str(code).strip().upper()
+            for code in sensitive_countries_obj
+            if str(code).strip()
+        ]
 
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
         repo.set_value_json(_INV_STOCK_KEY, json.dumps(stock_obj))
@@ -370,6 +387,7 @@ class SettingsView(QWidget):
         repo.set_value_json(_QUEUE_GUTSCHEINE_KEY, json.dumps(queue_gutscheine_obj))
         repo.set_value_json(_QUEUE_DOWNLOADS_KEY, json.dumps(queue_downloads_obj))
         repo.set_value_json(_QUEUE_REFUNDS_KEY, json.dumps(queue_refunds_obj))
+        repo.set_value_json(_SENSITIVE_COUNTRIES_KEY, json.dumps(normalized_sensitive))
         self._queue_status.setText("Queue-Daten gespeichert.")
         self._queue_status.setStyleSheet(_OK_STYLE)
 

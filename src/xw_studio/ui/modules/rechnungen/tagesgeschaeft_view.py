@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_COLUMNS = ["Ref", "Kunde", "Betrag", "Status", "Hinweis"]
+_QUEUE_COLUMNS = ["Ref", "Kunde", "Betrag", "Status", "Hinweis", "Mark."]
 
 
 class _QueueTabView(QWidget):
@@ -244,6 +244,9 @@ class TagesgeschaeftView(QWidget):
         title = QLabel("Tagesgeschäft")
         title.setStyleSheet("font-size: 15px; font-weight: bold;")
         bar_lay.addWidget(title)
+        legend = QLabel("Legende: 🔴 = dringend (Mouseover in Tabellen zeigt Grund)")
+        legend.setStyleSheet("color: #ef4444; font-size: 12px;")
+        bar_lay.addWidget(legend)
         bar_lay.addStretch()
 
         btn_start = QPushButton("▶  START")
@@ -297,15 +300,20 @@ class TagesgeschaeftView(QWidget):
     def _on_badges_result(self, result: object) -> None:
         counts = result if isinstance(result, dict) else {}
         open_count = max(0, int(counts.get("rechnungen", 0)))
+        mollie_count = max(0, int(counts.get("mollie", 0)))
+        gutscheine_count = max(0, int(counts.get("gutscheine", 0)))
+        downloads_count = max(0, int(counts.get("downloads", 0)))
+        refunds_count = max(0, int(counts.get("refunds", 0)))
+
         self._tabs.setTabText(0, f"📋  Rechnungen ({open_count})")
-        self._tabs.setTabText(1, f"💳  Mollie ({max(0, int(counts.get('mollie', 0)))})")
-        self._tabs.setTabText(2, f"🎁  Gutscheine ({max(0, int(counts.get('gutscheine', 0)))})")
-        self._tabs.setTabText(3, f"📥  Downloads ({max(0, int(counts.get('downloads', 0)))})")
-        self._tabs.setTabText(4, f"↩  Refunds ({max(0, int(counts.get('refunds', 0)))})")
-        self._mollie_view.reload(max(0, int(counts.get("mollie", 0))))
-        self._gutscheine_view.reload(max(0, int(counts.get("gutscheine", 0))))
-        self._downloads_view.reload(max(0, int(counts.get("downloads", 0))))
-        self._refunds_view.reload(max(0, int(counts.get("refunds", 0))))
+        self._tabs.setTabText(1, f"{'🔴 ' if mollie_count else ''}💳  Mollie ({mollie_count})")
+        self._tabs.setTabText(2, f"{'🔴 ' if gutscheine_count else ''}🎁  Gutscheine ({gutscheine_count})")
+        self._tabs.setTabText(3, f"{'🔴 ' if downloads_count else ''}📥  Downloads ({downloads_count})")
+        self._tabs.setTabText(4, f"{'🔴 ' if refunds_count else ''}↩  Refunds ({refunds_count})")
+        self._mollie_view.reload(mollie_count)
+        self._gutscheine_view.reload(gutscheine_count)
+        self._downloads_view.reload(downloads_count)
+        self._refunds_view.reload(refunds_count)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.badge_updated.emit(ModuleKey.RECHNUNGEN.value, open_count)
 

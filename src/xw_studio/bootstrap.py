@@ -78,7 +78,10 @@ def register_default_services(container: Container) -> None:
     )
     container.register(
         InvoiceProcessingService,
-        lambda c: InvoiceProcessingService(c.resolve(InvoiceClient)),
+        lambda c: InvoiceProcessingService(
+            c.resolve(InvoiceClient),
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
     )
 
     container.register(

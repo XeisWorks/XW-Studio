@@ -1,5 +1,8 @@
 # XW-Studio - To-do nach Wunschliste + Blueprint (Ist-Stand 2026-04-02)
 
+Hinweis (2026-04-03): Verbindliche Source of Truth fuer Daily-Business + Rechnungen ist `docs/phase_master_daily_rechnungen.md`.
+Diese Datei bleibt als historischer Verlauf bestehen.
+
 Zweck:
 - Diese Datei ist die klare Abarbeitungsliste fuer die naechsten Umsetzungsphasen.
 - Basis sind die urspruengliche Wunschliste in `Markdowns/umbau auf pyside6 und verbesserungen.txt`

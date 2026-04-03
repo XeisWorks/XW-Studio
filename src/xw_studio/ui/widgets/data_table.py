@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtWidgets import QHeaderView, QTableView, QWidget
 
@@ -37,10 +38,20 @@ class SimpleTableModel(QAbstractTableModel):
         return len(self._columns)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        row = self._rows[index.row()]
+        col = self._columns[index.column()]
         if role == Qt.ItemDataRole.DisplayRole:
-            row = self._rows[index.row()]
-            col = self._columns[index.column()]
             return str(row.get(col, ""))
+        if role == Qt.ItemDataRole.ToolTipRole:
+            tip = row.get(f"__tooltip__{col}")
+            if tip:
+                return str(tip)
+            return None
+        if role == Qt.ItemDataRole.ForegroundRole:
+            color = row.get(f"__fg__{col}")
+            if isinstance(color, str) and color.strip():
+                return QBrush(QColor(color))
+            return None
         return None
 
     def headerData(

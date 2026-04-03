@@ -43,6 +43,16 @@ _INVOICE_STATUS_DE: dict[int, str] = {
     1000: "Bezahlt",
 }
 
+DEFAULT_SENSITIVE_COUNTRY_CODES: set[str] = {
+    "AF",
+    "BY",
+    "IQ",
+    "IR",
+    "KP",
+    "RU",
+    "SY",
+}
+
 
 class InvoiceSummary(BaseModel):
     """Normalized row for UI tables."""
@@ -57,6 +67,9 @@ class InvoiceSummary(BaseModel):
     contact_name: str = ""
     buyer_note: str = ""
     address_country_code: str = ""
+    delivery_country_code: str = ""
+    has_delivery_address_override: bool = False
+    is_sensitive_country: bool = False
     order_reference: str = ""
 
     @field_validator("status_code", mode="before")
@@ -97,6 +110,42 @@ class InvoiceSummary(BaseModel):
                 country.get("translationCode") or country.get("code") or ""
             ).strip()
 
+        delivery_country_code = ""
+        for key in ("deliveryAddressCountry", "deliveryCountry", "shippingCountry"):
+            candidate = raw.get(key)
+            if isinstance(candidate, dict):
+                delivery_country_code = str(
+                    candidate.get("translationCode") or candidate.get("code") or ""
+                ).strip()
+            elif isinstance(candidate, str):
+                delivery_country_code = candidate.strip()
+            if delivery_country_code:
+                break
+
+        def _norm_text(value: object) -> str:
+            return str(value or "").strip().lower()
+
+        billing_signature = "|".join(
+            _norm_text(raw.get(key))
+            for key in ("street", "zip", "city", "address")
+        )
+        delivery_signature = "|".join(
+            _norm_text(raw.get(key))
+            for key in (
+                "deliveryStreet",
+                "deliveryZip",
+                "deliveryCity",
+                "deliveryAddress",
+                "shippingStreet",
+                "shippingZip",
+                "shippingCity",
+                "shippingAddress",
+            )
+        )
+        has_delivery_override = bool(
+            delivery_signature.strip("|") and delivery_signature != billing_signature
+        )
+
         buyer_note = str(raw.get("buyerNote") or "").strip()
 
         # Wix order reference stored in customerInternalNote or related fields
@@ -114,7 +163,10 @@ class InvoiceSummary(BaseModel):
             "contact_name": contact_name,
             "buyer_note": buyer_note,
             "address_country_code": country_code,
-                    "order_reference": order_reference,
+            "delivery_country_code": delivery_country_code,
+            "has_delivery_address_override": has_delivery_override,
+            "is_sensitive_country": country_code.upper() in DEFAULT_SENSITIVE_COUNTRY_CODES,
+            "order_reference": order_reference,
         }
         return cls.model_validate(payload)
 
@@ -135,16 +187,36 @@ class InvoiceSummary(BaseModel):
 
     def as_table_row(self) -> dict[str, str]:
         """Keys match German column headers used in :class:`DataTable`."""
-        return {
+        note_marker = "🔴" if self.buyer_note.strip() else ""
+        delivery_marker = "🔴" if self.has_delivery_address_override else ""
+        country_marker = "🔴" if self.is_sensitive_country else ""
+
+        row: dict[str, str] = {
             "Rechnungsnr.": self.invoice_number or "—",
             "Datum": self.formatted_date,
             "Status": self.status_label(),
             "Brutto": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Land": self.address_country_code or "—",
-            "Notiz": "\u270e" if self.buyer_note.strip() else "",
+            "Notiz": note_marker,
+            "Lieferabw.": delivery_marker,
+            "Heikles Land": country_marker,
             "ID": self.id,
         }
+
+        if self.buyer_note.strip():
+            row["__tooltip__Notiz"] = self.buyer_note
+            row["__fg__Notiz"] = "#ef4444"
+        if self.has_delivery_address_override:
+            row["__tooltip__Lieferabw."] = "Abweichende Lieferanschrift vorhanden"
+            row["__fg__Lieferabw."] = "#ef4444"
+        if self.is_sensitive_country:
+            row["__tooltip__Heikles Land"] = (
+                f"Heikles Zielland: {self.address_country_code or 'unbekannt'}"
+            )
+            row["__fg__Heikles Land"] = "#ef4444"
+
+        return row
 
     def detail_lines(self) -> str:
         """Multi-line description for the detail panel."""
@@ -157,6 +229,12 @@ class InvoiceSummary(BaseModel):
             f"Kunde: {self.contact_name or '—'}",
             f"Land: {self.address_country_code or '—'}",
         ]
+        if self.has_delivery_address_override:
+            lines.append("Lieferanschrift: abweichend")
+        if self.delivery_country_code:
+            lines.append(f"Lieferland: {self.delivery_country_code}")
+        if self.is_sensitive_country:
+            lines.append("Achtung: heikles Land")
         if self.buyer_note.strip():
             lines.append(f"Notiz: {self.buyer_note}")
         return "\n".join(lines)

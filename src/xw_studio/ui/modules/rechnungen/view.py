@@ -46,6 +46,8 @@ _TABLE_COLUMNS = [
     "Kunde",
     "Land",
     "Notiz",
+    "Lieferabw.",
+    "Heikles Land",
     "ID",
 ]
 
@@ -237,7 +239,9 @@ class RechnungenView(QWidget):
             self._hint.setStyleSheet("color: #ffa726; padding: 8px;")
             self._hint.show()
         else:
-            self._hint.hide()
+            self._hint.setText("Hinweis: 🔴 markiert dringliche Hinweise (Mouseover zeigt Details).")
+            self._hint.setStyleSheet("color: #ef4444; padding: 6px;")
+            self._hint.show()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)

@@ -30,6 +30,38 @@ def test_invoice_summary_from_api_object() -> None:
     assert "19,99 €" in summary.formatted_brutto
 
 
+def test_invoice_summary_flags_delivery_override_and_sensitive_country() -> None:
+    raw = {
+        "id": 99,
+        "invoiceNumber": "R-100",
+        "invoiceDate": "2024-04-01",
+        "status": 200,
+        "sumGross": 49.0,
+        "contact": {"name": "Risk Co"},
+        "addressCountry": {"code": "RU"},
+        "street": "Alpha 1",
+        "zip": "1010",
+        "city": "Wien",
+        "deliveryStreet": "Beta 9",
+        "deliveryZip": "9999",
+        "deliveryCity": "Berlin",
+        "buyerNote": "Bitte ohne Klingeln",
+    }
+
+    summary = InvoiceSummary.from_api_object(raw)
+    assert summary.has_delivery_address_override is True
+    assert summary.is_sensitive_country is True
+    row = summary.as_table_row()
+    assert row["Notiz"] == "🔴"
+    assert row["Lieferabw."] == "🔴"
+    assert row["Heikles Land"] == "🔴"
+    assert row["__tooltip__Notiz"] == "Bitte ohne Klingeln"
+    assert "Heikles Zielland" in row["__tooltip__Heikles Land"]
+    details = summary.detail_lines()
+    assert "Lieferanschrift: abweichend" in details
+    assert "Achtung: heikles Land" in details
+
+
 def test_invoice_client_list_parses_objects() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert "/Invoice" in str(request.url)

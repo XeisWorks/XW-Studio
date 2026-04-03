@@ -50,7 +50,7 @@ class DailyBusinessService:
         key = _QUEUE_KEYS.get(queue_name)
         if not key:
             return []
-        rows = self._read_queue_rows(key)
+        rows = self._read_queue_rows(key, queue_name)
         if rows:
             return rows
 
@@ -63,11 +63,14 @@ class DailyBusinessService:
                 "Betrag": "—",
                 "Status": "Offen",
                 "Hinweis": "Detaildaten folgen mit API-Integration",
+                "Mark.": "🔴",
+                "__tooltip__Mark.": "Dringend: offene Aufgabe",
+                "__fg__Mark.": "#ef4444",
             }
             for i in range(fallback_n)
         ]
 
-    def _read_queue_rows(self, key: str) -> list[dict[str, str]]:
+    def _read_queue_rows(self, key: str, queue_name: str) -> list[dict[str, str]]:
         if self._repo is None:
             return []
         raw = self._repo.get_value_json(key)
@@ -84,11 +87,11 @@ class DailyBusinessService:
         for idx, item in enumerate(data, 1):
             if not isinstance(item, dict):
                 continue
-            result.append(self._normalize_row(item, idx))
+            result.append(self._normalize_row(item, idx, queue_name))
         return result
 
     @staticmethod
-    def _normalize_row(item: dict[str, Any], index: int) -> dict[str, str]:
+    def _normalize_row(item: dict[str, Any], index: int, queue_name: str) -> dict[str, str]:
         def pick(*keys: str, default: str = "") -> str:
             for key in keys:
                 value = item.get(key)
@@ -96,10 +99,47 @@ class DailyBusinessService:
                     return str(value).strip()
             return default
 
-        return {
+        note = pick("note", "hint", "buyer_note", default="")
+        status = pick("status", default="Offen")
+        marker = ""
+        marker_tip = ""
+
+        urgency_hay = f"{status} {note}".lower()
+        generic_urgent = any(
+            keyword in urgency_hay
+            for keyword in ("offen", "fehl", "pending", "ueberweis", "überweis")
+        )
+
+        channel_urgent = False
+        channel_tip = ""
+        if queue_name == "mollie":
+            channel_urgent = any(k in urgency_hay for k in ("auth", "authorized", "chargeback", "missing auth"))
+            channel_tip = "Dringend: Mollie-Auth/Zahlung offen"
+        elif queue_name == "gutscheine":
+            channel_urgent = any(k in urgency_hay for k in ("ungueltig", "ungültig", "einloes", "einlös"))
+            channel_tip = "Dringend: Gutschein-Pruefung offen"
+        elif queue_name == "downloads":
+            channel_urgent = any(k in urgency_hay for k in ("link fehlt", "download fehlt", "retry", "fehlgeschlagen"))
+            channel_tip = "Dringend: Download-Link/Versand offen"
+        elif queue_name == "refunds":
+            channel_urgent = any(k in urgency_hay for k in ("refund", "rueckerstattung", "rückerstattung", "auszahlung"))
+            channel_tip = "Dringend: Rueckerstattung/Zahlung offen"
+
+        if generic_urgent or channel_urgent:
+            marker = "🔴"
+            marker_tip = channel_tip or "Dringend: offene Sendung/Zahlung"
+
+        row = {
             "Ref": pick("ref", "id", "reference", default=f"ITEM-{index:03d}"),
             "Kunde": pick("customer", "name", "buyer", default="—"),
             "Betrag": pick("amount", "total", default="—"),
-            "Status": pick("status", default="Offen"),
-            "Hinweis": pick("note", "hint", default=""),
+            "Status": status,
+            "Hinweis": note,
+            "Mark.": marker,
         }
+        if marker:
+            row["__tooltip__Mark."] = marker_tip
+            row["__fg__Mark."] = "#ef4444"
+        if note:
+            row["__tooltip__Hinweis"] = note
+        return row
