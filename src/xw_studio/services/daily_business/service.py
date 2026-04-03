@@ -7,11 +7,27 @@ from typing import Any
 from xw_studio.repositories.settings_kv import SettingKvRepository
 
 _PENDING_COUNTS_KEY = "daily_business.pending_counts"
+_URGENCY_RULES_KEY = "daily_business.urgency_rules"
 _QUEUE_KEYS = {
     "mollie": "daily_business.queue.mollie",
     "gutscheine": "daily_business.queue.gutscheine",
     "downloads": "daily_business.queue.downloads",
     "refunds": "daily_business.queue.refunds",
+}
+
+_DEFAULT_URGENCY_RULES: dict[str, list[str]] = {
+    "generic": ["offen", "fehl", "pending", "ueberweis", "überweis"],
+    "mollie": ["auth", "authorized", "chargeback", "missing auth"],
+    "gutscheine": ["ungueltig", "ungültig", "einloes", "einlös"],
+    "downloads": ["link fehlt", "download fehlt", "retry", "fehlgeschlagen"],
+    "refunds": ["refund", "rueckerstattung", "rückerstattung", "auszahlung"],
+}
+
+_CHANNEL_TOOLTIPS: dict[str, str] = {
+    "mollie": "Dringend: Mollie-Auth/Zahlung offen",
+    "gutscheine": "Dringend: Gutschein-Pruefung offen",
+    "downloads": "Dringend: Download-Link/Versand offen",
+    "refunds": "Dringend: Rueckerstattung/Zahlung offen",
 }
 
 
@@ -50,7 +66,8 @@ class DailyBusinessService:
         key = _QUEUE_KEYS.get(queue_name)
         if not key:
             return []
-        rows = self._read_queue_rows(key, queue_name)
+        urgency_rules = self._load_urgency_rules()
+        rows = self._read_queue_rows(key, queue_name, urgency_rules)
         if rows:
             return rows
 
@@ -70,7 +87,12 @@ class DailyBusinessService:
             for i in range(fallback_n)
         ]
 
-    def _read_queue_rows(self, key: str, queue_name: str) -> list[dict[str, str]]:
+    def _read_queue_rows(
+        self,
+        key: str,
+        queue_name: str,
+        urgency_rules: dict[str, list[str]],
+    ) -> list[dict[str, str]]:
         if self._repo is None:
             return []
         raw = self._repo.get_value_json(key)
@@ -87,11 +109,43 @@ class DailyBusinessService:
         for idx, item in enumerate(data, 1):
             if not isinstance(item, dict):
                 continue
-            result.append(self._normalize_row(item, idx, queue_name))
+            result.append(self._normalize_row(item, idx, queue_name, urgency_rules))
         return result
 
+    def _load_urgency_rules(self) -> dict[str, list[str]]:
+        normalized: dict[str, list[str]] = {
+            key: list(values)
+            for key, values in _DEFAULT_URGENCY_RULES.items()
+        }
+        if self._repo is None:
+            return normalized
+
+        raw = self._repo.get_value_json(_URGENCY_RULES_KEY)
+        if not raw:
+            return normalized
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return normalized
+        if not isinstance(data, dict):
+            return normalized
+
+        for key in ("generic", "mollie", "gutscheine", "downloads", "refunds"):
+            candidate = data.get(key)
+            if not isinstance(candidate, list):
+                continue
+            vals = [str(v).strip().lower() for v in candidate if str(v).strip()]
+            if vals:
+                normalized[key] = vals
+        return normalized
+
     @staticmethod
-    def _normalize_row(item: dict[str, Any], index: int, queue_name: str) -> dict[str, str]:
+    def _normalize_row(
+        item: dict[str, Any],
+        index: int,
+        queue_name: str,
+        urgency_rules: dict[str, list[str]],
+    ) -> dict[str, str]:
         def pick(*keys: str, default: str = "") -> str:
             for key in keys:
                 value = item.get(key)
@@ -105,25 +159,11 @@ class DailyBusinessService:
         marker_tip = ""
 
         urgency_hay = f"{status} {note}".lower()
-        generic_urgent = any(
-            keyword in urgency_hay
-            for keyword in ("offen", "fehl", "pending", "ueberweis", "überweis")
-        )
+        generic_urgent = any(keyword in urgency_hay for keyword in urgency_rules.get("generic", []))
 
-        channel_urgent = False
-        channel_tip = ""
-        if queue_name == "mollie":
-            channel_urgent = any(k in urgency_hay for k in ("auth", "authorized", "chargeback", "missing auth"))
-            channel_tip = "Dringend: Mollie-Auth/Zahlung offen"
-        elif queue_name == "gutscheine":
-            channel_urgent = any(k in urgency_hay for k in ("ungueltig", "ungültig", "einloes", "einlös"))
-            channel_tip = "Dringend: Gutschein-Pruefung offen"
-        elif queue_name == "downloads":
-            channel_urgent = any(k in urgency_hay for k in ("link fehlt", "download fehlt", "retry", "fehlgeschlagen"))
-            channel_tip = "Dringend: Download-Link/Versand offen"
-        elif queue_name == "refunds":
-            channel_urgent = any(k in urgency_hay for k in ("refund", "rueckerstattung", "rückerstattung", "auszahlung"))
-            channel_tip = "Dringend: Rueckerstattung/Zahlung offen"
+        channel_keywords = urgency_rules.get(queue_name, [])
+        channel_urgent = any(k in urgency_hay for k in channel_keywords)
+        channel_tip = _CHANNEL_TOOLTIPS.get(queue_name, "")
 
         if generic_urgent or channel_urgent:
             marker = "🔴"

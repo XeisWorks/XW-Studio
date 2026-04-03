@@ -45,3 +45,26 @@ def test_download_queue_no_urgency_when_clean() -> None:
 
     assert len(rows) == 1
     assert rows[0]["Mark."] == ""
+
+
+def test_custom_urgency_rules_from_settings_override_defaults() -> None:
+    repo = _RepoStub(
+        {
+            "daily_business.urgency_rules": json.dumps(
+                {
+                    "generic": ["needs-review"],
+                    "downloads": ["manual check"],
+                }
+            ),
+            "daily_business.queue.downloads": json.dumps(
+                [{"ref": "D2", "status": "READY", "note": "manual check by team"}]
+            ),
+        }
+    )
+    svc = DailyBusinessService(repo)  # type: ignore[arg-type]
+
+    rows = svc.load_queue_rows("downloads")
+
+    assert len(rows) == 1
+    assert rows[0]["Mark."] == "🔴"
+    assert "Download-Link" in rows[0]["__tooltip__Mark."]

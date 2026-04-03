@@ -51,6 +51,7 @@ class _QueueTabView(QWidget):
         self._queue_name = queue_name
         self._title = title
         self._worker: BackgroundWorker | None = None
+        self._rows: list[dict[str, str]] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -65,6 +66,7 @@ class _QueueTabView(QWidget):
         row = QHBoxLayout()
         self._search = SearchBar("Suchen…")
         self._search.search_changed.connect(self._on_search)
+        self._search.set_suggestion_provider(self._queue_search_suggestions)
         row.addWidget(self._search, stretch=1)
         self._count_lbl = QLabel("0 Eintraege")
         row.addWidget(self._count_lbl)
@@ -102,7 +104,9 @@ class _QueueTabView(QWidget):
     def _on_load_result(self, result: object) -> None:
         rows = result if isinstance(result, list) else []
         norm_rows = [r for r in rows if isinstance(r, dict)]
+        self._rows = norm_rows
         self._table.set_data(norm_rows)
+        self._search.refresh_suggestions()
         self._count_lbl.setText(f"{len(norm_rows)} Eintraege")
         self._detail.setText("Zeile waehlen fuer Details …")
 
@@ -112,6 +116,17 @@ class _QueueTabView(QWidget):
 
     def _on_search(self, text: str) -> None:
         self._table.set_filter(text, column=0)
+
+    def _queue_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._rows:
+            hay = f"{row.get('Ref', '')} {row.get('Kunde', '')} {row.get('Status', '')} {row.get('Hinweis', '')}".lower()
+            if q in hay:
+                items.append(f"{row.get('Ref', '—')} - {row.get('Kunde', '—')}")
+        return items
 
     def _on_selection_changed(self, _selected: object, _deselected: object) -> None:
         row = self._table.selected_row_data() or {}

@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -28,6 +27,7 @@ from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.inventory import InventoryService, ProductRow
 from xw_studio.services.sevdesk.part_client import PartClient, SevdeskPart
 from xw_studio.services.wix.client import WixProduct, WixProductsClient
+from xw_studio.ui.widgets.search_bar import SearchBar
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -106,9 +106,10 @@ class ProductsView(QWidget):
         bar.addWidget(self._inv_refresh_btn)
         lay.addLayout(bar)
 
-        self._inv_search = QLineEdit()
+        self._inv_search = SearchBar("Produkte filtern (mind. 3 Zeichen)…")
         self._inv_search.setPlaceholderText("Produkte filtern (SKU, Name, Kategorie)...")
-        self._inv_search.textChanged.connect(self._apply_inv_filter)
+        self._inv_search.search_changed.connect(self._apply_inv_filter)
+        self._inv_search.set_suggestion_provider(self._inv_search_suggestions)
         lay.addWidget(self._inv_search)
 
         self._inv_table = QTableWidget(0, len(_INV_HEADERS))
@@ -148,6 +149,7 @@ class ProductsView(QWidget):
             self._inv_status_lbl.setText("Keine Produkte in DB — Einstellungen > inventory.products")
         else:
             self._inv_status_lbl.setText(f"{len(self._all_rows)} Produkte geladen")
+        self._inv_search.refresh_suggestions()
         self._populate_inv(self._all_rows)
 
     def _on_inv_error(self, exc: BaseException) -> None:
@@ -203,9 +205,10 @@ class ProductsView(QWidget):
         bar.addWidget(self._wix_load_btn)
         lay.addLayout(bar)
 
-        self._wix_search = QLineEdit()
+        self._wix_search = SearchBar("Wix-Produkte filtern (mind. 3 Zeichen)…")
         self._wix_search.setPlaceholderText("Filtern (SKU, Name)...")
-        self._wix_search.textChanged.connect(self._apply_wix_filter)
+        self._wix_search.search_changed.connect(self._apply_wix_filter)
+        self._wix_search.set_suggestion_provider(self._wix_search_suggestions)
         lay.addWidget(self._wix_search)
 
         self._wix_table = QTableWidget(0, len(_WIX_HEADERS))
@@ -250,6 +253,7 @@ class ProductsView(QWidget):
             return
         self._wix_rows = rows  # type: ignore[assignment]
         self._wix_status_lbl.setText(f"{len(self._wix_rows)} Wix-Produkte geladen")
+        self._wix_search.refresh_suggestions()
         self._populate_wix(self._wix_rows)
         self._compute_overlap()
 
@@ -295,6 +299,28 @@ class ProductsView(QWidget):
             if needle in p.sku.lower() or needle in p.name.lower()
         ]
         self._populate_wix(filtered)
+
+    def _inv_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._all_rows:
+            hay = f"{row.sku} {row.name} {row.category}".lower()
+            if q in hay:
+                items.append(f"{row.sku} - {row.name}")
+        return items
+
+    def _wix_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._wix_rows:
+            hay = f"{row.sku} {row.name}".lower()
+            if q in hay:
+                items.append(f"{row.sku} - {row.name}")
+        return items
 
     def _compute_overlap(self) -> None:
         inv_skus = {p.sku for p in self._all_rows if p.sku}

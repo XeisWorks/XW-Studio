@@ -135,6 +135,7 @@ class RechnungenView(QWidget):
         layout.addLayout(filter_row)
 
         self._search = SearchBar("Suchen…")
+        self._search.set_suggestion_provider(self._invoice_search_suggestions)
         layout.addWidget(self._search)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -330,6 +331,8 @@ class RechnungenView(QWidget):
             self._table.set_data(rows)
             self._summaries = summaries
 
+        self._search.refresh_suggestions()
+
         self._next_offset = len(self._summaries)
         self._btn_more.setEnabled(has_more)
 
@@ -341,6 +344,22 @@ class RechnungenView(QWidget):
         )
         self._append_mode = False
         self._refresh_detail_for_selection()
+
+    def _invoice_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._summaries:
+            hay = (
+                f"{row.invoice_number} {row.contact_name} {row.order_reference} "
+                f"{row.address_country_code} {row.buyer_note}"
+            ).lower()
+            if q in hay:
+                nr = row.invoice_number or "—"
+                customer = row.contact_name or "—"
+                items.append(f"{nr} - {customer}")
+        return items
 
     def _on_load_error(self, exc: Exception) -> None:
         logger.error("Invoice load failed: %s", exc)
