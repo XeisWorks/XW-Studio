@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -9,6 +10,30 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from xw_studio.services.http_client import SevdeskConnection
 
 logger = logging.getLogger(__name__)
+
+
+def _format_date_de(raw: str | None) -> str:
+    """Parse ISO date string from sevDesk and return DD.MM.YYYY."""
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(raw)
+        return dt.strftime("%d.%m.%Y")
+    except (ValueError, TypeError):
+        return raw
+
+
+def _format_amount_de(raw: str | float | None) -> str:
+    """Format a decimal amount in German style: 1.234,56 €."""
+    if raw is None:
+        return "—"
+    try:
+        val = float(raw)
+        # German format: dot as thousands sep, comma as decimal sep
+        formatted = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{formatted} €"
+    except (ValueError, TypeError):
+        return str(raw)
 
 # Common sevDesk invoice status codes (subset; unknown -> label mapping default)
 _INVOICE_STATUS_DE: dict[int, str] = {
@@ -52,12 +77,16 @@ class InvoiceSummary(BaseModel):
         contact = raw.get("contact")
         contact_name = ""
         if isinstance(contact, dict):
-            contact_name = str(
-                contact.get("name")
-                or contact.get("surename")
-                or contact.get("familyname")
-                or ""
-            ).strip()
+            org = str(contact.get("name") or "").strip()
+            first = str(contact.get("surename") or "").strip()  # sevDesk: Vorname
+            last = str(contact.get("familyname") or "").strip()
+            person = f"{first} {last}".strip()
+            if org and person:
+                contact_name = f"{org} | {person}"
+            elif org:
+                contact_name = org
+            else:
+                contact_name = person
         cid = raw.get("id")
 
         country = raw.get("addressCountry")
@@ -78,6 +107,16 @@ class InvoiceSummary(BaseModel):
         }
         return cls.model_validate(payload)
 
+    @property
+    def formatted_date(self) -> str:
+        """Invoice date as DD.MM.YYYY."""
+        return _format_date_de(self.invoice_date)
+
+    @property
+    def formatted_brutto(self) -> str:
+        """Gross amount formatted in German locale (e.g. 1.234,56 €)."""
+        return _format_amount_de(self.sum_gross)
+
     def status_label(self) -> str:
         if self.status_code is None:
             return "—"
@@ -87,9 +126,9 @@ class InvoiceSummary(BaseModel):
         """Keys match German column headers used in :class:`DataTable`."""
         return {
             "Rechnungsnr.": self.invoice_number or "—",
-            "Datum": self.invoice_date or "—",
+            "Datum": self.formatted_date,
             "Status": self.status_label(),
-            "Brutto EUR": "—" if self.sum_gross is None else str(self.sum_gross),
+            "Brutto EUR": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Land": self.address_country_code or "—",
             "Notiz": "\u270e" if self.buyer_note.strip() else "",
@@ -101,9 +140,9 @@ class InvoiceSummary(BaseModel):
         lines = [
             f"ID: {self.id}",
             f"Nummer: {self.invoice_number or '—'}",
-            f"Datum: {self.invoice_date or '—'}",
+            f"Datum: {self.formatted_date}",
             f"Status: {self.status_label()} ({self.status_code if self.status_code is not None else '—'})",
-            f"Brutto: {self.sum_gross if self.sum_gross is not None else '—'}",
+            f"Brutto: {self.formatted_brutto}",
             f"Kunde: {self.contact_name or '—'}",
             f"Land: {self.address_country_code or '—'}",
         ]

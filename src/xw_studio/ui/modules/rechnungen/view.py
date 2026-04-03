@@ -238,7 +238,7 @@ class RechnungenView(QWidget):
             self._overlay.setGeometry(self.rect())
 
     def _on_search(self, text: str) -> None:
-        self._table.set_filter(text, column=0)
+        self._table.set_filter(text, column=-1)
 
     def _on_printer_status(self, printing_allowed: bool) -> None:
         self._print_allowed = printing_allowed
@@ -371,9 +371,9 @@ class RechnungenView(QWidget):
             return
         s = self._summaries[row]
         self._dl_number.setText(s.invoice_number or "—")
-        self._dl_date.setText(s.invoice_date or "—")
+        self._dl_date.setText(s.formatted_date)
         self._dl_status.setText(s.status_label())
-        self._dl_brutto.setText(str(s.sum_gross) if s.sum_gross is not None else "—")
+        self._dl_brutto.setText(s.formatted_brutto)
         self._dl_contact.setText(s.contact_name or "—")
         self._dl_country.setText(s.address_country_code or "—")
         self._dl_id.setText(s.id)
