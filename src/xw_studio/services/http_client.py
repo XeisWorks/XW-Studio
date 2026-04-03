@@ -116,6 +116,18 @@ class SevdeskConnection:
         """GET *path* with retry policy from config."""
         return sevdesk_get_with_retry(self.client, self.config, path, **kwargs)
 
+    def put(self, path: str, **kwargs: object) -> httpx.Response:
+        """PUT *path* (no retry — write operations are not idempotent-safe)."""
+        response: httpx.Response = self.client.put(path, **kwargs)  # type: ignore[arg-type]
+        raise_for_sevdesk(response)
+        return response
+
+    def post(self, path: str, **kwargs: object) -> httpx.Response:
+        """POST *path* (no retry — write operations are not idempotent-safe)."""
+        response: httpx.Response = self.client.post(path, **kwargs)  # type: ignore[arg-type]
+        raise_for_sevdesk(response)
+        return response
+
 
 def build_sevdesk_connection(config: AppConfig, *, api_token: str | None = None) -> SevdeskConnection:
     """Factory for DI registration."""

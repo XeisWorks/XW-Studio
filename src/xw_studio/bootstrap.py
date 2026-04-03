@@ -26,6 +26,8 @@ from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.sevdesk.part_client import PartClient
 from xw_studio.services.statistics.service import StatisticsService
+from xw_studio.services.products.catalog import ProductCatalogService
+from xw_studio.services.products.print_decision import PrintDecisionEngine
 from xw_studio.services.wix.client import WixProductsClient
 from xw_studio.services.clickup.client import ClickUpClient
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
@@ -62,6 +64,17 @@ def register_default_services(container: Container) -> None:
     container.register(
         PartClient,
         lambda c: PartClient(c.resolve(SevdeskConnection)),
+    )
+    container.register(
+        ProductCatalogService,
+        lambda c: ProductCatalogService(),
+    )
+    container.register(
+        PrintDecisionEngine,
+        lambda c: PrintDecisionEngine(
+            catalog=c.resolve(ProductCatalogService),
+            part_client=c.resolve(PartClient),
+        ),
     )
     container.register(
         InvoiceProcessingService,

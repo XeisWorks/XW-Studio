@@ -23,9 +23,11 @@ from PySide6.QtWidgets import (
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
-from xw_studio.services.wix.client import WixOrderItem, WixOrdersClient
+from xw_studio.services.sevdesk.part_client import PartClient
+from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -435,8 +437,10 @@ class RechnungenView(QWidget):
 
         ref = order_reference
 
-        def job() -> list[WixOrderItem]:
-            return wix_client.fetch_order_line_items(ref)
+        def job() -> list[PieceBlock]:
+            wix_items = wix_client.fetch_order_line_items(ref)
+            engine: PrintDecisionEngine = self._container.resolve(PrintDecisionEngine)
+            return engine.get_piece_blocks(wix_items, invoice_ref=ref)
 
         self._stuecke_worker = BackgroundWorker(job)
         self._stuecke_worker.signals.result.connect(self._on_stuecke_loaded)
@@ -450,14 +454,30 @@ class RechnungenView(QWidget):
             self._stuecke_hint.show()
             return
         for item in items:
-            if not isinstance(item, WixOrderItem):
+            if not isinstance(item, PieceBlock):
                 continue
-            # Build one row per item: "×2  XW-100  Produktname"
-            unreleased_marker = " ★" if item.is_unreleased else ""
-            line = f"×{item.qty}  [{item.sku}]  {item.name}{unreleased_marker}"
+            # Header line: "×2  [XW-001]  Produktname ★"
+            unreleased_marker = " \u2605" if item.is_unreleased else ""
+            line = f"\u00d7{item.qty_needed}  [{item.sku}]  {item.name}{unreleased_marker}"
             lbl = QLabel(line)
             lbl.setWordWrap(True)
             self._stuecke_layout.addWidget(lbl)
+            # Stock status line
+            stock_lbl = QLabel(f"  {item.stock_label}")
+            stock_lbl.setWordWrap(True)
+            # Colour: red for print-needed, orange for low, green for OK, grey for digital
+            if item.product is None:
+                color = "#9e9e9e"
+            elif item.product.is_digital:
+                color = "#64748b"
+            elif item.needs_print:
+                color = "#ef4444"
+            elif item.stock_status is not None and item.stock_status.needs_reprint:
+                color = "#f59e0b"
+            else:
+                color = "#16a34a"
+            stock_lbl.setStyleSheet(f"color: {color}; font-size: 11px; padding-left: 8px;")
+            self._stuecke_layout.addWidget(stock_lbl)
             if item.note:
                 note_lbl = QLabel(f"  ↳ {item.note}")
                 note_lbl.setWordWrap(True)

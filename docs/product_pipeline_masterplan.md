@@ -1,7 +1,33 @@
-# XW-Studio Product Pipeline Masterplan
+# XW-Studio Product Pipeline Masterplan — Final Spec
+
+> Letzte Aktualisierung: 2026-04-03  
+> Alle Design-Entscheidungen durch User-Interview bestätigt.
+
+---
+
+## Design-Entscheidungen (aus Interview)
+
+| # | Thema | Entscheidung |
+|---|---|---|
+| 1 | Schreibstelle | Pipeline = einzige Schreibstelle für alle Menüs |
+| 2 | Bestandsquelle | sevDesk = Single Source of Truth (SOT) für Bestand |
+| 3 | Stock Write-back | Nach Druck: `PUT /Part/{id}` mit neuem Bestand |
+| 4 | Reservierung | Erst beim klick auf START/Drucken — kein Pre-Lock |
+| 5 | Digitale Produkte | `stockEnabled: false` in sevDesk → UI zeigt ∞, von Drucklogik ausgeschlossen |
+| 6 | POD-Zielbestand | Konfigurierbar pro Produkt (`min_stock_target`, `reprint_batch_qty`) |
+| 7 | Print-Reihenfolge | FIFO nach Rechnungsdatum |
+| 8 | Order-Referenz | Aus sevDesk-Feldern — keine manuelle Korrektur nötig |
+| 9 | Druckdatei | Lokaler Windows-Pfad, pro Produkt in DB gespeichert |
+| 10 | Cover/Deckblatt | Bleibt im Layout-Modul (Editor); Pipeline speichert nur den Pfad-Verweis |
+| 11 | CRM/Statistik | Lesen aus Pipeline-Queries |
+| 12 | Settings-Submenu | Kein eigenes Pipeline-Admin-Submenu |
+| 13 | Freigabe | Draft → Review → Live (Sync) |
+| 14 | Multi-PC | Lokale Cache-Tabellen erlaubt |
+
+---
 
 ## Zielbild
-Eine einheitliche, zentrale Produkt-Pipeline, die von allen Menues genutzt wird (Rechnungen, Produkte, Layout, CRM, Druck, Marketing).
+Eine einheitliche, zentrale Produkt-Pipeline, die von allen Menues genutzt wird.
 
 Die Pipeline ist die einzige Quelle fuer:
 - Produktstammdaten
