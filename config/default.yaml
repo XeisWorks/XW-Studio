@@ -29,7 +29,42 @@ printing:
   invoice_dpi: 300
   buffer_quantity: 3
   rate_limit_seconds: 1
-  configured_printer_names: []
+  # Printer names that are considered valid targets (Windows names, exact match).
+  # Migrated from old sevDesk-project print_profiles + extra_printers.
+  configured_printer_names:
+    - "Rechnungen"
+    - "Noten A4 Simplex"
+    - "Noten A4 Duplex"
+    - "Canon Broschüre Mono"
+    - "Canon Broschüre Duo"
+    - "Brother QL-800"
+  # Named print profiles: map a logical role to a specific printer + DPI.
+  # Use profile "id" when calling print_pdf() via product print rules.
+  print_profiles:
+    - id: "invoice"
+      label: "Rechnungsdruck"
+      printer_name: "Rechnungen"
+      dpi: 300
+    - id: "label"
+      label: "Etikettendruck"
+      printer_name: "Brother QL-800"
+      dpi: 300
+    - id: "noten_simplex"
+      label: "Noten A4 Simplex"
+      printer_name: "Noten A4 Simplex"
+      dpi: 600
+    - id: "noten_duplex"
+      label: "Noten A4 Duplex"
+      printer_name: "Noten A4 Duplex"
+      dpi: 600
+    - id: "brochure_mono"
+      label: "Canon Broschüre Mono"
+      printer_name: "Canon Broschüre Mono"
+      dpi: 600
+    - id: "brochure_duo"
+      label: "Canon Broschüre Duo"
+      printer_name: "Canon Broschüre Duo"
+      dpi: 600
 
 inventory:
   alarm_threshold: 5

@@ -206,17 +206,72 @@ class DailyBusinessService:
 
     @staticmethod
     def _classify_invoice_queue(inv: InvoiceSummary) -> str | None:
+        """Classify an open invoice into a sub-queue based on text signals.
+
+        Ordering matters: most specific patterns first to avoid mis-classification.
+
+        Mollie:     Only explicit Mollie references or Mollie-format IDs (ord_/tr_ prefix).
+                    NOT "payment" (too generic—every invoice is related to payment).
+        Downloads:  Digital delivery needed; Zusatzstimme (ZST) SKU prefix, pdf-link, etc.
+                    NOT bare "link" (too broad, matches unrelated German words).
+        Refunds:    Storno, chargeback, Gutschrift (credit note), Rückläufer.
+                    Also catches invoices whose number starts with "ST-" (sevDesk storno prefix).
+        Gutscheine: Gift cards / vouchers; NOT Gutschrift (that's a refund).
+        """
         hay = (
             f"{inv.order_reference} {inv.buyer_note} {inv.invoice_number} {inv.contact_name}"
         ).lower()
-        if any(k in hay for k in ("refund", "rueckerstattung", "rückerstattung", "storno", "chargeback")):
+        order_ref = inv.order_reference.lower().strip()
+        inv_num = inv.invoice_number.lower().strip()
+
+        # ------------------------------------------------------------------
+        # 1. Refunds / Stornos / Chargebacks
+        # ------------------------------------------------------------------
+        _REFUND_KEYWORDS = (
+            "refund", "rueckerstattung", "rückerstattung",
+            "storno", "chargeback", "rückläufer", "rucklaeufer",
+            "gutschrift",   # "Gutschrift" = credit note, NOT gift card
+            "reverse", "credits",
+        )
+        if any(k in hay for k in _REFUND_KEYWORDS):
             return "refunds"
-        if any(k in hay for k in ("gutschein", "voucher", "coupon", "gift card")):
+        # sevDesk storno invoices get a "ST-" prefix in the invoice number
+        if inv_num.startswith("st-") or "-storno" in inv_num:
+            return "refunds"
+
+        # ------------------------------------------------------------------
+        # 2. Vouchers / Gift cards  ("Gutschein", NOT "Gutschrift")
+        # ------------------------------------------------------------------
+        _VOUCHER_KEYWORDS = (
+            "gutschein", "gutscheincode", "voucher", "coupon", "gift card", "gift-card",
+        )
+        if any(k in hay for k in _VOUCHER_KEYWORDS):
             return "gutscheine"
-        if any(k in hay for k in ("download", "digital", "pdf-link", "link")):
+
+        # ------------------------------------------------------------------
+        # 3. Digital downloads requiring manual delivery
+        # ------------------------------------------------------------------
+        _DOWNLOAD_KEYWORDS = (
+            "download", "digital", "pdf-link", "pdf download",
+            "online-link", "zusatzstimme",
+        )
+        if any(k in hay for k in _DOWNLOAD_KEYWORDS):
             return "downloads"
-        if any(k in hay for k in ("mollie", "auth", "authorized", "payment")):
+        # Zusatzstimmen (digital PDF parts) have SKU prefix ZST in order_reference
+        if order_ref.startswith("zst") or "zusatz" in order_ref:
+            return "downloads"
+
+        # ------------------------------------------------------------------
+        # 4. Mollie payment authorization issues
+        #    Only flag when there is an explicit Mollie reference to avoid
+        #    false positives ("auth" alone, "authorized" alone are too broad).
+        # ------------------------------------------------------------------
+        if "mollie" in hay:
             return "mollie"
+        # Mollie order IDs have "ord_" prefix; transaction IDs have "tr_" prefix
+        if order_ref.startswith("ord_") or order_ref.startswith("tr_"):
+            return "mollie"
+
         return None
 
     def _load_urgency_rules(self) -> dict[str, list[str]]:

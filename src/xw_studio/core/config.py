@@ -64,6 +64,16 @@ class WixSection:
 
 
 @dataclass(frozen=True)
+class PrintProfile:
+    """Named print configuration for a specific printer role."""
+
+    id: str = ""
+    label: str = ""
+    printer_name: str = ""
+    dpi: int = 600
+
+
+@dataclass(frozen=True)
 class PrintingSection:
     """Print settings. ``configured_printer_names`` = expected Windows printer names on print PC."""
 
@@ -72,6 +82,35 @@ class PrintingSection:
     buffer_quantity: int = 3
     rate_limit_seconds: int = 1
     configured_printer_names: list[str] = field(default_factory=list)
+    # Named profiles loaded from YAML (list[dict] from YAML → list[PrintProfile] via loader)
+    print_profiles: list[dict] = field(default_factory=list)
+
+    def resolve_profile(self, profile_id: str) -> PrintProfile | None:
+        """Return the PrintProfile for *profile_id*, or None if not found."""
+        for entry in self.print_profiles:
+            if isinstance(entry, dict) and entry.get("id") == profile_id:
+                return PrintProfile(
+                    id=str(entry.get("id") or ""),
+                    label=str(entry.get("label") or ""),
+                    printer_name=str(entry.get("printer_name") or ""),
+                    dpi=int(entry.get("dpi") or 600),
+                )
+        return None
+
+    def all_profiles(self) -> list[PrintProfile]:
+        """Return all configured print profiles as typed objects."""
+        result: list[PrintProfile] = []
+        for entry in self.print_profiles:
+            if isinstance(entry, dict) and entry.get("id"):
+                result.append(
+                    PrintProfile(
+                        id=str(entry.get("id") or ""),
+                        label=str(entry.get("label") or ""),
+                        printer_name=str(entry.get("printer_name") or ""),
+                        dpi=int(entry.get("dpi") or 600),
+                    )
+                )
+        return result
 
 
 @dataclass(frozen=True)
