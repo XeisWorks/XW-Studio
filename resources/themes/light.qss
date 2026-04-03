@@ -6,11 +6,37 @@ Sidebar {
 }
 
 SidebarButton {
-    color: #333;
+    color: #1f2937;
 }
 
 SidebarButton:checked {
-    background-color: rgba(33, 150, 243, 0.1);
+    color: #0f172a;
+    background-color: rgba(37, 99, 235, 0.12);
+}
+
+QLabel {
+    color: #334155;
+}
+
+QPushButton {
+    color: #1f2937;
+}
+
+QPushButton:hover {
+    color: #0f172a;
+}
+
+QPushButton:disabled {
+    color: #94a3b8;
+}
+
+QTabBar::tab {
+    color: #475569;
+}
+
+QTabBar::tab:selected {
+    color: #0f172a;
+    font-weight: 600;
 }
 
 DashboardCard {
@@ -25,7 +51,7 @@ Toast {
 
 QTableView {
     gridline-color: #e0e0e0;
-    selection-background-color: rgba(33, 150, 243, 0.15);
+    selection-background-color: rgba(37, 99, 235, 0.16);
 }
 
 QScrollBar:vertical {

@@ -1,11 +1,12 @@
 """Centralized logging configuration."""
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
 def setup_logging(level: int = logging.INFO, log_dir: Path | None = None) -> None:
-    """Configure root logger with console + optional file handler."""
+    """Configure root logger with console + optional rotating file handler."""
     root = logging.getLogger()
     root.setLevel(level)
 
@@ -24,8 +25,11 @@ def setup_logging(level: int = logging.INFO, log_dir: Path | None = None) -> Non
 
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(
-            log_dir / "xw_studio.log", encoding="utf-8"
+        file_handler = RotatingFileHandler(
+            log_dir / "xw_studio.log",
+            maxBytes=2 * 1024 * 1024,  # 2 MB
+            backupCount=3,
+            encoding="utf-8",
         )
         file_handler.setLevel(level)
         file_handler.setFormatter(fmt)

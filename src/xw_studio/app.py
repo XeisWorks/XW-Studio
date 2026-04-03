@@ -15,6 +15,7 @@ from xw_studio.core.database import create_engine_from_config
 from xw_studio.core.logging_setup import setup_logging
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.updater import check_and_update
+from xw_studio.ui.theme import apply_app_theme
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,7 @@ def create_application() -> QApplication:
     app.setApplicationName(config.app.name)
     app.setApplicationVersion("0.1.0")
 
-    try:
-        from qt_material import apply_stylesheet
-        apply_stylesheet(app, theme=f"{config.app.theme}.xml")
-    except Exception as exc:
-        logger.warning("Could not apply qt-material theme: %s", exc)
+    apply_app_theme(app, config.app.theme)
 
     sys.excepthook = _handle_exception
 

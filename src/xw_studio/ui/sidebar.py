@@ -68,13 +68,16 @@ class SidebarButton(QPushButton):
                 border: none;
                 border-left: 3px solid transparent;
                 font-size: 14px;
+                color: palette(window-text);
             }
             QPushButton:checked {
                 border-left: 3px solid #4fc3f7;
                 font-weight: bold;
+                color: palette(window-text);
             }
             QPushButton:hover {
                 background-color: rgba(79, 195, 247, 0.1);
+                color: palette(window-text);
             }
         """)
         self._badge_count = 0

@@ -17,6 +17,7 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey, PrinterStatus
 from xw_studio.ui.sidebar import Sidebar
 from xw_studio.ui.status_bar import StudioStatusBar
+from xw_studio.ui.theme import apply_app_theme
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -128,29 +129,14 @@ class MainWindow(QMainWindow):
         signals.status_message.connect(self._status_bar.showMessage)
         signals.theme_changed.connect(self._apply_theme)
 
-        def _apply_theme(self, theme_name: str) -> None:
-            """Apply a qt-material theme at runtime."""
-            try:
-                from qt_material import apply_stylesheet
-                from PySide6.QtWidgets import QApplication
-
-                app = QApplication.instance()
-                if app is not None:
-                    apply_stylesheet(app, theme=f"{theme_name}.xml")
-                    logger.info("Theme switched to %s", theme_name)
-            except Exception as exc:
-                logger.warning("Theme switch failed: %s", exc)
-
-
     def _apply_theme(self, theme_name: str) -> None:
         """Apply a qt-material theme at runtime."""
         try:
-            from qt_material import apply_stylesheet
             from PySide6.QtWidgets import QApplication
 
             app = QApplication.instance()
             if app is not None:
-                apply_stylesheet(app, theme=f"{theme_name}.xml")
+                apply_app_theme(app, theme_name)
                 logger.info("Theme switched to %s", theme_name)
         except Exception as exc:
             logger.warning("Theme switch failed: %s", exc)
