@@ -25,6 +25,7 @@ from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
+from xw_studio.services.wix.client import WixOrderItem, WixOrdersClient
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -39,7 +40,7 @@ _TABLE_COLUMNS = [
     "Rechnungsnr.",
     "Datum",
     "Status",
-    "Brutto EUR",
+    "Brutto",
     "Kunde",
     "Land",
     "Notiz",
@@ -56,6 +57,7 @@ class RechnungenView(QWidget):
         super().__init__(parent)
         self._container = container
         self._worker: BackgroundWorker | None = None
+        self._stuecke_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
         self._next_offset = 0
@@ -163,9 +165,11 @@ class RechnungenView(QWidget):
         self._dl_contact.setWordWrap(True)
         self._dl_country = QLabel("—")
         self._dl_id = QLabel("—")
+        self._dl_order_ref = QLabel("—")
         form_con.addRow("Name:", self._dl_contact)
         form_con.addRow("Land:", self._dl_country)
         form_con.addRow("ID:", self._dl_id)
+        form_con.addRow("Order-Ref:", self._dl_order_ref)
         detail_main.addWidget(gb_contact)
 
         self._gb_note = QGroupBox("Käufernotiz")
@@ -176,6 +180,14 @@ class RechnungenView(QWidget):
         self._gb_note.hide()
         detail_main.addWidget(self._gb_note)
 
+        self._gb_stuecke = QGroupBox("Stücke")
+        self._stuecke_layout = QVBoxLayout(self._gb_stuecke)
+        self._stuecke_layout.setSpacing(4)
+        self._stuecke_hint = QLabel("—")
+        self._stuecke_hint.setWordWrap(True)
+        self._stuecke_layout.addWidget(self._stuecke_hint)
+        self._gb_stuecke.hide()
+        detail_main.addWidget(self._gb_stuecke)
         detail_main.addStretch()
         detail_scroll.setWidget(detail_content)
 
@@ -370,18 +382,35 @@ class RechnungenView(QWidget):
             self._reset_detail()
             return
         s = self._summaries[row]
-        self._dl_number.setText(s.invoice_number or "—")
+        self._dl_number.setText(s.invoice_number or "")
         self._dl_date.setText(s.formatted_date)
         self._dl_status.setText(s.status_label())
         self._dl_brutto.setText(s.formatted_brutto)
-        self._dl_contact.setText(s.contact_name or "—")
-        self._dl_country.setText(s.address_country_code or "—")
+        self._dl_contact.setText(s.contact_name or "")
+        self._dl_country.setText(s.address_country_code or "")
         self._dl_id.setText(s.id)
         if s.buyer_note.strip():
             self._dl_note.setText(s.buyer_note)
             self._gb_note.show()
         else:
             self._dl_note.setText("")
+            self._gb_note.hide()
+        self._dl_order_ref.setText(s.order_reference or "")
+        if s.order_reference:
+            self._load_stuecke(s.order_reference)
+        else:
+            self._reset_stuecke()
+
+    def _reset_detail(self) -> None:
+        for lbl in (
+            self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
+            self._dl_contact, self._dl_country, self._dl_id,
+        ):
+            lbl.setText("")
+        self._dl_note.setText("")
+        self._gb_note.hide()
+        self._dl_order_ref.setText("")
+        self._reset_stuecke()
             self._gb_note.hide()
 
     def _reset_detail(self) -> None:
@@ -392,3 +421,62 @@ class RechnungenView(QWidget):
             lbl.setText("—")
         self._dl_note.setText("")
         self._gb_note.hide()
+        self._dl_order_ref.setText("—")
+        self._reset_stuecke()
+
+    def _reset_stuecke(self) -> None:
+        self._stuecke_hint.setText("—")
+        # Remove dynamic item widgets (keep only the hint label)
+        while self._stuecke_layout.count() > 1:
+            item = self._stuecke_layout.takeAt(1)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._gb_stuecke.hide()
+
+    def _load_stuecke(self, order_reference: str) -> None:
+        self._reset_stuecke()
+        self._stuecke_hint.setText("Wird geladen…")
+        self._gb_stuecke.show()
+
+        service: SecretService = self._container.resolve(SecretService)
+        wix_client = WixOrdersClient(secret_service=service)
+
+        if not wix_client.has_credentials():
+            self._stuecke_hint.setText("Kein Wix-API-Key konfiguriert.")
+            return
+
+        ref = order_reference
+
+        def job() -> list[WixOrderItem]:
+            return wix_client.fetch_order_line_items(ref)
+
+        self._stuecke_worker = BackgroundWorker(job)
+        self._stuecke_worker.signals.result.connect(self._on_stuecke_loaded)
+        self._stuecke_worker.signals.error.connect(self._on_stuecke_error)
+        self._stuecke_worker.start()
+
+    def _on_stuecke_loaded(self, items: object) -> None:
+        self._stuecke_hint.hide()
+        if not isinstance(items, list) or not items:
+            self._stuecke_hint.setText("Keine Positionen gefunden.")
+            self._stuecke_hint.show()
+            return
+        for item in items:
+            if not isinstance(item, WixOrderItem):
+                continue
+            # Build one row per item: "×2  XW-100  Produktname"
+            unreleased_marker = " ★" if item.is_unreleased else ""
+            line = f"×{item.qty}  [{item.sku}]  {item.name}{unreleased_marker}"
+            lbl = QLabel(line)
+            lbl.setWordWrap(True)
+            self._stuecke_layout.addWidget(lbl)
+            if item.note:
+                note_lbl = QLabel(f"  ↳ {item.note}")
+                note_lbl.setWordWrap(True)
+                note_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
+                self._stuecke_layout.addWidget(note_lbl)
+
+    def _on_stuecke_error(self, exc: Exception) -> None:
+        logger.warning("Stücke fetch failed: %s", exc)
+        self._stuecke_hint.setText(f"Fehler: {exc}")
+        self._stuecke_hint.show()

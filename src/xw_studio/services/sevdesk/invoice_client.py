@@ -57,6 +57,7 @@ class InvoiceSummary(BaseModel):
     contact_name: str = ""
     buyer_note: str = ""
     address_country_code: str = ""
+    order_reference: str = ""
 
     @field_validator("status_code", mode="before")
     @classmethod
@@ -98,12 +99,22 @@ class InvoiceSummary(BaseModel):
 
         buyer_note = str(raw.get("buyerNote") or "").strip()
 
+        # Wix order reference stored in customerInternalNote or related fields
+        order_reference = ""
+        for ref_key in ("reference", "customerInternalNote", "customerInternalNoteText",
+                        "referenceNumber", "orderNumber"):
+            val = str(raw.get(ref_key) or "").strip()
+            if val:
+                order_reference = val
+                break
+
         payload = {
             **raw,
             "id": str(cid) if cid is not None else "",
             "contact_name": contact_name,
             "buyer_note": buyer_note,
             "address_country_code": country_code,
+                    "order_reference": order_reference,
         }
         return cls.model_validate(payload)
 
@@ -128,7 +139,7 @@ class InvoiceSummary(BaseModel):
             "Rechnungsnr.": self.invoice_number or "—",
             "Datum": self.formatted_date,
             "Status": self.status_label(),
-            "Brutto EUR": self.formatted_brutto,
+            "Brutto": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Land": self.address_country_code or "—",
             "Notiz": "\u270e" if self.buyer_note.strip() else "",

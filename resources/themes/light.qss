@@ -16,6 +16,16 @@ SidebarButton:checked {
 
 QLabel {
     color: #334155;
+
+QTableView::item:selected {
+    background-color: rgba(37, 99, 235, 0.18);
+    color: #0f172a;
+}
+
+QTableView::item:selected:!active {
+    background-color: rgba(37, 99, 235, 0.10);
+    color: #334155;
+}
 }
 
 QPushButton {
