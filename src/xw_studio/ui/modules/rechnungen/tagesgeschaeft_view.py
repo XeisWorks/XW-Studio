@@ -4,7 +4,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QShowEvent
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -85,6 +86,16 @@ class _QueueTabView(QWidget):
         sel = self._table.selectionModel()
         if sel is not None:
             sel.selectionChanged.connect(self._on_selection_changed)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
+        super().closeEvent(event)
 
     def reload(self, fallback_count: int = 0) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -170,8 +181,12 @@ class _StartDialog(QDialog):
         self._mode_full = QPushButton("📄 + 🖨  Rechnungen + Druck (Noten & Labels vorbereiten)")
         self._mode_full.setCheckable(True)
         self._mode_full.setMinimumHeight(40)
+        self._mode_print_only = QPushButton("🖨  Nur Drucken (PRINT ALL)")
+        self._mode_print_only.setCheckable(True)
+        self._mode_print_only.setMinimumHeight(40)
         gb_lay.addWidget(self._mode_invoices)
         gb_lay.addWidget(self._mode_full)
+        gb_lay.addWidget(self._mode_print_only)
         layout.addWidget(gb)
 
         gb_preview = QGroupBox("Pre-Flight (Bestand vs. Bedarf)")
@@ -185,7 +200,11 @@ class _StartDialog(QDialog):
 
         # Mutual exclusion
         self._mode_invoices.toggled.connect(lambda c: self._mode_full.setChecked(not c) if c else None)
+        self._mode_invoices.toggled.connect(lambda c: self._mode_print_only.setChecked(not c) if c else None)
         self._mode_full.toggled.connect(lambda c: self._mode_invoices.setChecked(not c) if c else None)
+        self._mode_full.toggled.connect(lambda c: self._mode_print_only.setChecked(not c) if c else None)
+        self._mode_print_only.toggled.connect(lambda c: self._mode_invoices.setChecked(not c) if c else None)
+        self._mode_print_only.toggled.connect(lambda c: self._mode_full.setChecked(not c) if c else None)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -197,6 +216,10 @@ class _StartDialog(QDialog):
     @property
     def full_mode(self) -> bool:
         return bool(self._mode_full.isChecked())
+
+    @property
+    def print_only_mode(self) -> bool:
+        return bool(self._mode_print_only.isChecked())
 
     def _format_preflight(self) -> str:
         lines: list[str] = [
@@ -238,11 +261,30 @@ class TagesgeschaeftView(QWidget):
         self._badge_worker: BackgroundWorker | None = None
         self._start_worker: BackgroundWorker | None = None
         self._start_exec_worker: BackgroundWorker | None = None
+        self._badge_timer = QTimer(self)
+        self._badge_timer.setInterval(60000)
+        self._badge_timer.timeout.connect(self._refresh_badges)
         self._build_ui()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._refresh_badges()
+        self._badge_timer.start()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        self._badge_timer.stop()
+        self._wait_for_workers()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._badge_timer.stop()
+        self._wait_for_workers()
+        super().closeEvent(event)
+
+    def _wait_for_workers(self) -> None:
+        for worker in (self._badge_worker, self._start_worker, self._start_exec_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(3000)
 
     def _build_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -303,9 +345,9 @@ class TagesgeschaeftView(QWidget):
 
         def job() -> dict[str, int]:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-            open_invoices = invoice_service.load_invoice_summaries(status=200, limit=100, offset=0)
+            open_count = invoice_service.count_invoices(status=200)
             service: DailyBusinessService = self._container.resolve(DailyBusinessService)
-            return service.load_counts(open_invoice_count=len(open_invoices))
+            return service.load_counts(open_invoice_count=open_count)
 
         self._badge_worker = BackgroundWorker(job)
         self._badge_worker.signals.result.connect(self._on_badges_result)
@@ -345,8 +387,8 @@ class TagesgeschaeftView(QWidget):
         def job() -> StartPreflight:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
             inventory_service: InventoryService = self._container.resolve(InventoryService)
-            open_invoices = invoice_service.load_invoice_summaries(status=200, limit=100, offset=0)
-            return inventory_service.build_start_preflight(len(open_invoices))
+            open_count = invoice_service.count_invoices(status=200)
+            return inventory_service.build_start_preflight(open_count)
 
         self._start_worker = BackgroundWorker(job)
         self._start_worker.signals.result.connect(self._on_start_preflight_ready)
@@ -360,8 +402,13 @@ class TagesgeschaeftView(QWidget):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        mode = StartMode.INVOICES_AND_PRINT if dlg.full_mode else StartMode.INVOICES_ONLY
-        if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
+        mode = StartMode.INVOICES_ONLY
+        if dlg.full_mode:
+            mode = StartMode.INVOICES_AND_PRINT
+        elif dlg.print_only_mode:
+            mode = StartMode.PRINT_ONLY
+
+        if mode in (StartMode.INVOICES_AND_PRINT, StartMode.PRINT_ONLY) and result.missing_position_data:
             QMessageBox.information(
                 self,
                 "Hinweis",

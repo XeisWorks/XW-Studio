@@ -163,6 +163,7 @@ def register_default_services(container: Container) -> None:
         DailyBusinessService,
         lambda c: DailyBusinessService(
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+            c.resolve(InvoiceProcessingService),
         ),
     )
     container.register(

@@ -80,6 +80,24 @@ class InvoiceProcessingService:
         rows = [s.as_table_row() for s in summaries]
         return rows, summaries
 
+    def count_invoices(self, *, status: int | None = None, batch_size: int = 200) -> int:
+        """Count invoices by paging through API results to avoid hard caps in UI badges."""
+        safe_batch = max(10, int(batch_size))
+        offset = 0
+        total = 0
+        while True:
+            rows = self._invoices.list_invoice_summaries(
+                limit=safe_batch,
+                offset=offset,
+                status=status,
+            )
+            count = len(rows)
+            total += count
+            if count < safe_batch:
+                break
+            offset += safe_batch
+        return total
+
     def _load_sensitive_country_codes(self) -> set[str]:
         if self._settings_repo is None:
             return set(DEFAULT_SENSITIVE_COUNTRY_CODES)

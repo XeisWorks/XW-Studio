@@ -39,5 +39,5 @@ Status: DONE (2026-04-03)
 - Bestehende Unit-Test-Suite geprueft.
 
 ## Offene Punkte (naechste Iteration)
-- Feinjustierung der Kanal-Schluesselwoerter nach Realdaten aus Produktion.
+- Feinjustierung der Kanal-Schluesselwoerter nach Realdaten aus Produktion (Live-Importer aktiv).
 - Optional: zusaetzliche Symbolstufe fuer "Warnung" (nicht-dringend) einfuehren.

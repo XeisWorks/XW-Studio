@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from xw_studio.services.daily_business.service import DailyBusinessService
+from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 
 
 class _RepoStub:
@@ -12,6 +13,20 @@ class _RepoStub:
 
     def get_value_json(self, key: str) -> str | None:
         return self._payloads.get(key)
+
+
+class _InvoiceProcessingStub:
+    def __init__(self, rows: list[InvoiceSummary]) -> None:
+        self._rows = rows
+
+    def load_invoice_summaries(
+        self,
+        *,
+        status: int | None = None,
+        limit: int = 300,
+        offset: int = 0,
+    ) -> list[InvoiceSummary]:
+        return list(self._rows)
 
 
 def test_mollie_queue_marks_auth_as_urgent() -> None:
@@ -68,3 +83,56 @@ def test_custom_urgency_rules_from_settings_override_defaults() -> None:
     assert len(rows) == 1
     assert rows[0]["Mark."] == "🔴"
     assert "Download-Link" in rows[0]["__tooltip__Mark."]
+
+
+def test_live_importer_classifies_open_invoices_into_queues() -> None:
+    rows = [
+        InvoiceSummary.model_validate(
+            {
+                "id": "1",
+                "invoiceNumber": "RE-1",
+                "contact_name": "Kunde A",
+                "buyer_note": "Bitte refund veranlassen",
+                "sumGross": "19.90",
+                "status": 200,
+            }
+        ),
+        InvoiceSummary.model_validate(
+            {
+                "id": "2",
+                "invoiceNumber": "RE-2",
+                "contact_name": "Kunde B",
+                "order_reference": "MOLLIE AUTH PENDING",
+                "sumGross": "9.90",
+                "status": 200,
+            }
+        ),
+    ]
+    svc = DailyBusinessService(_RepoStub({}), _InvoiceProcessingStub(rows))  # type: ignore[arg-type]
+
+    refunds = svc.load_queue_rows("refunds")
+    mollie = svc.load_queue_rows("mollie")
+
+    assert len(refunds) == 1
+    assert refunds[0]["Ref"] == "RE-1"
+    assert len(mollie) == 1
+    assert mollie[0]["Ref"] == "RE-2"
+
+
+def test_load_counts_uses_live_rows_when_pending_counts_missing() -> None:
+    rows = [
+        InvoiceSummary.model_validate(
+            {
+                "id": "10",
+                "invoiceNumber": "RE-10",
+                "order_reference": "download link fehlt",
+                "status": 200,
+            }
+        )
+    ]
+    svc = DailyBusinessService(_RepoStub({}), _InvoiceProcessingStub(rows))  # type: ignore[arg-type]
+
+    counts = svc.load_counts(open_invoice_count=7)
+
+    assert counts["rechnungen"] == 7
+    assert counts["downloads"] == 1

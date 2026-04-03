@@ -81,3 +81,25 @@ def test_execute_invoices_mode_keeps_stock_unchanged() -> None:
 
     assert report.stock_updated is False
     assert repo.values["inventory.stock_levels"] == raw_stock
+
+
+def test_execute_print_only_mode_only_adds_printed_stock() -> None:
+    repo = _RepoStub(
+        {
+            "daily_business.pending_requirements": json.dumps({"XW-6-003": 2}),
+            "inventory.stock_levels": json.dumps({"XW-6-003": 1}),
+        }
+    )
+    cfg = AppConfig(printing=PrintingSection(buffer_quantity=3))
+    service = InventoryService(cfg, repo)
+
+    preflight = service.build_start_preflight(open_invoice_count=2)
+    report = service.execute_start_workflow(preflight, StartMode.PRINT_ONLY)
+
+    assert report.stock_updated is True
+    assert report.printed_skus == ["XW-6-003"]
+    assert report.consumed_skus == []
+
+    stock_after = json.loads(repo.values["inventory.stock_levels"])
+    # missing=1, print=1+3 => +4, no invoice consumption in PRINT_ONLY
+    assert stock_after["XW-6-003"] == 5

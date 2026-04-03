@@ -43,6 +43,7 @@ class StartMode(str, Enum):
 
     INVOICES_ONLY = "invoices"
     INVOICES_AND_PRINT = "full"
+    PRINT_ONLY = "print_only"
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,8 @@ class InventoryService:
 
         In ``INVOICES_AND_PRINT`` mode this updates inventory.stock_levels with
         post-run amounts (required quantities consumed, shortage printed with
-        configured buffer).
+        configured buffer). In ``PRINT_ONLY`` mode it only applies print production
+        to stock levels (no invoice consumption).
         """
         if mode == StartMode.INVOICES_ONLY:
             return StartExecutionReport(
@@ -206,7 +208,9 @@ class InventoryService:
         for decision in preflight.decisions:
             current = max(0, int(stock_levels.get(decision.sku, decision.on_hand_qty)))
             produced = max(0, int(decision.final_print_qty)) if decision.will_print else 0
-            consumed = max(0, int(decision.required_qty))
+            consumed = 0
+            if mode == StartMode.INVOICES_AND_PRINT:
+                consumed = max(0, int(decision.required_qty))
             final_stock = max(0, current + produced - consumed)
             stock_levels[decision.sku] = final_stock
 
