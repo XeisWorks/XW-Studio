@@ -406,18 +406,6 @@ class RechnungenView(QWidget):
             self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
             self._dl_contact, self._dl_country, self._dl_id,
         ):
-            lbl.setText("")
-        self._dl_note.setText("")
-        self._gb_note.hide()
-        self._dl_order_ref.setText("")
-        self._reset_stuecke()
-            self._gb_note.hide()
-
-    def _reset_detail(self) -> None:
-        for lbl in (
-            self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
-            self._dl_contact, self._dl_country, self._dl_id,
-        ):
             lbl.setText("—")
         self._dl_note.setText("")
         self._gb_note.hide()

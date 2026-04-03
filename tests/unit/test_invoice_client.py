@@ -24,7 +24,7 @@ def test_invoice_summary_from_api_object() -> None:
     assert row["Rechnungsnr."] == "R-99"
     assert row["Status"] == "Offen"
     assert row["Datum"] == "01.03.2024"
-    assert row["Brutto EUR"] == "19,99 €"
+    assert row["Brutto"] == "19,99 €"
     assert "Test GmbH" in summary.detail_lines()
     assert summary.formatted_date == "01.03.2024"
     assert "19,99 €" in summary.formatted_brutto

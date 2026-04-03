@@ -1,0 +1,196 @@
+version: 1
+name: xw-studio-product-pipeline
+owner: XeisWorks
+status: draft
+
+principles:
+  - single_engine
+  - event_driven
+  - idempotent_commands
+  - auditability
+  - postgres_as_operational_source
+
+global_contracts:
+  commands:
+    - reserve_for_invoice
+    - create_print_plan_for_invoice
+    - execute_print_plan
+    - sync_product
+    - upsert_product_asset
+  queries:
+    - get_invoice_piece_blocks
+    - get_inventory_gap_for_invoice
+    - get_product_view
+    - get_print_plan_preview
+
+phases:
+  - id: A
+    title: Domain Foundation
+    goal: Build canonical product schema and repository layer.
+    deliverables:
+      - sql_tables:
+          - product
+          - product_sku_alias
+          - product_channel_mapping
+          - product_asset
+          - product_render_profile
+      - service_interfaces:
+          - ProductCatalogService
+          - ProductMappingService
+      - migrations: alembic upgrade head
+    acceptance:
+      - Product can be created and queried by canonical id.
+      - SKU alias resolution works for legacy and current SKUs.
+    dependencies: []
+
+  - id: B
+    title: Asset Resolver
+    goal: Resolve printable assets from central rules and local paths.
+    deliverables:
+      - sql_tables:
+          - asset_path_override
+          - asset_health
+      - services:
+          - ProductAssetResolver
+      - checks:
+          - path_exists
+          - file_readable
+          - format_supported
+    acceptance:
+      - Resolver returns deterministic best asset for a SKU.
+      - Missing assets produce structured warnings, no hard crash.
+    dependencies: [A]
+
+  - id: C
+    title: Inventory Core
+    goal: Central stock/reservation/movement model.
+    deliverables:
+      - sql_tables:
+          - inventory_stock
+          - inventory_reservation
+          - inventory_movement
+          - inventory_snapshot
+      - services:
+          - InventoryServiceV2
+      - workflows:
+          - reserve_on_invoice_load
+          - consume_on_fulfillment
+          - manual_adjustment
+    acceptance:
+      - Reservation is idempotent per invoice line item.
+      - Stock movements are append-only and auditable.
+    dependencies: [A]
+
+  - id: D
+    title: Print Decision Engine
+    goal: Uniform print planning with stock-aware rules.
+    deliverables:
+      - sql_tables:
+          - print_rule
+          - print_plan
+          - print_plan_item
+          - print_job
+      - services:
+          - PrintDecisionService
+          - PrintExecutionService
+      - default_rules:
+          - print_when_stock_below_required: true
+          - minimum_reprint_qty: 3
+    acceptance:
+      - Given invoice items + stock, engine outputs deterministic plan.
+      - Manual override is persisted with reason.
+    dependencies: [B, C]
+
+  - id: E
+    title: Rechnungen Integration
+    goal: Plug Stücke panel and print suggestion into Rechnungen module.
+    deliverables:
+      - ui:
+          - stuecke_panel_from_pipeline
+          - print_preview_panel
+      - commands:
+          - reserve_for_invoice
+          - create_print_plan_for_invoice
+      - telemetry:
+          - timings_for_piece_load
+          - timings_for_print_plan
+    acceptance:
+      - Selecting an invoice shows normalized piece blocks.
+      - Print suggestion comes from central engine, not local logic.
+    dependencies: [A, B, C, D]
+
+  - id: F
+    title: Produkte Module Migration
+    goal: Move products screens fully to central pipeline APIs.
+    deliverables:
+      - ui:
+          - product_master_view
+          - stock_view
+          - sync_view
+          - asset_view
+      - removed_duplicates:
+          - legacy_sku_logic
+          - local_path_logic
+    acceptance:
+      - Products UI uses only ProductCatalogService/InventoryServiceV2.
+      - No duplicated SKU parsing code in UI layer.
+    dependencies: [A, B, C, D]
+
+  - id: G
+    title: Channel Sync + Monitoring
+    goal: Robust bi-directional sync with Wix/sevDesk and visibility.
+    deliverables:
+      - sql_tables:
+          - sync_cursor
+          - sync_job
+          - sync_error
+          - external_payload_archive
+      - workers:
+          - wix_sync_worker
+          - sevdesk_sync_worker
+      - admin_tools:
+          - retry_failed_sync
+          - inspect_payload
+    acceptance:
+      - Sync failures are retryable and visible in UI.
+      - Drift reports identify inventory/product mismatches.
+    dependencies: [A, C, F]
+
+cross_menu_usage:
+  rechnungen:
+    reads:
+      - get_invoice_piece_blocks
+      - get_inventory_gap_for_invoice
+      - get_print_plan_preview
+    writes:
+      - reserve_for_invoice
+      - execute_print_plan
+  produkte:
+    reads:
+      - get_product_view
+      - get_inventory_gap_for_invoice
+    writes:
+      - sync_product
+      - upsert_product_asset
+  layout:
+    reads:
+      - get_product_view
+    writes:
+      - upsert_product_asset
+  crm:
+    reads:
+      - get_product_view
+
+risks:
+  - name: inconsistent_sku_mapping
+    mitigation: canonical SKU map + strict validation + conflict UI
+  - name: stale_local_paths
+    mitigation: asset health checks + fallback resolver chain
+  - name: race_conditions_on_stock
+    mitigation: transactional reservations + optimistic locking
+
+definition_of_done:
+  - all menus call central contracts, no parallel product logic
+  - print plans are stock-aware and auditable
+  - wix/sevdesk sync conflicts are observable and recoverable
+  - automated tests cover command/query contracts
