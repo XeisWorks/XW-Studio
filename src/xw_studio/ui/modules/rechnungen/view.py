@@ -60,8 +60,8 @@ _TABLE_COLUMNS = [
     "BETRAG",
     "Kunde",
     "Hinweise",
-    "FULFILLMENT",
     "AKTIONEN",
+    "FULFILLMENT",
     "ID",
 ]
 
@@ -413,8 +413,9 @@ class RechnungenView(QWidget):
         self._table.viewport().installEventFilter(self)
         self._table.setSortingEnabled(False)
         self._table.horizontalHeader().setSectionsClickable(False)
-        self._table.horizontalHeader().resizeSection(fulfillment_col, 170)
+        self._table.horizontalHeader().resizeSection(hint_col, 150)
         self._table.horizontalHeader().resizeSection(actions_col, 120)
+        self._table.horizontalHeader().resizeSection(fulfillment_col, 170)
         self._table.setColumnHidden(_TABLE_COLUMNS.index("ID"), True)
         left_layout.addWidget(self._table, stretch=1)
 

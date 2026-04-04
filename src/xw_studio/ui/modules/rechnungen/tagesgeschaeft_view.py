@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QToolButton,
     QMenu,
     QDialog,
@@ -335,6 +336,19 @@ class TagesgeschaeftView(QWidget):
         btn_reprints.clicked.connect(self._on_reprints_clicked)
         bar_lay.addWidget(btn_reprints)
 
+        btn_beenden = QPushButton("■  Beenden")
+        btn_beenden.setToolTip("App beenden (laufende Hintergrundaufgaben werden abgewartet)")
+        btn_beenden.setFixedHeight(34)
+        btn_beenden.setFixedWidth(130)
+        btn_beenden.setStyleSheet(
+            "QPushButton { background-color: #c62828; color: white; border-radius: 6px;"
+            " font-weight: bold; font-size: 13px; }"
+            " QPushButton:hover { background-color: #b71c1c; }"
+            " QPushButton:pressed { background-color: #7f0000; }"
+        )
+        btn_beenden.clicked.connect(self._on_beenden_clicked)
+        bar_lay.addWidget(btn_beenden)
+
         main_layout.addWidget(action_bar)
 
         self._rechnungen_view = RechnungenView(self._container)
@@ -532,3 +546,43 @@ class TagesgeschaeftView(QWidget):
             "Fehler",
             f"Nachdrucke-Workflow konnte nicht ausgefuehrt werden:\n\n{exc}",
         )
+
+    def _on_beenden_clicked(self) -> None:
+        """Gracefully shut down the application."""
+        running = any(
+            w is not None and w.isRunning()
+            for w in (
+                self._badge_worker,
+                self._start_worker,
+                self._start_exec_worker,
+                self._reprint_worker,
+                self._reprint_exec_worker,
+            )
+        )
+        if running:
+            answer = QMessageBox.question(
+                self,
+                "App beenden",
+                "Es laufen noch Hintergrundaufgaben.\n"
+                "Trotzdem beenden? Laufende Operationen werden abgewartet (max. 5 s).",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            answer = QMessageBox.question(
+                self,
+                "App beenden",
+                "XW-Studio wirklich beenden?\n"
+                "Alle Änderungen sind bereits in PostgreSQL gespeichert.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        logger.info("User requested application shutdown via BEENDEN button.")
+        self._badge_timer.stop()
+        self._wait_for_workers()
+        QApplication.quit()

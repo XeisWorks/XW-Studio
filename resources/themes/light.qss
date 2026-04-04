@@ -126,3 +126,58 @@ QStatusBar {
     color: #334155;
     border-top: 1px solid #dbe4ef;
 }
+
+QToolButton {
+    color: #0f172a;
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+}
+
+QToolButton:hover {
+    background-color: #eef4ff;
+    border-color: #93c5fd;
+}
+
+QToolButton:pressed {
+    background-color: #dbeafe;
+}
+
+QToolButton:disabled {
+    color: #94a3b8;
+    background-color: #f1f5f9;
+    border-color: #e2e8f0;
+}
+
+QToolButton::menu-button {
+    border: none;
+    border-left: 1px solid #cbd5e1;
+    border-radius: 0 4px 4px 0;
+    background: transparent;
+    width: 14px;
+}
+
+QToolButton::menu-arrow {
+    image: none;
+}
+
+QMenu {
+    color: #0f172a;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 4px;
+}
+
+QMenu::item {
+    color: #0f172a;
+    padding: 6px 16px;
+}
+
+QMenu::item:selected {
+    background-color: #eff6ff;
+    color: #1d4ed8;
+}
+
+QMenu::item:disabled {
+    color: #94a3b8;
+}
