@@ -324,6 +324,35 @@ class WixOrdersClient:
                 order = self._search_order_by_number(digits)
         return order
 
+    def resolve_order(self, reference: str) -> dict[str, Any]:
+        """Resolve an order by order number/reference or UUID."""
+        return self._resolve_order(reference)
+
+    def resolve_order_summary(self, reference: str) -> dict[str, str]:
+        """Return normalized customer/order fields used by the details panel."""
+        order = self._resolve_order(reference)
+        if not order:
+            return {}
+
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
+        shipping_address = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+
+        first = str(buyer.get("firstName") or "").strip()
+        last = str(buyer.get("lastName") or "").strip()
+        full_name = " ".join(part for part in (first, last) if part).strip()
+        email = str(buyer.get("email") or "").strip()
+        city = str(shipping_address.get("city") or "").strip()
+        country = str(shipping_address.get("country") or "").strip()
+        return {
+            "wix_order_id": str(order.get("id") or "").strip(),
+            "wix_order_number": str(order.get("number") or "").strip(),
+            "wix_customer_name": full_name,
+            "wix_customer_email": email,
+            "wix_shipping_city": city,
+            "wix_shipping_country": country,
+        }
+
     def resolve_order_dashboard_url(self, reference: str) -> str:
         """Return Wix dashboard URL for an order reference (number or UUID)."""
         order = self._resolve_order(reference)

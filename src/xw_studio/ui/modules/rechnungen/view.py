@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
 from PySide6.QtGui import (
+    QColor,
     QCloseEvent,
     QDesktopServices,
     QHideEvent,
@@ -59,6 +60,7 @@ _TABLE_COLUMNS = [
     "BETRAG",
     "Kunde",
     "Hinweise",
+    "FULFILLMENT",
     "AKTIONEN",
     "ID",
 ]
@@ -210,6 +212,82 @@ class _ActionsDelegate(QStyledItemDelegate):
         return base
 
 
+class _FulfillmentDelegate(QStyledItemDelegate):
+    """Paint clickable status chips for fulfillment steps in one column."""
+
+    _CHIPS = (
+        ("label_printed", "L"),
+        ("invoice_printed", "R"),
+        ("product_ready", "P"),
+        ("mail_sent", "M"),
+        ("wix_fulfilled", "W"),
+        ("payment_booked", "€"),
+    )
+
+    @classmethod
+    def _layout(cls, width: int, height: int) -> list[tuple[str, str, int, int]]:
+        size = min(18, max(14, height - 6))
+        gap = 4
+        total = len(cls._CHIPS) * size + max(0, len(cls._CHIPS) - 1) * gap
+        x = max(4, (width - total) // 2)
+        out: list[tuple[str, str, int, int]] = []
+        for key, label in cls._CHIPS:
+            out.append((key, label, x, size))
+            x += size + gap
+        return out
+
+    @classmethod
+    def chip_at_x(cls, local_x: float, width: int, height: int) -> str:
+        for key, _label, x, size in cls._layout(width, height):
+            if x <= int(local_x) <= x + size:
+                return key
+        return ""
+
+    def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
+        row_data = index.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row_data, dict):
+            super().paint(painter, option, index)
+            return
+        payload = row_data.get("__fulfillment__")
+        if not isinstance(payload, dict):
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        has_run = bool(payload.get("last_run_iso"))
+        for key, label, x_local, size in self._layout(option.rect.width(), option.rect.height()):
+            state = payload.get(key)
+            if key == "payment_booked" and not bool(payload.get("payment_applicable")):
+                fg = "#94a3b8"
+                bg = "#e2e8f0"
+            elif not has_run:
+                fg = "#64748b"
+                bg = "#e2e8f0"
+            elif bool(state):
+                fg = "#166534"
+                bg = "#dcfce7"
+            else:
+                fg = "#991b1b"
+                bg = "#fee2e2"
+            target = option.rect.adjusted(0, 0, 0, 0)
+            target.setX(option.rect.x() + x_local)
+            target.setY(option.rect.y() + max(2, (option.rect.height() - size) // 2))
+            target.setWidth(size)
+            target.setHeight(size)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(bg))
+            painter.drawRoundedRect(target, 6, 6)
+            painter.setPen(QColor(fg))
+            painter.drawText(target, int(Qt.AlignmentFlag.AlignCenter), label)
+        painter.restore()
+
+    def sizeHint(self, option, index):  # type: ignore[override]
+        base = super().sizeHint(option, index)
+        if base.height() < 22:
+            base.setHeight(22)
+        return base
+
+
 class RechnungenView(QWidget):
     """Load and display sevDesk invoices (non-blocking)."""
 
@@ -220,6 +298,7 @@ class RechnungenView(QWidget):
         self._refund_worker: BackgroundWorker | None = None
         self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
+        self._wix_meta_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
         self._mollie_alert_count = 0
@@ -304,14 +383,18 @@ class RechnungenView(QWidget):
         self._table = DataTable(_TABLE_COLUMNS)
         self._hints_delegate = _HintsIconDelegate(self._table)
         self._actions_delegate = _ActionsDelegate(self._table)
+        self._fulfillment_delegate = _FulfillmentDelegate(self._table)
         hint_col = _TABLE_COLUMNS.index("Hinweise")
+        fulfillment_col = _TABLE_COLUMNS.index("FULFILLMENT")
         actions_col = _TABLE_COLUMNS.index("AKTIONEN")
         self._table.setItemDelegateForColumn(hint_col, self._hints_delegate)
+        self._table.setItemDelegateForColumn(fulfillment_col, self._fulfillment_delegate)
         self._table.setItemDelegateForColumn(actions_col, self._actions_delegate)
         self._table.clicked.connect(self._on_table_clicked)
         self._table.viewport().installEventFilter(self)
         self._table.setSortingEnabled(False)
         self._table.horizontalHeader().setSectionsClickable(False)
+        self._table.horizontalHeader().resizeSection(fulfillment_col, 170)
         self._table.horizontalHeader().resizeSection(actions_col, 120)
         self._table.setColumnHidden(_TABLE_COLUMNS.index("ID"), True)
         left_layout.addWidget(self._table, stretch=1)
@@ -358,6 +441,18 @@ class RechnungenView(QWidget):
         form_inv.addRow("ID:", self._dl_id)
         form_inv.addRow("Order-Ref:", self._dl_order_ref)
         detail_main.addWidget(gb_invoice)
+
+        self._gb_wix = QGroupBox("Wix Auftrag")
+        form_wix = QFormLayout(self._gb_wix)
+        self._wix_order_no = QLabel("—")
+        self._wix_customer = QLabel("—")
+        self._wix_customer_email = QLabel("—")
+        self._wix_shipping = QLabel("—")
+        form_wix.addRow("Order:", self._wix_order_no)
+        form_wix.addRow("Kunde:", self._wix_customer)
+        form_wix.addRow("E-Mail:", self._wix_customer_email)
+        form_wix.addRow("Versand:", self._wix_shipping)
+        detail_main.addWidget(self._gb_wix)
 
         self._gb_note = QGroupBox("Käufernotiz")
         note_layout = QVBoxLayout(self._gb_note)
@@ -656,7 +751,22 @@ class RechnungenView(QWidget):
                 index = self._table.indexAt(event.position().toPoint())
                 if index.isValid():
                     self._table.selectRow(int(index.row()))
+                    fulfillment_col = _TABLE_COLUMNS.index("FULFILLMENT")
                     actions_col = _TABLE_COLUMNS.index("AKTIONEN")
+                    if int(index.column()) == fulfillment_col:
+                        rect = self._table.visualRect(index)
+                        chip = self._fulfillment_delegate.chip_at_x(
+                            local_x=event.position().x() - rect.x(),
+                            width=rect.width(),
+                            height=rect.height(),
+                        )
+                        if chip:
+                            source_index = self._table.model().mapToSource(index)
+                            row = int(source_index.row())
+                            if 0 <= row < len(self._summaries):
+                                row_payload = self._table.selected_row_data() or {}
+                                flags = row_payload.get("__fulfillment__")
+                                self._run_fulfillment_chip_action(self._summaries[row], chip, flags)
                     if int(index.column()) == actions_col:
                         rect = self._table.visualRect(index)
                         action = self._actions_delegate.action_at_x(
@@ -670,6 +780,38 @@ class RechnungenView(QWidget):
                             if 0 <= row < len(self._summaries):
                                 self._run_row_action(self._summaries[row], action)
         return super().eventFilter(watched, event)
+
+    def _run_fulfillment_chip_action(
+        self,
+        summary: InvoiceSummary,
+        chip: str,
+        flags: object,
+    ) -> None:
+        payload = flags if isinstance(flags, dict) else {}
+        labels = {
+            "label_printed": "Label",
+            "invoice_printed": "Rechnung",
+            "product_ready": "Produkt",
+            "mail_sent": "Mail",
+            "wix_fulfilled": "Wix",
+            "payment_booked": "Zahlung",
+        }
+        has_run = bool(payload.get("last_run_iso"))
+        if chip == "payment_booked" and not bool(payload.get("payment_applicable")):
+            status_text = "nicht anwendbar"
+        elif not has_run:
+            status_text = "noch nicht gelaufen"
+        else:
+            status_text = "erledigt" if bool(payload.get(chip)) else "offen"
+        QMessageBox.information(
+            self,
+            "Fulfillment-Status",
+            (
+                f"Rechnung: {summary.invoice_number or summary.id}\n"
+                f"Schritt: {labels.get(chip, chip)}\n"
+                f"Status: {status_text}"
+            ),
+        )
 
     def _run_row_action(self, summary: InvoiceSummary, action: str) -> None:
         if action == "plc":
@@ -798,11 +940,14 @@ class RechnungenView(QWidget):
             self._dl_note.setText("")
             self._gb_note.hide()
         self._dl_order_ref.setText(s.order_reference or "")
+        self._reset_wix_meta("Lade Wix-Daten…")
         self._plc_state.setText("PLC-Label druckbar für die ausgewählte Rechnung.")
         self._update_plc_controls()
         if s.order_reference:
+            self._load_wix_meta(s.order_reference)
             self._load_stuecke(s.order_reference)
         else:
+            self._reset_wix_meta("Keine Wix-Order-Referenz")
             self._reset_stuecke()
 
     def _reset_detail(self) -> None:
@@ -814,9 +959,55 @@ class RechnungenView(QWidget):
         self._dl_note.setText("")
         self._gb_note.hide()
         self._dl_order_ref.setText("—")
+        self._reset_wix_meta("—")
         self._plc_state.setText("Keine Rechnung ausgewählt")
         self._update_plc_controls()
         self._reset_stuecke()
+
+    def _reset_wix_meta(self, text: str) -> None:
+        self._wix_order_no.setText(text)
+        self._wix_customer.setText("—")
+        self._wix_customer_email.setText("—")
+        self._wix_shipping.setText("—")
+
+    def _load_wix_meta(self, order_reference: str) -> None:
+        if self._wix_meta_worker is not None and self._wix_meta_worker.isRunning():
+            return
+        ref = order_reference.strip()
+        if not ref:
+            self._reset_wix_meta("Keine Wix-Order-Referenz")
+            return
+
+        def job() -> dict[str, str]:
+            service: SecretService = self._container.resolve(SecretService)
+            wix = WixOrdersClient(secret_service=service)
+            if not wix.has_credentials():
+                return {"status": "Kein Wix-API-Key konfiguriert."}
+            return wix.resolve_order_summary(ref)
+
+        self._wix_meta_worker = BackgroundWorker(job)
+        self._wix_meta_worker.signals.result.connect(self._on_wix_meta_loaded)
+        self._wix_meta_worker.signals.error.connect(self._on_wix_meta_error)
+        self._wix_meta_worker.start()
+
+    def _on_wix_meta_loaded(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if not data:
+            self._reset_wix_meta("Wix-Order nicht gefunden")
+            return
+        if data.get("status"):
+            self._reset_wix_meta(str(data.get("status")))
+            return
+        self._wix_order_no.setText(data.get("wix_order_number") or data.get("wix_order_id") or "—")
+        self._wix_customer.setText(data.get("wix_customer_name") or "—")
+        self._wix_customer_email.setText(data.get("wix_customer_email") or "—")
+        city = data.get("wix_shipping_city") or ""
+        country = data.get("wix_shipping_country") or ""
+        shipping = " / ".join(part for part in (city, country) if part)
+        self._wix_shipping.setText(shipping or "—")
+
+    def _on_wix_meta_error(self, exc: Exception) -> None:
+        self._reset_wix_meta(f"Wix-Fehler: {exc}")
 
     def _update_plc_controls(self) -> None:
         row = self._table.selected_source_row()

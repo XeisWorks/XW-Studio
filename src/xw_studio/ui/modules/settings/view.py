@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QTextBrowser,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -43,6 +44,7 @@ _QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
 _SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _URGENCY_RULES_KEY = "daily_business.urgency_rules"
+_FULFILLMENT_MAIL_TEMPLATE_KEY = "rechnungen.fulfillment_mail_template_html"
 _CLICKUP_LIST_ID_KEY = "clickup.default_list_id"
 _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "MOLLIE_ACCESS_TOKEN",
@@ -55,6 +57,17 @@ _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "FON_TEILNEHMER_ID",
     "FON_BENUTZER_ID",
     "FON_PIN",
+)
+
+_DEFAULT_FULFILLMENT_TEMPLATE = (
+    "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
+    "<h2 style=\"margin:0 0 10px 0;\">Deine Bestellung ist bereit</h2>"
+    "<p>Hallo {{customer_name}},</p>"
+    "<p>deine Rechnung <b>{{invoice_number}}</b> wurde verarbeitet.</p>"
+    "<p><b>Artikel:</b><br>{{items_html}}</p>"
+    "<p>Dein Download: <a href=\"{{download_link}}\">{{download_link}}</a></p>"
+    "<p>Viele Grüße<br>XeisWorks Studio</p>"
+    "</body></html>"
 )
 
 
@@ -259,7 +272,40 @@ class SettingsView(QWidget):
         queue_layout.addWidget(save_queue)
         main.addWidget(gb_queue)
 
+        gb_mail_tpl = QGroupBox("Fulfillment E-Mail (HTML)")
+        mail_layout = QVBoxLayout(gb_mail_tpl)
+        mail_layout.addWidget(
+            QLabel(
+                "Globale Vorlage mit Variablen: {{customer_name}}, {{invoice_number}}, {{download_link}}, {{items_html}}"
+            )
+        )
+        self._mail_template_editor = QPlainTextEdit()
+        self._mail_template_editor.setMinimumHeight(180)
+        self._mail_template_editor.setPlaceholderText(_DEFAULT_FULFILLMENT_TEMPLATE)
+        mail_layout.addWidget(self._mail_template_editor)
+
+        mail_btn_row = QHBoxLayout()
+        btn_preview = QPushButton("Live-Vorschau aktualisieren")
+        btn_preview.clicked.connect(self._render_fulfillment_preview)
+        mail_btn_row.addWidget(btn_preview)
+        btn_save_template = QPushButton("Vorlage speichern")
+        btn_save_template.clicked.connect(self._save_fulfillment_mail_template)
+        btn_save_template.setEnabled(self._has_settings_repo())
+        mail_btn_row.addWidget(btn_save_template)
+        mail_btn_row.addStretch()
+        mail_layout.addLayout(mail_btn_row)
+
+        self._mail_template_preview = QTextBrowser()
+        self._mail_template_preview.setOpenExternalLinks(True)
+        self._mail_template_preview.setMinimumHeight(220)
+        mail_layout.addWidget(self._mail_template_preview)
+        self._mail_template_status = QLabel("—")
+        self._mail_template_status.setStyleSheet("color: #9e9e9e;")
+        mail_layout.addWidget(self._mail_template_status)
+        main.addWidget(gb_mail_tpl)
+
         self._load_queue_settings()
+        self._load_fulfillment_mail_template()
 
         main.addStretch()
         scroll.setWidget(content)
@@ -459,6 +505,42 @@ class SettingsView(QWidget):
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("START-Preflight-Daten gespeichert", 4000)
+
+    def _load_fulfillment_mail_template(self) -> None:
+        if not self._has_settings_repo():
+            self._mail_template_editor.setPlainText(_DEFAULT_FULFILLMENT_TEMPLATE)
+            self._render_fulfillment_preview()
+            return
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        raw = repo.get_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY) or _DEFAULT_FULFILLMENT_TEMPLATE
+        self._mail_template_editor.setPlainText(raw)
+        self._render_fulfillment_preview()
+
+    def _render_fulfillment_preview(self) -> None:
+        html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        preview = html
+        substitutions = {
+            "{{customer_name}}": "Max Mustermann",
+            "{{invoice_number}}": "RE-2026-0042",
+            "{{download_link}}": "https://example.com/download/RE-2026-0042",
+            "{{items_html}}": "XW-7001 - 1x Brandlalm Boarischer<br>XW-600.0 - 2x Zusatzstimme",
+        }
+        for token, value in substitutions.items():
+            preview = preview.replace(token, value)
+        self._mail_template_preview.setHtml(preview)
+        self._mail_template_status.setText("Vorschau aktualisiert")
+        self._mail_template_status.setStyleSheet(_OK_STYLE)
+
+    def _save_fulfillment_mail_template(self) -> None:
+        if not self._has_settings_repo():
+            QMessageBox.warning(self, "Fehler", "DB-Repository nicht verfuegbar.")
+            return
+        html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        repo.set_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY, html)
+        self._mail_template_status.setText("Vorlage gespeichert")
+        self._mail_template_status.setStyleSheet(_OK_STYLE)
+        self._render_fulfillment_preview()
 
     def _save_tokens(self) -> None:
         service: SecretService = self._container.resolve(SecretService)

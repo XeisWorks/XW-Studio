@@ -22,6 +22,8 @@ def test_tagesgeschaeft_contains_rechnungen_view(qtbot: object) -> None:
     view = TagesgeschaeftView(container)
     qtbot.addWidget(view)
     assert hasattr(view, "_rechnungen_view")  # noqa: SLF001
+    assert view._btn_start.text() == "▶  START"  # noqa: SLF001
+    assert view._btn_start.menu() is not None  # noqa: SLF001
 
 
 def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:

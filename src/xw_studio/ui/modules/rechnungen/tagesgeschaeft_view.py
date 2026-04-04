@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QToolButton,
+    QMenu,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -254,6 +256,7 @@ class TagesgeschaeftView(QWidget):
         self._start_exec_worker: BackgroundWorker | None = None
         self._reprint_worker: BackgroundWorker | None = None
         self._reprint_exec_worker: BackgroundWorker | None = None
+        self._start_requested_mode: StartMode = StartMode.INVOICES_AND_PRINT
         self._badge_timer = QTimer(self)
         self._badge_timer.setInterval(60000)
         self._badge_timer.timeout.connect(self._refresh_badges)
@@ -297,18 +300,28 @@ class TagesgeschaeftView(QWidget):
         bar_lay.addWidget(title)
         bar_lay.addStretch()
 
-        btn_start = QPushButton("▶  START")
-        btn_start.setToolTip("Tagesgeschäft starten: Rechnungen & Druck-Workflow")
-        btn_start.setFixedHeight(34)
-        btn_start.setFixedWidth(130)
-        btn_start.setStyleSheet(
-            "QPushButton { background-color: #1976d2; color: white; border-radius: 6px;"
+        self._btn_start = QToolButton()
+        self._btn_start.setText("▶  START")
+        self._btn_start.setToolTip("Direktklick: Vollflow | Pfeil: Teil-Flow auswählen")
+        self._btn_start.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._btn_start.setFixedHeight(34)
+        self._btn_start.setFixedWidth(150)
+        self._btn_start.setStyleSheet(
+            "QToolButton { background-color: #1976d2; color: white; border-radius: 6px;"
             " font-weight: bold; font-size: 13px; }"
-            " QPushButton:hover { background-color: #1565c0; }"
-            " QPushButton:pressed { background-color: #0d47a1; }"
+            " QToolButton:hover { background-color: #1565c0; }"
+            " QToolButton:pressed { background-color: #0d47a1; }"
         )
-        btn_start.clicked.connect(self._on_start_clicked)
-        bar_lay.addWidget(btn_start)
+        menu = QMenu(self._btn_start)
+        act_full = menu.addAction("Vollflow (Rechnungen + Druck)")
+        act_full.triggered.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
+        act_invoices = menu.addAction("Nur Rechnungen")
+        act_invoices.triggered.connect(lambda: self._on_start_clicked(StartMode.INVOICES_ONLY))
+        act_print = menu.addAction("Nachdrucke (nur Lagerauffüllung)")
+        act_print.triggered.connect(self._on_reprints_clicked)
+        self._btn_start.setMenu(menu)
+        self._btn_start.clicked.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
+        bar_lay.addWidget(self._btn_start)
 
         btn_reprints = QPushButton("🖨  Nachdrucke")
         btn_reprints.setToolTip("Lagerbestand auffüllen: Nachdrucke nur Lagerfüllung (kein Invoice-Konsum)")
@@ -358,9 +371,10 @@ class TagesgeschaeftView(QWidget):
     def _on_badges_error(self, exc: Exception) -> None:
         logger.warning("Badge refresh failed: %s", exc)
 
-    def _on_start_clicked(self) -> None:
+    def _on_start_clicked(self, requested_mode: StartMode = StartMode.INVOICES_AND_PRINT) -> None:
         if self._start_worker is not None and self._start_worker.isRunning():
             return
+        self._start_requested_mode = requested_mode
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("Pre-Flight wird erstellt…", 2500)
@@ -379,13 +393,7 @@ class TagesgeschaeftView(QWidget):
     def _on_start_preflight_ready(self, result: object) -> None:
         if not isinstance(result, StartPreflight):
             return
-        dlg = _StartDialog(result, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        mode = StartMode.INVOICES_ONLY
-        if dlg.full_mode:
-            mode = StartMode.INVOICES_AND_PRINT
+        mode = self._start_requested_mode
 
         if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
             QMessageBox.information(
