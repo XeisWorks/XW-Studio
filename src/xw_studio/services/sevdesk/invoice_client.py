@@ -311,17 +311,18 @@ class InvoiceSummary(BaseModel):
             "Brutto": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Hinweise": indicator_symbols,
-            "PLC": "",
+            "AKTIONEN": "",
             "ID": self.id,
         }
 
         row["__align__Hinweise"] = "center"
         row["__icons__Hinweise"] = icon_keys
         row["__plc__enabled"] = True
+        row["__has_order_ref__"] = bool(self.order_reference.strip())
         if indicator_symbols:
             row["__tooltip__Hinweise"] = self.indicator_tooltip()
             row["__fg__Hinweise"] = "#ef4444"
-        row["__tooltip__PLC"] = "PLC-Label drucken"
+        row["__tooltip__AKTIONEN"] = "PLC / Rückerstattung / Download-Links"
         if self.status_code == 100:
             row["__tooltip__Status"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
             row["__fg__Status"] = "#9a3412"

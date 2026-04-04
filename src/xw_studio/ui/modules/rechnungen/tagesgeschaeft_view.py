@@ -332,14 +332,9 @@ class TagesgeschaeftView(QWidget):
         self._rechnungen_view = RechnungenView(self._container)
         self._mollie_view = _QueueTabView(self._container, "mollie", "Mollie Authorized")
         self._gutscheine_view = _QueueTabView(self._container, "gutscheine", "Gutscheine")
-        self._downloads_view = _QueueTabView(self._container, "downloads", "Download-Links")
-        self._refunds_view = _QueueTabView(self._container, "refunds", "Rueckerstattungen")
-
         self._tabs.addTab(self._rechnungen_view, "📋  Rechnungen")
         self._tabs.addTab(self._mollie_view, "💳  Mollie")
         self._tabs.addTab(self._gutscheine_view, "🎁  Gutscheine")
-        self._tabs.addTab(self._downloads_view, "📥  Downloads")
-        self._tabs.addTab(self._refunds_view, "↩  Refunds")
 
         main_layout.addWidget(self._tabs, stretch=1)
 
@@ -363,19 +358,12 @@ class TagesgeschaeftView(QWidget):
         open_count = max(0, int(counts.get("rechnungen", 0)))
         mollie_count = max(0, int(counts.get("mollie", 0)))
         gutscheine_count = max(0, int(counts.get("gutscheine", 0)))
-        downloads_count = max(0, int(counts.get("downloads", 0)))
-        refunds_count = max(0, int(counts.get("refunds", 0)))
-
         prefix = "✳ " if open_count else ""
         self._tabs.setTabText(0, f"{prefix}📋  Rechnungen ({open_count})")
         self._tabs.setTabText(1, f"{'🔴 ' if mollie_count else ''}💳  Mollie ({mollie_count})")
         self._tabs.setTabText(2, f"{'🔴 ' if gutscheine_count else ''}🎁  Gutscheine ({gutscheine_count})")
-        self._tabs.setTabText(3, f"{'🔴 ' if downloads_count else ''}📥  Downloads ({downloads_count})")
-        self._tabs.setTabText(4, f"{'🔴 ' if refunds_count else ''}↩  Refunds ({refunds_count})")
         self._mollie_view.reload(mollie_count)
         self._gutscheine_view.reload(gutscheine_count)
-        self._downloads_view.reload(downloads_count)
-        self._refunds_view.reload(refunds_count)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.badge_updated.emit(ModuleKey.RECHNUNGEN.value, open_count)
 

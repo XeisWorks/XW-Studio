@@ -22,7 +22,7 @@ def test_tagesgeschaeft_tabs_exist(qtbot: object) -> None:
     view = TagesgeschaeftView(container)
     qtbot.addWidget(view)
 
-    expected = ["Rechnungen", "Mollie", "Gutscheine", "Downloads", "Refunds"]
+    expected = ["Rechnungen", "Mollie", "Gutscheine"]
     actual = [view._tabs.tabText(i) for i in range(view._tabs.count())]  # noqa: SLF001
     for label in expected:
         assert any(label in tab for tab in actual)

@@ -25,6 +25,7 @@ from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.sevdesk.part_client import PartClient
+from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.statistics.service import StatisticsService
 from xw_studio.services.products.catalog import ProductCatalogService
 from xw_studio.services.products.print_decision import PrintDecisionEngine
@@ -64,6 +65,10 @@ def register_default_services(container: Container) -> None:
     container.register(
         PartClient,
         lambda c: PartClient(c.resolve(SevdeskConnection)),
+    )
+    container.register(
+        SevDeskRefundClient,
+        lambda c: SevDeskRefundClient(c.resolve(SevdeskConnection)),
     )
     container.register(
         ProductCatalogService,

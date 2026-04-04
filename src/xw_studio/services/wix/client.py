@@ -311,6 +311,137 @@ class WixOrdersClient:
                 logger.warning("WixOrdersClient search number=%s failed: %s", number, exc)
                 return {}
 
+    def _resolve_order(self, reference: str) -> dict[str, Any]:
+        ref = str(reference or "").strip()
+        if not ref or not self.has_credentials():
+            return {}
+        if self._looks_like_uuid(ref):
+            return self._get_order_by_id(ref)
+        order = self._search_order_by_number(ref)
+        if not order and not ref.startswith("00"):
+            digits = "".join(c for c in ref if c.isdigit())
+            if digits and digits != ref:
+                order = self._search_order_by_number(digits)
+        return order
+
+    def resolve_order_dashboard_url(self, reference: str) -> str:
+        """Return Wix dashboard URL for an order reference (number or UUID)."""
+        order = self._resolve_order(reference)
+        order_id = str(order.get("id") or "").strip()
+        site_id = self._site_id().strip()
+        if not order_id or not site_id:
+            return ""
+        return f"https://manage.wix.com/dashboard/{site_id}/ecom-platform/order-details/{order_id}"
+
+    def get_order_refundability(self, order_id: str) -> dict[str, Any]:
+        real_id = str(order_id or "").strip()
+        if not real_id or not self.has_credentials():
+            return {}
+        body = {"orderId": real_id}
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/order-billing/get-order-refundability",
+                    headers=self._headers(),
+                    json=body,
+                )
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "WixOrdersClient refundability order_id=%s failed: %s",
+                    real_id,
+                    exc,
+                )
+                return {}
+
+    def refund_order_payments(
+        self,
+        order_id: str,
+        payment_refunds: list[dict[str, Any]],
+        *,
+        send_customer_email: bool = True,
+        customer_reason: str = "",
+    ) -> dict[str, Any]:
+        real_id = str(order_id or "").strip()
+        refunds = [entry for entry in payment_refunds if isinstance(entry, dict)]
+        if not real_id or not refunds or not self.has_credentials():
+            return {}
+
+        body: dict[str, Any] = {
+            "orderId": real_id,
+            "paymentRefunds": refunds,
+            "sideEffects": {
+                "notifications": {
+                    "sendCustomerEmail": bool(send_customer_email),
+                },
+            },
+        }
+        if customer_reason.strip():
+            body["customerReason"] = customer_reason.strip()
+
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/order-billing/refund-payments",
+                    headers=self._headers(),
+                    json=body,
+                )
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient refund payments order_id=%s failed: %s", real_id, exc)
+                return {}
+
+    def refund_full_order(
+        self,
+        reference: str,
+        *,
+        send_customer_email: bool = True,
+        customer_reason: str = "",
+    ) -> dict[str, Any]:
+        """Refund all currently refundable payments for an order reference."""
+        order = self._resolve_order(reference)
+        order_id = str(order.get("id") or "").strip()
+        if not order_id:
+            return {}
+
+        refundability = self.get_order_refundability(order_id)
+        payments = refundability.get("payments")
+        if not isinstance(payments, list):
+            payments = []
+
+        payment_refunds: list[dict[str, Any]] = []
+        for entry in payments:
+            if not isinstance(entry, dict) or not entry.get("refundable"):
+                continue
+            payment = entry.get("payment")
+            if not isinstance(payment, dict):
+                continue
+            payment_id = str(payment.get("paymentId") or "").strip()
+            amount_obj = entry.get("availableRefundAmount")
+            if not isinstance(amount_obj, dict):
+                continue
+            amount = str(amount_obj.get("amount") or "").strip()
+            if not payment_id or not amount:
+                continue
+            payment_refunds.append(
+                {
+                    "paymentId": payment_id,
+                    "amount": {"amount": amount},
+                }
+            )
+
+        if not payment_refunds:
+            return {}
+
+        return self.refund_order_payments(
+            order_id,
+            payment_refunds,
+            send_customer_email=send_customer_email,
+            customer_reason=customer_reason,
+        )
+
     @staticmethod
     def _looks_like_uuid(value: str) -> bool:
         parts = value.split("-")
@@ -326,15 +457,7 @@ class WixOrdersClient:
         if not ref or not self.has_credentials():
             return []
 
-        if self._looks_like_uuid(ref):
-            order = self._get_order_by_id(ref)
-        else:
-            order = self._search_order_by_number(ref)
-            if not order and not ref.startswith("00"):
-                # Some references are prefixed; try stripping leading text
-                digits = "".join(c for c in ref if c.isdigit())
-                if digits and digits != ref:
-                    order = self._search_order_by_number(digits)
+        order = self._resolve_order(ref)
 
         if not order:
             logger.info("WixOrdersClient: no order found for reference=%r", ref)

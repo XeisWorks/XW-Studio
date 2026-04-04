@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPainter, QPixmap, QResizeEvent, QShowEvent
+from PySide6.QtCore import QEvent, Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QMouseEvent, QPainter, QPixmap, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QFormLayout,
@@ -27,7 +27,9 @@ from xw_studio.services.invoice_processing.service import InvoiceProcessingServi
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
+from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.wix.client import WixOrdersClient
+from xw_studio.ui.modules.rechnungen.refund_dialog import RefundDialog
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -45,7 +47,7 @@ _TABLE_COLUMNS = [
     "Brutto",
     "Kunde",
     "Hinweise",
-    "PLC",
+    "AKTIONEN",
     "ID",
 ]
 
@@ -118,33 +120,75 @@ class _HintsIconDelegate(QStyledItemDelegate):
         return base
 
 
-class _PlcActionDelegate(QStyledItemDelegate):
-    """Paint a dedicated PLC action icon in its own column."""
+class _ActionsDelegate(QStyledItemDelegate):
+    """Paint action icons (PLC / Refund / Download-Links) in one column."""
+
+    _ACTION_KEYS = ("plc", "refund", "download_links")
+    _ICON_FILES = {
+        "plc": "plc.png",
+        "refund": "refund.png",
+        "download_links": "download_links.png",
+    }
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        icon_path = Path(__file__).resolve().parents[5] / "icons" / "plc.png"
-        self._icon = QPixmap(str(icon_path))
+        self._icons_dir = Path(__file__).resolve().parents[5] / "icons"
+        self._cache: dict[str, QPixmap] = {}
+
+    def _icon_for_key(self, key: str) -> QPixmap | None:
+        if key in self._cache:
+            pix = self._cache[key]
+            return pix if not pix.isNull() else None
+        file_name = self._ICON_FILES.get(key)
+        if not file_name:
+            self._cache[key] = QPixmap()
+            return None
+        pix = QPixmap(str(self._icons_dir / file_name))
+        self._cache[key] = pix
+        return pix if not pix.isNull() else None
+
+    @staticmethod
+    def _layout(width: int, height: int) -> list[tuple[str, int, int]]:
+        size = min(18, max(14, height - 6))
+        gap = 6
+        total_width = len(_ActionsDelegate._ACTION_KEYS) * size + max(0, len(_ActionsDelegate._ACTION_KEYS) - 1) * gap
+        x = max(4, (width - total_width) // 2)
+        out: list[tuple[str, int, int]] = []
+        for key in _ActionsDelegate._ACTION_KEYS:
+            out.append((key, x, size))
+            x += size + gap
+        return out
+
+    @staticmethod
+    def action_at_x(local_x: float, width: int, height: int) -> str:
+        for key, x, size in _ActionsDelegate._layout(width, height):
+            if x <= int(local_x) <= x + size:
+                return key
+        return ""
 
     def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
         row_data = index.data(Qt.ItemDataRole.UserRole)
-        enabled = isinstance(row_data, dict) and bool(row_data.get("__plc__enabled"))
-        if self._icon.isNull():
+        if not isinstance(row_data, dict):
             super().paint(painter, option, index)
             return
 
+        plc_enabled = bool(row_data.get("__plc__enabled"))
+        has_order_ref = bool(row_data.get("__has_order_ref__"))
+
         painter.save()
-        size = min(18, max(14, option.rect.height() - 6))
-        x = option.rect.x() + max(4, (option.rect.width() - size) // 2)
-        y = option.rect.y() + max(2, (option.rect.height() - size) // 2)
-        if not enabled:
-            painter.setOpacity(0.25)
-        target = option.rect.adjusted(0, 0, 0, 0)
-        target.setX(x)
-        target.setY(y)
-        target.setWidth(size)
-        target.setHeight(size)
-        painter.drawPixmap(target, self._icon)
+        y = option.rect.y() + max(2, (option.rect.height() - min(18, max(14, option.rect.height() - 6))) // 2)
+        for key, x_local, size in self._layout(option.rect.width(), option.rect.height()):
+            pix = self._icon_for_key(key)
+            if pix is None:
+                continue
+            enabled = plc_enabled if key in ("plc", "refund") else has_order_ref
+            painter.setOpacity(1.0 if enabled else 0.25)
+            target = option.rect.adjusted(0, 0, 0, 0)
+            target.setX(option.rect.x() + x_local)
+            target.setY(y)
+            target.setWidth(size)
+            target.setHeight(size)
+            painter.drawPixmap(target, pix)
         painter.restore()
 
     def sizeHint(self, option, index):  # type: ignore[override]
@@ -161,6 +205,7 @@ class RechnungenView(QWidget):
         super().__init__(parent)
         self._container = container
         self._worker: BackgroundWorker | None = None
+        self._refund_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
@@ -227,12 +272,14 @@ class RechnungenView(QWidget):
 
         self._table = DataTable(_TABLE_COLUMNS)
         self._hints_delegate = _HintsIconDelegate(self._table)
-        self._plc_delegate = _PlcActionDelegate(self._table)
+        self._actions_delegate = _ActionsDelegate(self._table)
         hint_col = _TABLE_COLUMNS.index("Hinweise")
-        plc_col = _TABLE_COLUMNS.index("PLC")
+        actions_col = _TABLE_COLUMNS.index("AKTIONEN")
         self._table.setItemDelegateForColumn(hint_col, self._hints_delegate)
-        self._table.setItemDelegateForColumn(plc_col, self._plc_delegate)
+        self._table.setItemDelegateForColumn(actions_col, self._actions_delegate)
         self._table.clicked.connect(self._on_table_clicked)
+        self._table.viewport().installEventFilter(self)
+        self._table.horizontalHeader().resizeSection(actions_col, 120)
         left_layout.addWidget(self._table, stretch=1)
 
         load_more_row = QHBoxLayout()
@@ -510,15 +557,138 @@ class RechnungenView(QWidget):
         self._refresh_detail_for_selection()
 
     def _on_table_clicked(self, index: Any) -> None:
-        plc_col = _TABLE_COLUMNS.index("PLC")
-        if int(index.column()) != plc_col:
+        row = int(index.row()) if hasattr(index, "row") else -1
+        if row < 0:
             return
-        source_index = self._table.model().mapToSource(index)
-        row = int(source_index.row())
-        if row < 0 or row >= len(self._summaries):
+        self._table.selectRow(row)
+
+    def eventFilter(self, watched: Any, event: QEvent) -> bool:  # type: ignore[override]
+        if watched is self._table.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            if isinstance(event, QMouseEvent):
+                index = self._table.indexAt(event.position().toPoint())
+                if index.isValid():
+                    self._table.selectRow(int(index.row()))
+                    actions_col = _TABLE_COLUMNS.index("AKTIONEN")
+                    if int(index.column()) == actions_col:
+                        rect = self._table.visualRect(index)
+                        action = self._actions_delegate.action_at_x(
+                            local_x=event.position().x() - rect.x(),
+                            width=rect.width(),
+                            height=rect.height(),
+                        )
+                        if action:
+                            source_index = self._table.model().mapToSource(index)
+                            row = int(source_index.row())
+                            if 0 <= row < len(self._summaries):
+                                self._run_row_action(self._summaries[row], action)
+        return super().eventFilter(watched, event)
+
+    def _run_row_action(self, summary: InvoiceSummary, action: str) -> None:
+        if action == "plc":
+            self._run_plc_print(summary)
             return
-        summary = self._summaries[row]
-        self._run_plc_print(summary)
+        if action == "download_links":
+            self._open_wix_download_links(summary)
+            return
+        if action == "refund":
+            self._open_refund_dialog(summary)
+
+    def _open_wix_download_links(self, summary: InvoiceSummary) -> None:
+        if not summary.order_reference.strip():
+            QMessageBox.information(
+                self,
+                "Download-Links",
+                "Diese Rechnung hat keine Wix-Order-Referenz.",
+            )
+            return
+        wix_orders: WixOrdersClient = self._container.resolve(WixOrdersClient)
+        url = wix_orders.resolve_order_dashboard_url(summary.order_reference)
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Download-Links",
+                "Wix-Order konnte nicht aufgelöst werden.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _open_refund_dialog(self, summary: InvoiceSummary) -> None:
+        dlg = RefundDialog(summary, self)
+        if dlg.exec() != 1:
+            return
+
+        send_mail = dlg.send_customer_mail
+        self._overlay.show_with_message("Rückerstattung wird ausgeführt…")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        def job() -> dict[str, Any]:
+            sevdesk_refund: SevDeskRefundClient = self._container.resolve(SevDeskRefundClient)
+            wix_orders: WixOrdersClient = self._container.resolve(WixOrdersClient)
+
+            cancel_payload = sevdesk_refund.cancel_invoice(summary.id)
+            wix_payload: dict[str, Any] = {}
+            wix_ok = False
+            if summary.order_reference.strip():
+                wix_payload = wix_orders.refund_full_order(
+                    summary.order_reference,
+                    send_customer_email=send_mail,
+                    customer_reason=f"Storno {summary.invoice_number or summary.id}",
+                )
+                wix_ok = bool(wix_payload)
+            return {
+                "invoice": summary.invoice_number or summary.id,
+                "cancel": cancel_payload,
+                "wix": wix_payload,
+                "wix_ok": wix_ok,
+                "had_order_ref": bool(summary.order_reference.strip()),
+            }
+
+        self._refund_worker = BackgroundWorker(job)
+        self._refund_worker.signals.result.connect(self._on_refund_result)
+        self._refund_worker.signals.error.connect(self._on_refund_error)
+        self._refund_worker.signals.finished.connect(self._on_refund_finished)
+        self._refund_worker.start()
+
+    def _on_refund_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        invoice = str(data.get("invoice") or "—")
+        had_order_ref = bool(data.get("had_order_ref"))
+        wix_ok = bool(data.get("wix_ok"))
+
+        if not had_order_ref:
+            QMessageBox.information(
+                self,
+                "Rückerstattung durchgeführt",
+                f"Rechnung {invoice}: sevDesk-Stornorechnung wurde erstellt.\n"
+                "Keine Wix-Order-Referenz vorhanden, daher kein Zahlungsrefund in Wix.",
+            )
+            self._reload_first_page()
+            return
+
+        if wix_ok:
+            QMessageBox.information(
+                self,
+                "Rückerstattung durchgeführt",
+                f"Rechnung {invoice}: sevDesk-Storno + Wix-Zahlungsrefund erfolgreich.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Teilweise abgeschlossen",
+                f"Rechnung {invoice}: sevDesk-Storno erstellt, aber Wix-Zahlungsrefund konnte nicht bestätigt werden.",
+            )
+        self._reload_first_page()
+
+    def _on_refund_error(self, exc: Exception) -> None:
+        QMessageBox.warning(
+            self,
+            "Rückerstattung fehlgeschlagen",
+            f"Die Rückerstattung konnte nicht ausgeführt werden:\n\n{exc}",
+        )
+
+    def _on_refund_finished(self) -> None:
+        self._overlay.hide()
 
     def _refresh_detail_for_selection(self) -> None:
         row = self._table.selected_source_row()
