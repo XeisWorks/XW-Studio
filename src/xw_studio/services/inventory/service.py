@@ -43,7 +43,6 @@ class StartMode(str, Enum):
 
     INVOICES_ONLY = "invoices"
     INVOICES_AND_PRINT = "full"
-    PRINT_ONLY = "print_only"
 
 
 @dataclass(frozen=True)
@@ -55,6 +54,35 @@ class StartExecutionReport:
     decisions_count: int
     printed_skus: list[str]
     consumed_skus: list[str]
+    stock_updated: bool
+
+
+@dataclass(frozen=True)
+class ReprintDecision:
+    """Single SKU decision for REPRINTS (print-only, no consumption)."""
+
+    sku: str
+    on_hand_qty: int
+    min_stock_target: int
+    reprint_batch_qty: int
+    will_print: bool
+    final_print_qty: int
+
+
+@dataclass(frozen=True)
+class ReprintPreflight:
+    """Preflight result for REPRINTS dialog (restock decision)."""
+
+    decisions: list[ReprintDecision]
+    missing_position_data: bool
+
+
+@dataclass(frozen=True)
+class ReprintExecutionReport:
+    """Result payload for REPRINTS execution (stock auffülling only)."""
+
+    decisions_count: int
+    printed_skus: list[str]
     stock_updated: bool
 
 
@@ -167,6 +195,81 @@ class InventoryService:
             open_invoice_count=max(0, int(open_invoice_count)),
             decisions=decisions,
             missing_position_data=False,
+        )
+
+    def build_reprint_preflight(
+        self,
+        requirements: dict[str, int] | None = None,
+    ) -> ReprintPreflight:
+        """Build preflight for REPRINTS (restock without invoice consumption).
+
+        If *requirements* is None, uses load_pending_requirements().
+        Returns decisions for products that need restocking (on_hand <= min_stock_target).
+        """
+        if requirements is None:
+            requirements = self.load_pending_requirements()
+        if not requirements:
+            return ReprintPreflight(decisions=[], missing_position_data=True)
+
+        stock_levels = self.load_stock_levels()
+        buffer_qty = max(0, int(self._config.printing.buffer_quantity))
+        decisions: list[ReprintDecision] = []
+
+        for sku in sorted(requirements):
+            on_hand = max(0, int(stock_levels.get(sku, 0)))
+            # For reprints, use simple heuristic: restock if on_hand is low
+            min_target = 5  # Default minimum stock target
+            reprint_batch = buffer_qty
+            will_print = on_hand <= min_target
+            final_print_qty = reprint_batch if will_print else 0
+            decisions.append(
+                ReprintDecision(
+                    sku=sku,
+                    on_hand_qty=on_hand,
+                    min_stock_target=min_target,
+                    reprint_batch_qty=reprint_batch,
+                    will_print=will_print,
+                    final_print_qty=final_print_qty,
+                )
+            )
+
+        return ReprintPreflight(
+            decisions=decisions,
+            missing_position_data=False,
+        )
+
+    def execute_reprint_workflow(
+        self,
+        preflight: ReprintPreflight,
+    ) -> ReprintExecutionReport:
+        """Execute REPRINTS: only print, only auffüllen (no invoice consumption).
+
+        Returns a report with printed SKUs and updated stock levels.
+        """
+        if preflight.missing_position_data or not preflight.decisions:
+            return ReprintExecutionReport(
+                decisions_count=len(preflight.decisions),
+                printed_skus=[],
+                stock_updated=False,
+            )
+
+        stock_levels = self.load_stock_levels()
+        printed_skus: list[str] = []
+
+        for decision in preflight.decisions:
+            if not decision.will_print:
+                continue
+            current = max(0, int(stock_levels.get(decision.sku, decision.on_hand_qty)))
+            produced = max(0, int(decision.final_print_qty))
+            final_stock = current + produced
+            stock_levels[decision.sku] = final_stock
+            printed_skus.append(decision.sku)
+
+        self._save_stock_levels(stock_levels)
+        return ReprintExecutionReport(
+            decisions_count=len(preflight.decisions),
+            printed_skus=printed_skus,
+            stock_updated=True,
         )
 
     def execute_start_workflow(

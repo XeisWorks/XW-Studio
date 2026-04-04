@@ -26,11 +26,14 @@ from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
 from xw_studio.services.inventory.service import (
     InventoryService,
+    ReprintExecutionReport,
+    ReprintPreflight,
     StartExecutionReport,
     StartMode,
     StartPreflight,
 )
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.ui.modules.rechnungen.reprint_dialog import ReprintPreviewDialog
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -181,12 +184,8 @@ class _StartDialog(QDialog):
         self._mode_full = QPushButton("📄 + 🖨  Rechnungen + Druck (Noten & Labels vorbereiten)")
         self._mode_full.setCheckable(True)
         self._mode_full.setMinimumHeight(40)
-        self._mode_print_only = QPushButton("🖨  Nur Drucken (PRINT ALL)")
-        self._mode_print_only.setCheckable(True)
-        self._mode_print_only.setMinimumHeight(40)
         gb_lay.addWidget(self._mode_invoices)
         gb_lay.addWidget(self._mode_full)
-        gb_lay.addWidget(self._mode_print_only)
         layout.addWidget(gb)
 
         gb_preview = QGroupBox("Pre-Flight (Bestand vs. Bedarf)")
@@ -200,11 +199,7 @@ class _StartDialog(QDialog):
 
         # Mutual exclusion
         self._mode_invoices.toggled.connect(lambda c: self._mode_full.setChecked(not c) if c else None)
-        self._mode_invoices.toggled.connect(lambda c: self._mode_print_only.setChecked(not c) if c else None)
         self._mode_full.toggled.connect(lambda c: self._mode_invoices.setChecked(not c) if c else None)
-        self._mode_full.toggled.connect(lambda c: self._mode_print_only.setChecked(not c) if c else None)
-        self._mode_print_only.toggled.connect(lambda c: self._mode_invoices.setChecked(not c) if c else None)
-        self._mode_print_only.toggled.connect(lambda c: self._mode_full.setChecked(not c) if c else None)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -216,10 +211,6 @@ class _StartDialog(QDialog):
     @property
     def full_mode(self) -> bool:
         return bool(self._mode_full.isChecked())
-
-    @property
-    def print_only_mode(self) -> bool:
-        return bool(self._mode_print_only.isChecked())
 
     def _format_preflight(self) -> str:
         lines: list[str] = [
@@ -261,6 +252,8 @@ class TagesgeschaeftView(QWidget):
         self._badge_worker: BackgroundWorker | None = None
         self._start_worker: BackgroundWorker | None = None
         self._start_exec_worker: BackgroundWorker | None = None
+        self._reprint_worker: BackgroundWorker | None = None
+        self._reprint_exec_worker: BackgroundWorker | None = None
         self._badge_timer = QTimer(self)
         self._badge_timer.setInterval(60000)
         self._badge_timer.timeout.connect(self._refresh_badges)
@@ -282,7 +275,8 @@ class TagesgeschaeftView(QWidget):
         super().closeEvent(event)
 
     def _wait_for_workers(self) -> None:
-        for worker in (self._badge_worker, self._start_worker, self._start_exec_worker):
+        for worker in (self._badge_worker, self._start_worker, self._start_exec_worker, 
+                       self._reprint_worker, self._reprint_exec_worker):
             if worker is not None and worker.isRunning():
                 worker.wait(3000)
 
@@ -318,6 +312,19 @@ class TagesgeschaeftView(QWidget):
         )
         btn_start.clicked.connect(self._on_start_clicked)
         bar_lay.addWidget(btn_start)
+
+        btn_reprints = QPushButton("🖨  Nachdrucke")
+        btn_reprints.setToolTip("Lagerbestand auffüllen: Nachdrucke nur Lagerfüllung (kein Invoice-Konsum)")
+        btn_reprints.setFixedHeight(34)
+        btn_reprints.setFixedWidth(140)
+        btn_reprints.setStyleSheet(
+            "QPushButton { background-color: #388e3c; color: white; border-radius: 6px;"
+            " font-weight: bold; font-size: 13px; }"
+            " QPushButton:hover { background-color: #2e7d32; }"
+            " QPushButton:pressed { background-color: #1b5e20; }"
+        )
+        btn_reprints.clicked.connect(self._on_reprints_clicked)
+        bar_lay.addWidget(btn_reprints)
 
         main_layout.addWidget(action_bar)
 
@@ -405,10 +412,8 @@ class TagesgeschaeftView(QWidget):
         mode = StartMode.INVOICES_ONLY
         if dlg.full_mode:
             mode = StartMode.INVOICES_AND_PRINT
-        elif dlg.print_only_mode:
-            mode = StartMode.PRINT_ONLY
 
-        if mode in (StartMode.INVOICES_AND_PRINT, StartMode.PRINT_ONLY) and result.missing_position_data:
+        if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
             QMessageBox.information(
                 self,
                 "Hinweis",
@@ -466,4 +471,81 @@ class TagesgeschaeftView(QWidget):
             self,
             "Fehler",
             f"Pre-Flight konnte nicht erstellt werden:\n\n{exc}",
+        )
+
+    def _on_reprints_clicked(self) -> None:
+        """Trigger reprint preflight job for stock-up workflow."""
+        if self._reprint_worker is not None and self._reprint_worker.isRunning():
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Nachdrucke Pre-Flight wird erstellt…", 2500)
+
+        def job() -> ReprintPreflight:
+            service: DailyBusinessService = self._container.resolve(DailyBusinessService)
+            requirements = service.load_requirements()
+            inventory_service: InventoryService = self._container.resolve(InventoryService)
+            return inventory_service.build_reprint_preflight(requirements)
+
+        self._reprint_worker = BackgroundWorker(job)
+        self._reprint_worker.signals.result.connect(self._on_reprint_preflight_ready)
+        self._reprint_worker.signals.error.connect(self._on_reprint_error)
+        self._reprint_worker.start()
+
+    def _on_reprint_preflight_ready(self, result: object) -> None:
+        """Show reprint preview dialog after preflight job completes."""
+        if not isinstance(result, ReprintPreflight):
+            return
+
+        dlg = ReprintPreviewDialog(result, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if self._reprint_exec_worker is not None and self._reprint_exec_worker.isRunning():
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Nachdrucke werden ausgefuehrt…", 2500)
+
+        def job() -> object:
+            inventory_service: InventoryService = self._container.resolve(InventoryService)
+            return inventory_service.execute_reprint_workflow(result)
+
+        self._reprint_exec_worker = BackgroundWorker(job)
+        self._reprint_exec_worker.signals.result.connect(self._on_reprint_executed)
+        self._reprint_exec_worker.signals.error.connect(self._on_reprint_error)
+        self._reprint_exec_worker.start()
+
+    def _on_reprint_executed(self, result: object) -> None:
+        """Show reprint execution summary and refresh UI."""
+        if not isinstance(result, ReprintExecutionReport):
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit(
+            f"Nachdrucke ausgefuehrt: {result.decisions_count} Positionen geprüft, "
+            f"{len(result.printed_skus)} SKUs zum Druck gegeben",
+            5000,
+        )
+
+        QMessageBox.information(
+            self,
+            "Nachdrucke abgeschlossen",
+            (
+                f"Positionen geprüft: {result.decisions_count}\n"
+                f"Druckjobs: {len(result.printed_skus)}\n"
+                f"SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}\n"
+                f"Bestand aktualisiert: {result.stock_updated}"
+            ),
+        )
+
+        self._refresh_badges()
+
+    def _on_reprint_error(self, exc: Exception) -> None:
+        """Handle reprint workflow errors."""
+        logger.error("Reprint workflow failed: %s", exc)
+        QMessageBox.warning(
+            self,
+            "Fehler",
+            f"Nachdrucke-Workflow konnte nicht ausgefuehrt werden:\n\n{exc}",
         )
