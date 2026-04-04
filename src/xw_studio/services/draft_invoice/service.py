@@ -97,6 +97,73 @@ class DraftInvoiceService:
             "positions": str(len(positions)),
         }
 
+    def preview_wix_order_number(self, wix_order_number: str) -> dict[str, Any]:
+        """Return preview data for the draft popup before creation."""
+        reference = str(wix_order_number or "").strip()
+        if not reference:
+            raise ValueError("Wix-Order-Nr fehlt.")
+        if not self._wix_orders.has_credentials():
+            raise ValueError("Wix API nicht konfiguriert (API-Key/Account/Site-ID fehlt).")
+
+        order = self._wix_orders.resolve_order(reference)
+        if not order:
+            raise ValueError(f"Wix-Order '{reference}' wurde nicht gefunden.")
+
+        order_number = str(order.get("number") or reference).strip()
+        items = self._wix_orders.fetch_order_line_items(order_number)
+        if not items:
+            raise ValueError("Wix-Order enthält keine Positionen.")
+
+        missing_skus: list[str] = []
+        preview_items: list[dict[str, str]] = []
+        for item in items:
+            sku = str(item.sku or "").strip()
+            if not sku:
+                missing_skus.append(f"(ohne SKU) {item.name}")
+                preview_items.append(
+                    {
+                        "sku": "—",
+                        "name": str(item.name or "").strip() or "(ohne Name)",
+                        "qty": str(max(1, int(item.qty or 1))),
+                        "status": "Nicht mappbar (SKU fehlt)",
+                    }
+                )
+                continue
+            part = self._parts.find_part_by_sku(sku)
+            if part is None or not str(part.id).strip():
+                missing_skus.append(sku)
+                preview_items.append(
+                    {
+                        "sku": sku,
+                        "name": str(item.name or "").strip() or sku,
+                        "qty": str(max(1, int(item.qty or 1))),
+                        "status": "Nicht mappbar (sevDesk-Part fehlt)",
+                    }
+                )
+                continue
+            preview_items.append(
+                {
+                    "sku": sku,
+                    "name": str(item.name or part.name or sku).strip(),
+                    "qty": str(max(1, int(item.qty or 1))),
+                    "status": f"OK -> Part {part.id}",
+                }
+            )
+
+        buyer_obj = order.get("buyerInfo")
+        buyer: dict[str, Any] = buyer_obj if isinstance(buyer_obj, dict) else {}
+        customer = " ".join(
+            part for part in (str(buyer.get("firstName") or "").strip(), str(buyer.get("lastName") or "").strip()) if part
+        ).strip()
+        return {
+            "wix_order_number": order_number,
+            "customer": customer or "—",
+            "email": str(buyer.get("email") or "").strip() or "—",
+            "items": preview_items,
+            "missing_skus": sorted(set(missing_skus)),
+            "can_create": not bool(missing_skus),
+        }
+
     def _build_positions(self, order_reference: str) -> list[dict[str, Any]]:
         wix_items = self._wix_orders.fetch_order_line_items(order_reference)
         if not wix_items:
@@ -148,7 +215,8 @@ class DraftInvoiceService:
         return positions
 
     def _resolve_or_create_contact(self, order: dict[str, Any]) -> str:
-        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        buyer_obj = order.get("buyerInfo")
+        buyer: dict[str, Any] = buyer_obj if isinstance(buyer_obj, dict) else {}
         email = str(buyer.get("email") or "").strip().lower()
 
         if email:
@@ -157,8 +225,10 @@ class DraftInvoiceService:
                 if str(contact.email or "").strip().lower() == email:
                     return str(contact.id)
 
-        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
-        contact_details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
+        billing_obj = order.get("billingInfo")
+        billing: dict[str, Any] = billing_obj if isinstance(billing_obj, dict) else {}
+        contact_obj = billing.get("contactDetails")
+        contact_details: dict[str, Any] = contact_obj if isinstance(contact_obj, dict) else {}
         first = str(contact_details.get("firstName") or "").strip()
         last = str(contact_details.get("lastName") or "").strip()
         company = str(contact_details.get("company") or "").strip()
@@ -206,9 +276,12 @@ class DraftInvoiceService:
         return ""
 
     def _build_address_text(self, order: dict[str, Any]) -> str:
-        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
-        address = billing.get("address") if isinstance(billing.get("address"), dict) else {}
-        details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
+        billing_obj = order.get("billingInfo")
+        billing: dict[str, Any] = billing_obj if isinstance(billing_obj, dict) else {}
+        address_obj = billing.get("address")
+        address: dict[str, Any] = address_obj if isinstance(address_obj, dict) else {}
+        details_obj = billing.get("contactDetails")
+        details: dict[str, Any] = details_obj if isinstance(details_obj, dict) else {}
 
         company = str(details.get("company") or "").strip()
         first = str(details.get("firstName") or "").strip()

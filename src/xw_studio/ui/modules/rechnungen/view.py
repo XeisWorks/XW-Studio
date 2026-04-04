@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QShowEvent,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHeaderView,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -316,7 +318,9 @@ class _DraftInvoiceDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Rechnungs-Entwurf erstellen")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(420)
+        self._preview_ok = False
 
         layout = QVBoxLayout(self)
         info = QLabel(
@@ -330,6 +334,20 @@ class _DraftInvoiceDialog(QDialog):
         self._order_number.setPlaceholderText("z.B. 10023")
         self._order_number.setClearButtonEnabled(True)
         layout.addWidget(self._order_number)
+
+        self._btn_preview = QPushButton("Vorschau laden")
+        self._btn_preview.setToolTip("Wix-Order laden und Positionen/Mappings prüfen")
+        layout.addWidget(self._btn_preview)
+
+        self._preview = QPlainTextEdit(self)
+        self._preview.setReadOnly(True)
+        self._preview.setMinimumHeight(190)
+        self._preview.setPlainText("Noch keine Vorschau geladen.")
+        layout.addWidget(self._preview)
+
+        self._open_in_sevdesk = QCheckBox("Nach Erstellung in sevDesk öffnen", self)
+        self._open_in_sevdesk.setChecked(True)
+        layout.addWidget(self._open_in_sevdesk)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
@@ -348,11 +366,36 @@ class _DraftInvoiceDialog(QDialog):
     def wix_order_number(self) -> str:
         return self._order_number.text().strip()
 
+    @property
+    def open_in_sevdesk(self) -> bool:
+        return self._open_in_sevdesk.isChecked()
+
+    @property
+    def preview_ok(self) -> bool:
+        return self._preview_ok
+
+    def on_preview_requested(self, callback: Any) -> None:
+        self._btn_preview.clicked.connect(callback)
+
+    def set_preview_result(self, text: str, *, ok: bool) -> None:
+        self._preview.setPlainText(text)
+        self._preview_ok = ok
+        if ok:
+            self._status.setText("Vorschau OK: Entwurf kann erstellt werden.")
+            self._status.setStyleSheet("color: #15803d;")
+        else:
+            self._status.setText("Vorschau enthält Probleme. Entwurf wird blockiert.")
+            self._status.setStyleSheet("color: #b91c1c;")
+
     def _accept_if_valid(self) -> None:
         value = self.wix_order_number
         if not value:
             self._status.setText("Bitte eine Wix-Order-Nr eingeben.")
             self._order_number.setFocus()
+            return
+        if not self._preview_ok:
+            self._status.setText("Bitte zuerst eine gültige Vorschau laden.")
+            self._status.setStyleSheet("color: #b91c1c;")
             return
         self.accept()
 
@@ -372,6 +415,7 @@ class RechnungenView(QWidget):
         self._fulfillment_step_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
+        self._open_draft_after_create = False
         self._mollie_alert_count = 0
         self._mollie_timer = QTimer(self)
         self._mollie_timer.setInterval(60000)
@@ -415,6 +459,10 @@ class RechnungenView(QWidget):
         left_layout.setSpacing(6)
 
         self._table = DataTable(_TABLE_COLUMNS)
+        self._table.setStyleSheet(
+            "QTableView::item:selected { background-color: rgba(29, 78, 216, 0.16); color: #0f172a; }"
+            "QTableView::item:selected:focus { background-color: rgba(29, 78, 216, 0.26); color: #0f172a; }"
+        )
         self._hints_delegate = _HintsIconDelegate(self._table)
         self._actions_delegate = _ActionsDelegate(self._table)
         self._fulfillment_delegate = _FulfillmentDelegate(self._table)
@@ -456,8 +504,24 @@ class RechnungenView(QWidget):
         detail_main.setContentsMargins(8, 8, 8, 8)
         detail_main.setSpacing(10)
 
-        gb_invoice = QGroupBox("Rechnung + Kunde")
-        form_inv = QFormLayout(gb_invoice)
+        self._gb_open = QGroupBox("OFFENE RECHNUNGEN")
+        form_open = QFormLayout(self._gb_open)
+        self._open_total = QLabel("—")
+        self._open_physical = QLabel("—")
+        self._open_digital = QLabel("—")
+        self._open_with_ref = QLabel("—")
+        self._open_plc = QLabel("—")
+        self._open_note = QLabel("—")
+        form_open.addRow("Gesamt:", self._open_total)
+        form_open.addRow("Davon physisch:", self._open_physical)
+        form_open.addRow("Davon digital-only:", self._open_digital)
+        form_open.addRow("Mit Wix-Order-Ref:", self._open_with_ref)
+        form_open.addRow("Mit PLC-Hinweis:", self._open_plc)
+        form_open.addRow("Mit Käufernotiz:", self._open_note)
+        detail_main.addWidget(self._gb_open)
+
+        self._gb_info = QGroupBox("INFO")
+        form_info = QFormLayout(self._gb_info)
         self._dl_number = QLabel("—")
         self._dl_date = QLabel("—")
         self._dl_status = QLabel("—")
@@ -467,27 +531,25 @@ class RechnungenView(QWidget):
         self._dl_country = QLabel("—")
         self._dl_id = QLabel("—")
         self._dl_order_ref = QLabel("—")
-        form_inv.addRow("Nummer:", self._dl_number)
-        form_inv.addRow("Datum:", self._dl_date)
-        form_inv.addRow("Status:", self._dl_status)
-        form_inv.addRow("Brutto:", self._dl_brutto)
-        form_inv.addRow("Kunde:", self._dl_contact)
-        form_inv.addRow("Land:", self._dl_country)
-        form_inv.addRow("ID:", self._dl_id)
-        form_inv.addRow("Order-Ref:", self._dl_order_ref)
-        detail_main.addWidget(gb_invoice)
-
-        self._gb_wix = QGroupBox("Wix Auftrag")
-        form_wix = QFormLayout(self._gb_wix)
         self._wix_order_no = QLabel("—")
         self._wix_customer = QLabel("—")
         self._wix_customer_email = QLabel("—")
         self._wix_shipping = QLabel("—")
-        form_wix.addRow("Order:", self._wix_order_no)
-        form_wix.addRow("Kunde:", self._wix_customer)
-        form_wix.addRow("E-Mail:", self._wix_customer_email)
-        form_wix.addRow("Versand:", self._wix_shipping)
-        detail_main.addWidget(self._gb_wix)
+        self._wix_shipping.setWordWrap(True)
+        form_info.addRow("Rechnung:", self._dl_number)
+        form_info.addRow("Datum:", self._dl_date)
+        form_info.addRow("Status:", self._dl_status)
+        form_info.addRow("Brutto:", self._dl_brutto)
+        form_info.addRow("Kunde:", self._dl_contact)
+        form_info.addRow("Land:", self._dl_country)
+        form_info.addRow("ID:", self._dl_id)
+        form_info.addRow("Order-Ref:", self._dl_order_ref)
+        form_info.addRow("Wix-Order:", self._wix_order_no)
+        form_info.addRow("Wix-Kunde:", self._wix_customer)
+        form_info.addRow("Wix-E-Mail:", self._wix_customer_email)
+        form_info.addRow("Lieferadresse:", self._wix_shipping)
+        self._gb_info.hide()
+        detail_main.addWidget(self._gb_info)
 
         self._gb_note = QGroupBox("Käufernotiz")
         note_layout = QVBoxLayout(self._gb_note)
@@ -569,6 +631,17 @@ class RechnungenView(QWidget):
         super().hideEvent(event)
         self._mollie_timer.stop()
         self._stop_mollie_worker()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            global_pos = self.mapToGlobal(event.position().toPoint())
+            local_to_table = self._table.mapFromGlobal(global_pos)
+            if not self._table.rect().contains(local_to_table):
+                sel = self._table.selectionModel()
+                if sel is not None:
+                    sel.clearSelection()
+                self._refresh_detail_for_selection()
+        super().mousePressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._mollie_timer.stop()
@@ -660,6 +733,7 @@ class RechnungenView(QWidget):
 
         self._search.refresh_suggestions()
         self._apply_table_column_layout()
+        self._refresh_open_invoice_overview()
 
         self._next_offset = len(self._summaries)
         self._btn_more.setEnabled(has_more)
@@ -752,6 +826,25 @@ class RechnungenView(QWidget):
 
     def _on_load_finished(self) -> None:
         self._overlay.hide()
+
+    def _refresh_open_invoice_overview(self) -> None:
+        open_rows = [s for s in self._summaries if s.status_code == 100]
+        total = len(open_rows)
+        with_ref = sum(1 for s in open_rows if s.order_reference.strip())
+        plc = sum(1 for s in open_rows if s.has_plc_label_candidate())
+        with_note = sum(1 for s in open_rows if s.buyer_note.strip())
+
+        # Approximation aligned with legacy analysis intent: invoices with Wix order refs
+        # are considered physical candidates, remainder digital-only.
+        physical = with_ref
+        digital = max(0, total - physical)
+
+        self._open_total.setText(str(total))
+        self._open_physical.setText(str(physical))
+        self._open_digital.setText(str(digital))
+        self._open_with_ref.setText(str(with_ref))
+        self._open_plc.setText(str(plc))
+        self._open_note.setText(str(with_note))
 
     def _on_print_clicked(self) -> None:
         if not self._print_allowed:
@@ -1024,6 +1117,8 @@ class RechnungenView(QWidget):
         if row is None or row < 0 or row >= len(self._summaries):
             self._reset_detail()
             return
+        self._gb_open.hide()
+        self._gb_info.show()
         s = self._summaries[row]
         self._dl_number.setText(s.invoice_number or "")
         self._dl_date.setText(s.formatted_date)
@@ -1051,6 +1146,8 @@ class RechnungenView(QWidget):
             self._reset_stuecke()
 
     def _reset_detail(self) -> None:
+        self._gb_open.show()
+        self._gb_info.hide()
         for lbl in (
             self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
             self._dl_contact, self._dl_country, self._dl_id,
@@ -1102,9 +1199,11 @@ class RechnungenView(QWidget):
         self._wix_order_no.setText(data.get("wix_order_number") or data.get("wix_order_id") or "—")
         self._wix_customer.setText(data.get("wix_customer_name") or "—")
         self._wix_customer_email.setText(data.get("wix_customer_email") or "—")
-        city = data.get("wix_shipping_city") or ""
-        country = data.get("wix_shipping_country") or ""
-        shipping = " / ".join(part for part in (city, country) if part)
+        shipping = (data.get("wix_shipping_address") or "").strip()
+        if not shipping:
+            city = data.get("wix_shipping_city") or ""
+            country = data.get("wix_shipping_country") or ""
+            shipping = " / ".join(part for part in (city, country) if part)
         self._wix_shipping.setText(shipping or "—")
 
     def _on_wix_meta_error(self, exc: Exception) -> None:
@@ -1121,10 +1220,12 @@ class RechnungenView(QWidget):
         if self._draft_worker is not None and self._draft_worker.isRunning():
             return
         dlg = _DraftInvoiceDialog(self)
+        dlg.on_preview_requested(lambda: self._run_draft_preview(dlg))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         order_number = dlg.wix_order_number
+        self._open_draft_after_create = dlg.open_in_sevdesk
         self._overlay.show_with_message("Rechnungsentwurf wird erstellt…")
         self._overlay.setGeometry(self.rect())
         self._overlay.raise_()
@@ -1155,6 +1256,12 @@ class RechnungenView(QWidget):
                 f"Positionen: {positions}"
             ),
         )
+        if self._open_draft_after_create and invoice_id:
+            base = str(self._container.config.sevdesk.base_url or "https://my.sevdesk.de/api/v1").strip().rstrip("/")
+            if base.endswith("/api/v1"):
+                base = base[:-7]
+            url = f"{base}/#/invoices/{invoice_id}"
+            QDesktopServices.openUrl(QUrl(url))
         self._reload_first_page()
 
     def _on_create_draft_error(self, exc: Exception) -> None:
@@ -1166,6 +1273,42 @@ class RechnungenView(QWidget):
 
     def _on_create_draft_finished(self) -> None:
         self._overlay.hide()
+
+    def _run_draft_preview(self, dlg: _DraftInvoiceDialog) -> None:
+        reference = dlg.wix_order_number
+        if not reference:
+            dlg.set_preview_result("Bitte zuerst eine Wix-Order-Nr eingeben.", ok=False)
+            return
+        try:
+            service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            preview = service.preview_wix_order_number(reference)
+        except Exception as exc:
+            dlg.set_preview_result(f"Vorschau fehlgeschlagen:\n{exc}", ok=False)
+            return
+
+        lines: list[str] = []
+        lines.append(f"Wix-Order: {preview.get('wix_order_number', '—')}")
+        lines.append(f"Kunde: {preview.get('customer', '—')}")
+        lines.append(f"E-Mail: {preview.get('email', '—')}")
+        lines.append("")
+        lines.append("Positionen:")
+        items = preview.get("items") if isinstance(preview.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {item.get('qty', '1')}x [{item.get('sku', '—')}] {item.get('name', '—')} -> {item.get('status', '—')}"
+            )
+
+        missing = preview.get("missing_skus") if isinstance(preview.get("missing_skus"), list) else []
+        if missing:
+            lines.append("")
+            lines.append("Fehlende/ungültige SKU-Mappings:")
+            for sku in missing:
+                lines.append(f"- {sku}")
+
+        can_create = bool(preview.get("can_create"))
+        dlg.set_preview_result("\n".join(lines), ok=can_create)
 
     def _reset_stuecke(self) -> None:
         self._current_piece_blocks = []

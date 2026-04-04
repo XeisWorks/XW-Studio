@@ -347,14 +347,22 @@ class WixOrdersClient:
         full_name = " ".join(part for part in (first, last) if part).strip()
         email = str(buyer.get("email") or "").strip()
         city = str(shipping_address.get("city") or "").strip()
+        street1 = str(shipping_address.get("addressLine1") or "").strip()
+        street2 = str(shipping_address.get("addressLine2") or "").strip()
+        postal_code = str(shipping_address.get("postalCode") or "").strip()
         country = str(shipping_address.get("country") or "").strip()
+        shipping_lines = [line for line in (street1, street2, " ".join(part for part in (postal_code, city) if part), country) if line]
         return {
             "wix_order_id": str(order.get("id") or "").strip(),
             "wix_order_number": str(order.get("number") or "").strip(),
             "wix_customer_name": full_name,
             "wix_customer_email": email,
+            "wix_shipping_street": street1,
+            "wix_shipping_street2": street2,
+            "wix_shipping_zip": postal_code,
             "wix_shipping_city": city,
             "wix_shipping_country": country,
+            "wix_shipping_address": "\n".join(shipping_lines),
         }
 
     def resolve_order_dashboard_url(self, reference: str) -> str:
