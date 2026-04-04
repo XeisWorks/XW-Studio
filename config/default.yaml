@@ -29,6 +29,11 @@ printing:
   invoice_dpi: 300
   buffer_quantity: 3
   rate_limit_seconds: 1
+  invoice_printer: "Rechnungen"
+  label_printer: "Brother QL-800"
+  label_model: "QL-800"
+  label_size: "62"
+  label_template_path: "../sevDesk/XeisWorks - Versand_v2.lbx"
   # Printer names that are considered valid targets (Windows names, exact match).
   # Migrated from old sevDesk-project print_profiles + extra_printers.
   configured_printer_names:

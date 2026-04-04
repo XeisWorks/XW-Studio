@@ -30,6 +30,7 @@ from xw_studio.services.statistics.service import StatisticsService
 from xw_studio.services.products.catalog import ProductCatalogService
 from xw_studio.services.products.print_decision import PrintDecisionEngine
 from xw_studio.services.wix.client import WixProductsClient
+from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.services.clickup.client import ClickUpClient
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
 from xw_studio.services.xw_copilot.ingress import XWCopilotIngress
@@ -82,10 +83,16 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(
+        WixOrdersClient,
+        lambda c: WixOrdersClient(secret_service=c.resolve(SecretService)),
+    )
+    container.register(
         InvoiceProcessingService,
         lambda c: InvoiceProcessingService(
+            c.config,
             c.resolve(InvoiceClient),
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+            c.resolve(WixOrdersClient),
         ),
     )
 

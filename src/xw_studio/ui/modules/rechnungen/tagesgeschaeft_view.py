@@ -30,7 +30,6 @@ from xw_studio.services.inventory.service import (
     InventoryService,
     ReprintExecutionReport,
     ReprintPreflight,
-    StartExecutionReport,
     StartMode,
     StartPreflight,
 )
@@ -412,9 +411,9 @@ class TagesgeschaeftView(QWidget):
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("START wird ausgefuehrt…", 2500)
 
-        def job() -> StartExecutionReport:
-            inventory_service: InventoryService = self._container.resolve(InventoryService)
-            return inventory_service.execute_start_workflow(result, mode)
+        def job() -> dict[str, object]:
+            invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            return invoice_service.run_start_fullflow(full_mode=(mode == StartMode.INVOICES_AND_PRINT))
 
         self._start_exec_worker = BackgroundWorker(job)
         self._start_exec_worker.signals.result.connect(self._on_start_executed)
@@ -422,13 +421,16 @@ class TagesgeschaeftView(QWidget):
         self._start_exec_worker.start()
 
     def _on_start_executed(self, result: object) -> None:
-        if not isinstance(result, StartExecutionReport):
+        if not isinstance(result, dict):
             return
+        processed = int(result.get("processed") or 0)
+        failures = int(result.get("failures") or 0)
+        full_mode = bool(result.get("full_mode"))
+        mode_label = StartMode.INVOICES_AND_PRINT.value if full_mode else StartMode.INVOICES_ONLY.value
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit(
-            f"START ausgefuehrt: {result.open_invoice_count} Entwürfe "
-            f"({result.mode.value}), Druckjobs: {len(result.printed_skus)}",
+            f"START ausgefuehrt: {processed} Rechnungen ({mode_label}), Fehler: {failures}",
             5000,
         )
 
@@ -436,10 +438,9 @@ class TagesgeschaeftView(QWidget):
             self,
             "START abgeschlossen",
             (
-                f"Modus: {result.mode.value}\n"
-                f"Entwürfe zur Abarbeitung: {result.open_invoice_count}\n"
-                f"Druckjobs: {len(result.printed_skus)}\n"
-                f"Betroffene SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}"
+                f"Modus: {mode_label}\n"
+                f"Verarbeitete Rechnungen: {processed}\n"
+                f"Fehler: {failures}"
             ),
         )
 

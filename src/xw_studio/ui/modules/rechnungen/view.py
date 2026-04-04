@@ -216,13 +216,26 @@ class _FulfillmentDelegate(QStyledItemDelegate):
     """Paint clickable status chips for fulfillment steps in one column."""
 
     _CHIPS = (
-        ("label_printed", "L"),
-        ("invoice_printed", "R"),
-        ("product_ready", "P"),
-        ("mail_sent", "M"),
-        ("wix_fulfilled", "W"),
-        ("payment_booked", "€"),
+        ("label_printed", "labelprint.png"),
+        ("invoice_printed", "invoice_print.png"),
+        ("product_ready", "print.png"),
+        ("mail_sent", "mail_sent.png"),
+        ("wix_fulfilled", "wix.png"),
+        ("payment_booked", "payment.png"),
     )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._icons_dir = Path(__file__).resolve().parents[5] / "icons"
+        self._cache: dict[str, QPixmap] = {}
+
+    def _icon(self, file_name: str) -> QPixmap | None:
+        if file_name in self._cache:
+            pix = self._cache[file_name]
+            return pix if not pix.isNull() else None
+        pix = QPixmap(str(self._icons_dir / file_name))
+        self._cache[file_name] = pix
+        return pix if not pix.isNull() else None
 
     @classmethod
     def _layout(cls, width: int, height: int) -> list[tuple[str, str, int, int]]:
@@ -238,7 +251,9 @@ class _FulfillmentDelegate(QStyledItemDelegate):
 
     @classmethod
     def chip_at_x(cls, local_x: float, width: int, height: int) -> str:
-        for key, _label, x, size in cls._layout(width, height):
+        for key, _file, x, size in cls._layout(width, height):
+            if key == "payment_booked":
+                continue
             if x <= int(local_x) <= x + size:
                 return key
         return ""
@@ -255,19 +270,19 @@ class _FulfillmentDelegate(QStyledItemDelegate):
 
         painter.save()
         has_run = bool(payload.get("last_run_iso"))
-        for key, label, x_local, size in self._layout(option.rect.width(), option.rect.height()):
+        for key, file_name, x_local, size in self._layout(option.rect.width(), option.rect.height()):
             state = payload.get(key)
             if key == "payment_booked" and not bool(payload.get("payment_applicable")):
-                fg = "#94a3b8"
+                opacity = 0.2
                 bg = "#e2e8f0"
             elif not has_run:
-                fg = "#64748b"
+                opacity = 0.45
                 bg = "#e2e8f0"
             elif bool(state):
-                fg = "#166534"
+                opacity = 1.0
                 bg = "#dcfce7"
             else:
-                fg = "#991b1b"
+                opacity = 1.0
                 bg = "#fee2e2"
             target = option.rect.adjusted(0, 0, 0, 0)
             target.setX(option.rect.x() + x_local)
@@ -277,8 +292,11 @@ class _FulfillmentDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(bg))
             painter.drawRoundedRect(target, 6, 6)
-            painter.setPen(QColor(fg))
-            painter.drawText(target, int(Qt.AlignmentFlag.AlignCenter), label)
+            pix = self._icon(file_name)
+            if pix is not None:
+                painter.setOpacity(opacity)
+                painter.drawPixmap(target, pix)
+                painter.setOpacity(1.0)
         painter.restore()
 
     def sizeHint(self, option, index):  # type: ignore[override]
@@ -299,6 +317,7 @@ class RechnungenView(QWidget):
         self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
+        self._fulfillment_step_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
         self._mollie_alert_count = 0
@@ -787,31 +806,61 @@ class RechnungenView(QWidget):
         chip: str,
         flags: object,
     ) -> None:
-        payload = flags if isinstance(flags, dict) else {}
+        if chip == "payment_booked":
+            QMessageBox.information(self, "Payment", "Payment-Flow ist aktuell noch deaktiviert.")
+            return
+        if self._fulfillment_step_worker is not None and self._fulfillment_step_worker.isRunning():
+            return
+
         labels = {
             "label_printed": "Label",
             "invoice_printed": "Rechnung",
             "product_ready": "Produkt",
             "mail_sent": "Mail",
             "wix_fulfilled": "Wix",
-            "payment_booked": "Zahlung",
         }
-        has_run = bool(payload.get("last_run_iso"))
-        if chip == "payment_booked" and not bool(payload.get("payment_applicable")):
-            status_text = "nicht anwendbar"
-        elif not has_run:
-            status_text = "noch nicht gelaufen"
-        else:
-            status_text = "erledigt" if bool(payload.get(chip)) else "offen"
+        self._overlay.show_with_message(f"Retry {labels.get(chip, chip)} läuft…")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        invoice_id = summary.id
+
+        def job() -> dict[str, object]:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            updated = service.retry_fulfillment_step(invoice_id, chip)
+            payload = updated.as_row_payload() if hasattr(updated, "as_row_payload") else {}
+            return {
+                "invoice": summary.invoice_number or summary.id,
+                "chip": chip,
+                "flags": payload,
+            }
+
+        self._fulfillment_step_worker = BackgroundWorker(job)
+        self._fulfillment_step_worker.signals.result.connect(self._on_fulfillment_step_result)
+        self._fulfillment_step_worker.signals.error.connect(self._on_fulfillment_step_error)
+        self._fulfillment_step_worker.signals.finished.connect(self._on_fulfillment_step_finished)
+        self._fulfillment_step_worker.start()
+
+    def _on_fulfillment_step_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        invoice = str(data.get("invoice") or "—")
+        chip = str(data.get("chip") or "")
         QMessageBox.information(
             self,
-            "Fulfillment-Status",
-            (
-                f"Rechnung: {summary.invoice_number or summary.id}\n"
-                f"Schritt: {labels.get(chip, chip)}\n"
-                f"Status: {status_text}"
-            ),
+            "Fulfillment aktualisiert",
+            f"Rechnung {invoice}: Schritt '{chip}' wurde erneut ausgeführt.",
         )
+        self._reload_first_page()
+
+    def _on_fulfillment_step_error(self, exc: Exception) -> None:
+        QMessageBox.warning(
+            self,
+            "Fulfillment-Fehler",
+            f"Schritt konnte nicht ausgeführt werden:\n\n{exc}",
+        )
+
+    def _on_fulfillment_step_finished(self) -> None:
+        self._overlay.hide()
 
     def _run_row_action(self, summary: InvoiceSummary, action: str) -> None:
         if action == "plc":

@@ -1,6 +1,7 @@
 """sevDesk Invoice API client (read-focused)."""
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from datetime import datetime
@@ -405,3 +406,92 @@ class InvoiceClient:
                 status,
             )
         return result
+
+    def fetch_invoice_by_id(self, invoice_id: str) -> dict[str, Any]:
+        """Return one invoice object as returned by sevDesk."""
+        response = self._conn.get(f"/Invoice/{str(invoice_id).strip()}")
+        payload = response.json()
+        if isinstance(payload, dict):
+            objects = payload.get("objects")
+            if isinstance(objects, list):
+                for item in objects:
+                    if isinstance(item, dict):
+                        return item
+            if isinstance(objects, dict):
+                return objects
+            return payload
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    return item
+        return {}
+
+    def send_invoice_document(
+        self,
+        invoice_id: str,
+        *,
+        send_type: str = "PRN",
+        send_draft: bool = False,
+    ) -> dict[str, Any]:
+        """Trigger sevDesk ``sendBy`` for one invoice."""
+        body = {
+            "sendType": str(send_type).strip() or "PRN",
+            "sendDraft": bool(send_draft),
+        }
+        response = self._conn.put(f"/Invoice/{str(invoice_id).strip()}/sendBy", json=body)
+        return response.json() if response.content else {}
+
+    def render_invoice_pdf(self, invoice_id: str) -> dict[str, Any]:
+        """Ask sevDesk to render invoice PDF asynchronously."""
+        response = self._conn.post(f"/Invoice/{str(invoice_id).strip()}/render", json={})
+        return response.json() if response.content else {}
+
+    def get_invoice_pdf(self, invoice_id: str) -> bytes:
+        """Load rendered invoice PDF bytes from sevDesk."""
+        response = self._conn.get(
+            f"/Invoice/{str(invoice_id).strip()}/getPdf",
+            params={"download": "true", "preventSendBy": "true"},
+            headers={"Accept": "application/pdf,application/json"},
+        )
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        if response.content and response.content.startswith(b"%PDF"):
+            return response.content
+
+        payload: Any
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ValueError(
+                f"sevDesk PDF: ungültige Antwort (content-type={content_type})"
+            ) from exc
+
+        decoded = self._extract_pdf_from_payload(payload)
+        if decoded:
+            return decoded
+        raise ValueError("sevDesk PDF: kein PDF/base64 geliefert")
+
+    def _extract_pdf_from_payload(self, payload: object) -> bytes | None:
+        if not isinstance(payload, dict):
+            return None
+        for key in ("base64", "pdfBase64", "documentBase64"):
+            raw = payload.get(key)
+            if not raw:
+                continue
+            try:
+                decoded = base64.b64decode(str(raw), validate=False)
+            except Exception:
+                continue
+            if decoded.startswith(b"%PDF"):
+                return decoded
+        response_block = payload.get("response")
+        if isinstance(response_block, dict):
+            decoded = self._extract_pdf_from_payload(response_block)
+            if decoded:
+                return decoded
+        objects = payload.get("objects")
+        if isinstance(objects, list):
+            for item in objects:
+                decoded = self._extract_pdf_from_payload(item)
+                if decoded:
+                    return decoded
+        return None

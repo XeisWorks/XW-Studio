@@ -324,6 +324,10 @@ class WixOrdersClient:
                 order = self._search_order_by_number(digits)
         return order
 
+    def _resolve_order_id(self, reference: str) -> str:
+        order = self._resolve_order(reference)
+        return str(order.get("id") or "").strip()
+
     def resolve_order(self, reference: str) -> dict[str, Any]:
         """Resolve an order by order number/reference or UUID."""
         return self._resolve_order(reference)
@@ -361,6 +365,83 @@ class WixOrdersClient:
         if not order_id or not site_id:
             return ""
         return f"https://manage.wix.com/dashboard/{site_id}/ecom-platform/order-details/{order_id}"
+
+    def list_fulfillments(self, reference: str) -> list[dict[str, Any]]:
+        order_id = self._resolve_order_id(reference)
+        if not order_id or not self.has_credentials():
+            return []
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.get(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}",
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    data = payload.get("fulfillments")
+                    if isinstance(data, list):
+                        return [item for item in data if isinstance(item, dict)]
+                if isinstance(payload, list):
+                    return [item for item in payload if isinstance(item, dict)]
+                return []
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient list fulfillments failed: %s", exc)
+                return []
+
+    def get_fulfillable_items(self, reference: str) -> list[dict[str, Any]]:
+        order_id = self._resolve_order_id(reference)
+        if not order_id or not self.has_credentials():
+            return []
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.get(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}/fulfillable-items",
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    data = payload.get("fulfillableLineItems")
+                    if isinstance(data, list):
+                        return [item for item in data if isinstance(item, dict)]
+                if isinstance(payload, list):
+                    return [item for item in payload if isinstance(item, dict)]
+                return []
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient get fulfillable items failed: %s", exc)
+                return []
+
+    def create_fulfillment(
+        self,
+        reference: str,
+        line_items: list[dict[str, Any]],
+        *,
+        notify_customer: bool = False,
+    ) -> dict[str, Any]:
+        order_id = self._resolve_order_id(reference)
+        items = [item for item in line_items if isinstance(item, dict)]
+        if not order_id or not items or not self.has_credentials():
+            return {}
+        payload = {
+            "fulfillment": {
+                "lineItems": items,
+                "status": "Fulfilled",
+            },
+            "notifyCustomer": bool(notify_customer),
+        }
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}/create-fulfillment",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient create fulfillment failed: %s", exc)
+                return {}
 
     def get_order_refundability(self, order_id: str) -> dict[str, Any]:
         real_id = str(order_id or "").strip()

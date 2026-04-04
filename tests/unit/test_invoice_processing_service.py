@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from xw_studio.core.config import AppConfig
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 
@@ -40,7 +41,7 @@ def test_sensitive_country_override_from_settings() -> None:
         )
     ]
     repo = _RepoStub({"rechnungen.sensitive_country_codes": json.dumps(["AT"])})
-    svc = InvoiceProcessingService(_InvoiceClientStub(rows), repo)  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub(rows), repo)  # type: ignore[arg-type]
 
     result = svc.load_invoice_summaries()
 
@@ -57,7 +58,7 @@ def test_sensitive_country_falls_back_to_default_list() -> None:
             is_sensitive_country=False,
         )
     ]
-    svc = InvoiceProcessingService(_InvoiceClientStub(rows), None)  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub(rows), None)  # type: ignore[arg-type]
 
     result = svc.load_invoice_summaries()
 
@@ -83,7 +84,7 @@ def test_unreleased_sku_flags_from_settings() -> None:
             )
         }
     )
-    svc = InvoiceProcessingService(_InvoiceClientStub(rows), repo)  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub(rows), repo)  # type: ignore[arg-type]
 
     result = svc.load_invoice_summaries()
 
@@ -100,7 +101,7 @@ def test_unreleased_sku_flags_fall_back_to_defaults() -> None:
             has_unreleased_sku=False,
         )
     ]
-    svc = InvoiceProcessingService(_InvoiceClientStub(rows), None)  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub(rows), None)  # type: ignore[arg-type]
 
     result = svc.load_invoice_summaries()
 

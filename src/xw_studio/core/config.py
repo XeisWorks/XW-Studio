@@ -81,6 +81,11 @@ class PrintingSection:
     invoice_dpi: int = 300
     buffer_quantity: int = 3
     rate_limit_seconds: int = 1
+    invoice_printer: str = ""
+    label_printer: str = ""
+    label_model: str = ""
+    label_size: str = ""
+    label_template_path: str = ""
     configured_printer_names: list[str] = field(default_factory=list)
     # Named profiles loaded from YAML (list[dict] from YAML → list[PrintProfile] via loader)
     print_profiles: list[dict] = field(default_factory=list)

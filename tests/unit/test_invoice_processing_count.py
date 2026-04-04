@@ -1,6 +1,7 @@
 """Tests for invoice counting without UI hard limits."""
 from __future__ import annotations
 
+from xw_studio.core.config import AppConfig
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 
@@ -32,7 +33,7 @@ def test_count_invoices_pages_until_last_partial_page() -> None:
         [_row(i) for i in range(200, 400)],
         [_row(i) for i in range(400, 451)],
     ]
-    svc = InvoiceProcessingService(_InvoiceClientStub(pages))  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub(pages))  # type: ignore[arg-type]
 
     total = svc.count_invoices(status=200, batch_size=200)
 
@@ -40,7 +41,7 @@ def test_count_invoices_pages_until_last_partial_page() -> None:
 
 
 def test_count_invoices_empty() -> None:
-    svc = InvoiceProcessingService(_InvoiceClientStub([[]]))  # type: ignore[arg-type]
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub([[]]))  # type: ignore[arg-type]
 
     total = svc.count_invoices(status=200)
 
