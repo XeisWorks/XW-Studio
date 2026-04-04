@@ -52,6 +52,18 @@ class SimpleTableModel(QAbstractTableModel):
             if isinstance(color, str) and color.strip():
                 return QBrush(QColor(color))
             return None
+        if role == Qt.ItemDataRole.BackgroundRole:
+            color = row.get(f"__bg__{col}")
+            if isinstance(color, str) and color.strip():
+                return QBrush(QColor(color))
+            return None
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            align = row.get(f"__align__{col}")
+            if align == "center":
+                return int(Qt.AlignmentFlag.AlignCenter)
+            if align == "right":
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+            return None
         return None
 
     def headerData(
@@ -82,9 +94,11 @@ class DataTable(QTableView):
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.setShowGrid(False)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.horizontalHeader().setHighlightSections(False)
 
     def set_data(self, rows: Sequence[dict[str, Any]]) -> None:
         self._model.set_data(rows)

@@ -52,14 +52,27 @@ def test_invoice_summary_flags_delivery_override_and_sensitive_country() -> None
     assert summary.has_delivery_address_override is True
     assert summary.is_sensitive_country is True
     row = summary.as_table_row()
-    assert row["Notiz"] == "🔴"
-    assert row["Lieferabw."] == "🔴"
-    assert row["Heikles Land"] == "🔴"
-    assert row["__tooltip__Notiz"] == "Bitte ohne Klingeln"
-    assert "Heikles Zielland" in row["__tooltip__Heikles Land"]
+    assert row["Hinweise"] == "✎ ⌂ ⚠"
+    assert "Käufernotiz" in row["__tooltip__Hinweise"]
+    assert "Heikles Zielland" in row["__tooltip__Hinweise"]
     details = summary.detail_lines()
     assert "Lieferanschrift: abweichend" in details
     assert "Achtung: heikles Land" in details
+
+
+def test_invoice_summary_highlights_draft_status() -> None:
+    summary = InvoiceSummary.model_validate(
+        {
+            "id": "17",
+            "invoiceNumber": "R-17",
+            "status": 100,
+        }
+    )
+
+    row = summary.as_table_row()
+
+    assert row["Status"] == "✳ Entwurf"
+    assert "abgearbeitet" in row["__tooltip__Status"]
 
 
 def test_invoice_client_list_parses_objects() -> None:

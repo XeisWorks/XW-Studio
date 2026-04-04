@@ -214,7 +214,7 @@ class _StartDialog(QDialog):
 
     def _format_preflight(self) -> str:
         lines: list[str] = [
-            f"Offene Rechnungen: {self._preflight.open_invoice_count}",
+            f"Entwürfe zur Abarbeitung: {self._preflight.open_invoice_count}",
             "",
         ]
         if self._preflight.missing_position_data:
@@ -295,8 +295,8 @@ class TagesgeschaeftView(QWidget):
         title = QLabel("Tagesgeschäft")
         title.setStyleSheet("font-size: 15px; font-weight: bold;")
         bar_lay.addWidget(title)
-        legend = QLabel("Legende: 🔴 = dringend (Mouseover in Tabellen zeigt Grund)")
-        legend.setStyleSheet("color: #ef4444; font-size: 12px;")
+        legend = QLabel("Legende: ✳ = Entwurf, ✎ = Käufernotiz, ⌂ = Lieferabweichung, ⚠ = heikles Land")
+        legend.setStyleSheet("color: #b45309; font-size: 12px;")
         bar_lay.addWidget(legend)
         bar_lay.addStretch()
 
@@ -352,7 +352,7 @@ class TagesgeschaeftView(QWidget):
 
         def job() -> dict[str, int]:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-            open_count = invoice_service.count_invoices(status=200)
+            open_count = invoice_service.count_invoices(status=100)
             service: DailyBusinessService = self._container.resolve(DailyBusinessService)
             return service.load_counts(open_invoice_count=open_count)
 
@@ -369,7 +369,8 @@ class TagesgeschaeftView(QWidget):
         downloads_count = max(0, int(counts.get("downloads", 0)))
         refunds_count = max(0, int(counts.get("refunds", 0)))
 
-        self._tabs.setTabText(0, f"📋  Rechnungen ({open_count})")
+        prefix = "✳ " if open_count else ""
+        self._tabs.setTabText(0, f"{prefix}📋  Rechnungen ({open_count})")
         self._tabs.setTabText(1, f"{'🔴 ' if mollie_count else ''}💳  Mollie ({mollie_count})")
         self._tabs.setTabText(2, f"{'🔴 ' if gutscheine_count else ''}🎁  Gutscheine ({gutscheine_count})")
         self._tabs.setTabText(3, f"{'🔴 ' if downloads_count else ''}📥  Downloads ({downloads_count})")
@@ -394,7 +395,7 @@ class TagesgeschaeftView(QWidget):
         def job() -> StartPreflight:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
             inventory_service: InventoryService = self._container.resolve(InventoryService)
-            open_count = invoice_service.count_invoices(status=200)
+            open_count = invoice_service.count_invoices(status=100)
             return inventory_service.build_start_preflight(open_count)
 
         self._start_worker = BackgroundWorker(job)
@@ -445,7 +446,7 @@ class TagesgeschaeftView(QWidget):
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit(
-            f"START ausgefuehrt: {result.open_invoice_count} offene Rechnungen "
+            f"START ausgefuehrt: {result.open_invoice_count} Entwürfe "
             f"({result.mode.value}), Druckjobs: {len(result.printed_skus)}",
             5000,
         )
@@ -455,7 +456,7 @@ class TagesgeschaeftView(QWidget):
             "START abgeschlossen",
             (
                 f"Modus: {result.mode.value}\n"
-                f"Offene Rechnungen: {result.open_invoice_count}\n"
+                f"Entwürfe zur Abarbeitung: {result.open_invoice_count}\n"
                 f"Druckjobs: {len(result.printed_skus)}\n"
                 f"Betroffene SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}"
             ),

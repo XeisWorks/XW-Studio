@@ -185,36 +185,60 @@ class InvoiceSummary(BaseModel):
             return "—"
         return _INVOICE_STATUS_DE.get(self.status_code, str(self.status_code))
 
+    def status_display_label(self) -> str:
+        """Return the UI label with Entwurf visually prioritized."""
+        label = self.status_label()
+        if self.status_code == 100:
+            return f"✳ {label}"
+        return label
+
+    def indicator_symbols(self) -> str:
+        """Compact marker string for the invoice list."""
+        markers: list[str] = []
+        if self.buyer_note.strip():
+            markers.append("✎")
+        if self.has_delivery_address_override:
+            markers.append("⌂")
+        if self.is_sensitive_country:
+            markers.append("⚠")
+        return " ".join(markers)
+
+    def indicator_tooltip(self) -> str:
+        """Detailed explanation for the compact marker cell."""
+        lines: list[str] = []
+        if self.buyer_note.strip():
+            lines.append(f"✎ Käufernotiz: {self.buyer_note}")
+        if self.has_delivery_address_override:
+            lines.append("⌂ Abweichende Lieferanschrift vorhanden")
+        if self.is_sensitive_country:
+            lines.append(
+                f"⚠ Heikles Zielland: {self.address_country_code or self.delivery_country_code or 'unbekannt'}"
+            )
+        return "\n".join(lines)
+
     def as_table_row(self) -> dict[str, str]:
         """Keys match German column headers used in :class:`DataTable`."""
-        note_marker = "🔴" if self.buyer_note.strip() else ""
-        delivery_marker = "🔴" if self.has_delivery_address_override else ""
-        country_marker = "🔴" if self.is_sensitive_country else ""
+        indicator_symbols = self.indicator_symbols()
 
         row: dict[str, str] = {
             "Rechnungsnr.": self.invoice_number or "—",
             "Datum": self.formatted_date,
-            "Status": self.status_label(),
+            "Status": self.status_display_label(),
             "Brutto": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Land": self.address_country_code or "—",
-            "Notiz": note_marker,
-            "Lieferabw.": delivery_marker,
-            "Heikles Land": country_marker,
+            "Hinweise": indicator_symbols,
             "ID": self.id,
         }
 
-        if self.buyer_note.strip():
-            row["__tooltip__Notiz"] = self.buyer_note
-            row["__fg__Notiz"] = "#ef4444"
-        if self.has_delivery_address_override:
-            row["__tooltip__Lieferabw."] = "Abweichende Lieferanschrift vorhanden"
-            row["__fg__Lieferabw."] = "#ef4444"
-        if self.is_sensitive_country:
-            row["__tooltip__Heikles Land"] = (
-                f"Heikles Zielland: {self.address_country_code or 'unbekannt'}"
-            )
-            row["__fg__Heikles Land"] = "#ef4444"
+        row["__align__Hinweise"] = "center"
+        if indicator_symbols:
+            row["__tooltip__Hinweise"] = self.indicator_tooltip()
+            row["__fg__Hinweise"] = "#f59e0b" if self.status_code == 100 else "#ef4444"
+        if self.status_code == 100:
+            row["__tooltip__Status"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
+            row["__fg__Status"] = "#9a3412"
+            row["__bg__Status"] = "#fff7ed"
 
         return row
 

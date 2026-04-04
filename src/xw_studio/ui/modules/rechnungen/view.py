@@ -45,9 +45,7 @@ _TABLE_COLUMNS = [
     "Brutto",
     "Kunde",
     "Land",
-    "Notiz",
-    "Lieferabw.",
-    "Heikles Land",
+    "Hinweise",
     "ID",
 ]
 
@@ -117,13 +115,13 @@ class RechnungenView(QWidget):
         self._status_combo.blockSignals(True)
         for label, code in [
             ("Alle", None),
-            ("Offen", 200),
-            ("Bezahlt", 1000),
             ("Entwurf", 100),
+            ("Offen", 200),
             ("Teilweise bezahlt", 300),
+            ("Bezahlt", 1000),
         ]:
             self._status_combo.addItem(label, code)
-        self._status_combo.setCurrentIndex(1)
+        self._status_combo.setCurrentIndex(0)
         self._status_combo.blockSignals(False)
         self._status_combo.currentIndexChanged.connect(self._on_status_filter_changed)
         filter_row.addWidget(self._status_combo)
@@ -240,8 +238,10 @@ class RechnungenView(QWidget):
             self._hint.setStyleSheet("color: #ffa726; padding: 8px;")
             self._hint.show()
         else:
-            self._hint.setText("Hinweis: 🔴 markiert dringliche Hinweise (Mouseover zeigt Details).")
-            self._hint.setStyleSheet("color: #ef4444; padding: 6px;")
+            self._hint.setText(
+                "Hinweis: ✳ markiert Entwürfe zur Abarbeitung, ✎/⌂/⚠ zeigen Notiz, Lieferabweichung und heikles Land."
+            )
+            self._hint.setStyleSheet("color: #b45309; padding: 6px;")
             self._hint.show()
 
     def showEvent(self, event: QShowEvent) -> None:
