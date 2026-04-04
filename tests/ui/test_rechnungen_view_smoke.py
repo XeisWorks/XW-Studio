@@ -17,15 +17,11 @@ def _build_container() -> Container:
     return container
 
 
-def test_tagesgeschaeft_tabs_exist(qtbot: object) -> None:
+def test_tagesgeschaeft_contains_rechnungen_view(qtbot: object) -> None:
     container = _build_container()
     view = TagesgeschaeftView(container)
     qtbot.addWidget(view)
-
-    expected = ["Rechnungen", "Mollie", "Gutscheine"]
-    actual = [view._tabs.tabText(i) for i in range(view._tabs.count())]  # noqa: SLF001
-    for label in expected:
-        assert any(label in tab for tab in actual)
+    assert hasattr(view, "_rechnungen_view")  # noqa: SLF001
 
 
 def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
@@ -38,7 +34,21 @@ def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
     assert view._btn_print_label.text() == "Label drucken…"  # noqa: SLF001
     assert view._btn_print_plc.text() == "PLC-Label…"  # noqa: SLF001
     assert view._btn_print_music.text() == "Noten drucken…"  # noqa: SLF001
+    assert view._btn_mollie_alert.isHidden()  # noqa: SLF001
     assert not view._btn_print.isEnabled()  # noqa: SLF001
     assert not view._btn_print_label.isEnabled()  # noqa: SLF001
     assert not view._btn_print_plc.isEnabled()  # noqa: SLF001
     assert not view._btn_print_music.isEnabled()  # noqa: SLF001
+
+
+def test_rechnungen_mollie_alert_button_visibility(qtbot: object) -> None:
+    container = _build_container()
+    view = RechnungenView(container)
+    qtbot.addWidget(view)
+
+    view.update_mollie_alert_count(0)  # noqa: SLF001
+    assert view._btn_mollie_alert.isHidden()  # noqa: SLF001
+
+    view.update_mollie_alert_count(3)  # noqa: SLF001
+    assert not view._btn_mollie_alert.isHidden()  # noqa: SLF001
+    assert "3" in view._btn_mollie_alert.text()  # noqa: SLF001

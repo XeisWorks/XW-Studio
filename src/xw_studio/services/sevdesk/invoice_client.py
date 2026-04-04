@@ -305,10 +305,10 @@ class InvoiceSummary(BaseModel):
         icon_keys = self.indicator_icon_keys()
 
         row: dict[str, str] = {
-            "Rechnungsnr.": self.invoice_number or "—",
+            "RE-NR": self.invoice_number or "—",
             "Datum": self.formatted_date,
             "Status": self.status_display_label(),
-            "Brutto": self.formatted_brutto,
+            "BETRAG": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Hinweise": indicator_symbols,
             "AKTIONEN": "",
@@ -316,6 +316,7 @@ class InvoiceSummary(BaseModel):
         }
 
         row["__align__Hinweise"] = "center"
+        row["__align__BETRAG"] = "right"
         row["__icons__Hinweise"] = icon_keys
         row["__plc__enabled"] = True
         row["__has_order_ref__"] = bool(self.order_reference.strip())
@@ -391,6 +392,12 @@ class InvoiceClient:
                 if status is not None and summary.status_code != status:
                     continue
                 result.append(summary)
+
+        # Keep UI chronology stable: newest sevDesk import first (ID descending).
+        result.sort(
+            key=lambda item: int(item.id) if item.id.isdigit() else -1,
+            reverse=True,
+        )
 
         if status is not None and not result and objects:
             logger.debug(

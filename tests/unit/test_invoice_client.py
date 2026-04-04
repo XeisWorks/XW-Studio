@@ -21,10 +21,10 @@ def test_invoice_summary_from_api_object() -> None:
     assert summary.status_code == 200
     assert summary.contact_name == "Test GmbH"
     row = summary.as_table_row()
-    assert row["Rechnungsnr."] == "R-99"
+    assert row["RE-NR"] == "R-99"
     assert row["Status"] == "Offen"
     assert row["Datum"] == "01.03.2024"
-    assert row["Brutto"] == "19,99 €"
+    assert row["BETRAG"] == "19,99 €"
     assert "Test GmbH" in summary.detail_lines()
     assert summary.formatted_date == "01.03.2024"
     assert "19,99 €" in summary.formatted_brutto
@@ -132,7 +132,7 @@ def test_invoice_summary_coerces_null_invoice_number() -> None:
 
     assert summary.invoice_number == ""
     row = summary.as_table_row()
-    assert row["Rechnungsnr."] == "—"
+    assert row["RE-NR"] == "—"
 
 
 def test_invoice_summary_extracts_country_from_string_code() -> None:

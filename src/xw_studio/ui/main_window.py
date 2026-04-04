@@ -70,6 +70,14 @@ class MainWindow(QMainWindow):
 
         self._register_page(ModuleKey.RECHNUNGEN, TagesgeschaeftView(self._container))
 
+        from xw_studio.ui.modules.gutscheine.view import GutscheineView
+
+        self._register_page(ModuleKey.GUTSCHEINE, GutscheineView(self._container))
+
+        from xw_studio.ui.modules.mollie.view import MollieView
+
+        self._register_page(ModuleKey.MOLLIE, MollieView(self._container))
+
         from xw_studio.ui.modules.products.view import ProductsView
 
         self._register_page(ModuleKey.PRODUCTS, ProductsView(self._container))

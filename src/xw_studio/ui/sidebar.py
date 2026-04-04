@@ -36,6 +36,7 @@ class SidebarEntry:
 SIDEBAR_ENTRIES: list[SidebarEntry] = [
     SidebarEntry(ModuleKey.HOME, "Start", "home", ""),
     SidebarEntry(ModuleKey.RECHNUNGEN, "Rechnungen", "rechnungen", "Geschaeft"),
+    SidebarEntry(ModuleKey.GUTSCHEINE, "Gutscheine", "gutscheine", "Geschaeft"),
     SidebarEntry(ModuleKey.PRODUCTS, "Produkte", "products", "Geschaeft"),
     SidebarEntry(ModuleKey.CRM, "CRM", "crm", "Geschaeft"),
     SidebarEntry(ModuleKey.TAXES, "Steuern", "taxes", "Finanzen"),

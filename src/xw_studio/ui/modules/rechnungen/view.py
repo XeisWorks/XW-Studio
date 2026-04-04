@@ -5,9 +5,19 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QEvent, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QMouseEvent, QPainter, QPixmap, QResizeEvent, QShowEvent
+from PySide6.QtCore import QEvent, QTimer, Qt, QUrl
+from PySide6.QtGui import (
+    QCloseEvent,
+    QDesktopServices,
+    QHideEvent,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
+    QHeaderView,
     QStyledItemDelegate,
     QFormLayout,
     QGroupBox,
@@ -22,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from xw_studio.core.signals import AppSignals
+from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
+from xw_studio.services.daily_business.service import DailyBusinessService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
@@ -41,10 +53,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE_COLUMNS = [
-    "Rechnungsnr.",
+    "RE-NR",
     "Datum",
     "Status",
-    "Brutto",
+    "BETRAG",
     "Kunde",
     "Hinweise",
     "AKTIONEN",
@@ -206,9 +218,14 @@ class RechnungenView(QWidget):
         self._container = container
         self._worker: BackgroundWorker | None = None
         self._refund_worker: BackgroundWorker | None = None
+        self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
+        self._mollie_alert_count = 0
+        self._mollie_timer = QTimer(self)
+        self._mollie_timer.setInterval(60000)
+        self._mollie_timer.timeout.connect(self._refresh_mollie_alert_count)
         self._last_plc_invoice = "—"
         self._next_offset = 0
         self._summaries: list[InvoiceSummary] = []
@@ -258,6 +275,20 @@ class RechnungenView(QWidget):
         self._btn_print_music.clicked.connect(self._on_print_music_clicked)
         self._btn_print_music.setEnabled(False)
         toolbar.add_stretch()
+        self._btn_mollie_alert = toolbar.add_button(
+            "mollie_alert",
+            "💳 MOLLIE AUTH",
+            tooltip="Offene Mollie-Authorisierungen anzeigen",
+        )
+        self._btn_mollie_alert.setStyleSheet(
+            "QPushButton {"
+            "background-color: #b91c1c; color: white; border-radius: 6px;"
+            "font-weight: bold; padding: 0 14px;"
+            "}"
+            "QPushButton:hover { background-color: #991b1b; }"
+        )
+        self._btn_mollie_alert.clicked.connect(self._on_mollie_alert_clicked)
+        self._btn_mollie_alert.hide()
         layout.addWidget(toolbar)
 
         self._search = SearchBar("Suchen…")
@@ -279,7 +310,10 @@ class RechnungenView(QWidget):
         self._table.setItemDelegateForColumn(actions_col, self._actions_delegate)
         self._table.clicked.connect(self._on_table_clicked)
         self._table.viewport().installEventFilter(self)
+        self._table.setSortingEnabled(False)
+        self._table.horizontalHeader().setSectionsClickable(False)
         self._table.horizontalHeader().resizeSection(actions_col, 120)
+        self._table.setColumnHidden(_TABLE_COLUMNS.index("ID"), True)
         left_layout.addWidget(self._table, stretch=1)
 
         load_more_row = QHBoxLayout()
@@ -381,6 +415,22 @@ class RechnungenView(QWidget):
             self._did_initial_load = True
             if self._has_sevdesk_token():
                 self._reload_first_page()
+        self._refresh_mollie_alert_count()
+        self._mollie_timer.start()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        self._mollie_timer.stop()
+        self._stop_mollie_worker()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._mollie_timer.stop()
+        self._stop_mollie_worker()
+        super().closeEvent(event)
+
+    def _stop_mollie_worker(self) -> None:
+        if self._mollie_badge_worker is not None and self._mollie_badge_worker.isRunning():
+            self._mollie_badge_worker.wait(1000)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -465,6 +515,7 @@ class RechnungenView(QWidget):
             self._summaries = summaries
 
         self._search.refresh_suggestions()
+        self._apply_table_column_layout()
 
         self._next_offset = len(self._summaries)
         self._btn_more.setEnabled(has_more)
@@ -477,6 +528,43 @@ class RechnungenView(QWidget):
         )
         self._append_mode = False
         self._refresh_detail_for_selection()
+
+    def _apply_table_column_layout(self) -> None:
+        header = self._table.horizontalHeader()
+        for idx in range(len(_TABLE_COLUMNS)):
+            header.setSectionResizeMode(idx, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.resizeColumnsToContents()
+        for idx in range(len(_TABLE_COLUMNS)):
+            header.setSectionResizeMode(idx, QHeaderView.ResizeMode.Interactive)
+
+    def _refresh_mollie_alert_count(self) -> None:
+        if self._mollie_badge_worker is not None and self._mollie_badge_worker.isRunning():
+            return
+
+        def job() -> int:
+            service: DailyBusinessService = self._container.resolve(DailyBusinessService)
+            counts = service.load_counts(open_invoice_count=0)
+            return max(0, int(counts.get("mollie", 0)))
+
+        self._mollie_badge_worker = BackgroundWorker(job)
+        self._mollie_badge_worker.signals.result.connect(self._on_mollie_badge_result)
+        self._mollie_badge_worker.start()
+
+    def _on_mollie_badge_result(self, result: object) -> None:
+        count = max(0, int(result)) if isinstance(result, int) else 0
+        self.update_mollie_alert_count(count)
+
+    def update_mollie_alert_count(self, count: int) -> None:
+        self._mollie_alert_count = max(0, int(count))
+        if self._mollie_alert_count > 0:
+            self._btn_mollie_alert.setText(f"💳 MOLLIE AUTH ({self._mollie_alert_count})")
+            self._btn_mollie_alert.show()
+        else:
+            self._btn_mollie_alert.hide()
+
+    def _on_mollie_alert_clicked(self) -> None:
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.navigate_to_module.emit(ModuleKey.MOLLIE.value)
 
     def _invoice_search_suggestions(self, query: str) -> list[str]:
         q = query.lower().strip()

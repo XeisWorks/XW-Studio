@@ -1,4 +1,4 @@
-"""Tagesgeschäft — tabbed Daily-Business hub (Rechnungen, Mollie, Gutscheine, …)."""
+"""Tagesgeschäft — Rechnungen hub with start/reprint actions."""
 from __future__ import annotations
 
 import logging
@@ -244,7 +244,7 @@ class _StartDialog(QDialog):
 
 
 class TagesgeschaeftView(QWidget):
-    """Tabbed Daily-Business hub — Rechnungen tab is fully functional."""
+    """Daily-Business hub for Rechnungen with top action bar."""
 
     def __init__(self, container: Container, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -325,18 +325,8 @@ class TagesgeschaeftView(QWidget):
 
         main_layout.addWidget(action_bar)
 
-        # — Tab widget —
-        self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
-
         self._rechnungen_view = RechnungenView(self._container)
-        self._mollie_view = _QueueTabView(self._container, "mollie", "Mollie Authorized")
-        self._gutscheine_view = _QueueTabView(self._container, "gutscheine", "Gutscheine")
-        self._tabs.addTab(self._rechnungen_view, "📋  Rechnungen")
-        self._tabs.addTab(self._mollie_view, "💳  Mollie")
-        self._tabs.addTab(self._gutscheine_view, "🎁  Gutscheine")
-
-        main_layout.addWidget(self._tabs, stretch=1)
+        main_layout.addWidget(self._rechnungen_view, stretch=1)
 
     def _refresh_badges(self) -> None:
         if self._badge_worker is not None and self._badge_worker.isRunning():
@@ -358,14 +348,12 @@ class TagesgeschaeftView(QWidget):
         open_count = max(0, int(counts.get("rechnungen", 0)))
         mollie_count = max(0, int(counts.get("mollie", 0)))
         gutscheine_count = max(0, int(counts.get("gutscheine", 0)))
-        prefix = "✳ " if open_count else ""
-        self._tabs.setTabText(0, f"{prefix}📋  Rechnungen ({open_count})")
-        self._tabs.setTabText(1, f"{'🔴 ' if mollie_count else ''}💳  Mollie ({mollie_count})")
-        self._tabs.setTabText(2, f"{'🔴 ' if gutscheine_count else ''}🎁  Gutscheine ({gutscheine_count})")
-        self._mollie_view.reload(mollie_count)
-        self._gutscheine_view.reload(gutscheine_count)
+
+        self._rechnungen_view.update_mollie_alert_count(mollie_count)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.badge_updated.emit(ModuleKey.RECHNUNGEN.value, open_count)
+        signals.badge_updated.emit(ModuleKey.GUTSCHEINE.value, gutscheine_count)
+        signals.badge_updated.emit(ModuleKey.MOLLIE.value, mollie_count)
 
     def _on_badges_error(self, exc: Exception) -> None:
         logger.warning("Badge refresh failed: %s", exc)
