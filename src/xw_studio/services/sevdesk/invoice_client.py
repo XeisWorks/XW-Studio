@@ -87,6 +87,22 @@ class InvoiceSummary(BaseModel):
                 return None
         return None
 
+    @field_validator(
+        "id",
+        "invoice_number",
+        "contact_name",
+        "buyer_note",
+        "address_country_code",
+        "delivery_country_code",
+        "order_reference",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_text(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
     @classmethod
     def from_api_object(cls, raw: dict[str, Any]) -> InvoiceSummary:
         contact = raw.get("contact")
@@ -220,8 +236,6 @@ class InvoiceSummary(BaseModel):
             keys.append("alternateshippingaddress")
         if self.is_sensitive_country:
             keys.append("country")
-        if self.has_plc_label_candidate():
-            keys.append("plc")
         return keys
 
     def indicator_symbols(self) -> str:
@@ -261,14 +275,18 @@ class InvoiceSummary(BaseModel):
             "Kunde": self.contact_name or "—",
             "Land": self.address_country_code or "—",
             "Hinweise": indicator_symbols,
+            "PLC": "",
             "ID": self.id,
         }
 
         row["__align__Hinweise"] = "center"
         row["__icons__Hinweise"] = icon_keys
+        row["__plc__enabled"] = self.has_plc_label_candidate()
         if indicator_symbols:
             row["__tooltip__Hinweise"] = self.indicator_tooltip()
             row["__fg__Hinweise"] = "#f59e0b" if self.status_code == 100 else "#ef4444"
+        if self.has_plc_label_candidate():
+            row["__tooltip__PLC"] = "PLC-Label verfügbar: klicken zum Drucken"
         if self.status_code == 100:
             row["__tooltip__Status"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
             row["__fg__Status"] = "#9a3412"

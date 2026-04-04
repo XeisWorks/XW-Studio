@@ -89,7 +89,8 @@ def test_invoice_summary_detects_plc_and_adds_plc_icon() -> None:
 
     assert summary.has_plc_label_candidate() is True
     row = summary.as_table_row()
-    assert "plc" in row["__icons__Hinweise"]
+    assert row["__plc__enabled"] is True
+    assert "plc" not in row["__icons__Hinweise"]
 
 
 def test_invoice_client_list_parses_objects() -> None:
@@ -118,3 +119,17 @@ def test_invoice_client_list_parses_objects() -> None:
     assert len(rows) == 1
     assert rows[0].invoice_number == "A"
     assert rows[0].status_label() == "Bezahlt"
+
+
+def test_invoice_summary_coerces_null_invoice_number() -> None:
+    summary = InvoiceSummary.model_validate(
+        {
+            "id": "41",
+            "invoiceNumber": None,
+            "status": 200,
+        }
+    )
+
+    assert summary.invoice_number == ""
+    row = summary.as_table_row()
+    assert row["Rechnungsnr."] == "—"

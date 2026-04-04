@@ -48,6 +48,7 @@ _TABLE_COLUMNS = [
     "Kunde",
     "Land",
     "Hinweise",
+    "PLC",
     "ID",
 ]
 
@@ -120,6 +121,42 @@ class _HintsIconDelegate(QStyledItemDelegate):
         return base
 
 
+class _PlcActionDelegate(QStyledItemDelegate):
+    """Paint a dedicated PLC action icon in its own column."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        icon_path = Path(__file__).resolve().parents[5] / "icons" / "plc.png"
+        self._icon = QPixmap(str(icon_path))
+
+    def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
+        row_data = index.data(Qt.ItemDataRole.UserRole)
+        enabled = isinstance(row_data, dict) and bool(row_data.get("__plc__enabled"))
+        if self._icon.isNull():
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        size = min(18, max(14, option.rect.height() - 6))
+        x = option.rect.x() + max(4, (option.rect.width() - size) // 2)
+        y = option.rect.y() + max(2, (option.rect.height() - size) // 2)
+        if not enabled:
+            painter.setOpacity(0.25)
+        target = option.rect.adjusted(0, 0, 0, 0)
+        target.setX(x)
+        target.setY(y)
+        target.setWidth(size)
+        target.setHeight(size)
+        painter.drawPixmap(target, self._icon)
+        painter.restore()
+
+    def sizeHint(self, option, index):  # type: ignore[override]
+        base = super().sizeHint(option, index)
+        if base.height() < 22:
+            base.setHeight(22)
+        return base
+
+
 class RechnungenView(QWidget):
     """Load and display sevDesk invoices (non-blocking)."""
 
@@ -130,6 +167,7 @@ class RechnungenView(QWidget):
         self._stuecke_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
+        self._last_plc_invoice = "—"
         self._next_offset = 0
         self._summaries: list[InvoiceSummary] = []
         self._append_mode = False
@@ -165,6 +203,13 @@ class RechnungenView(QWidget):
         )
         self._btn_print_label.clicked.connect(self._on_print_label_clicked)
         self._btn_print_label.setEnabled(False)
+        self._btn_print_plc = toolbar.add_button(
+            "print_plc",
+            "PLC-Label…",
+            tooltip="PLC-Label für die aktuell gewählte Rechnung drucken",
+        )
+        self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
+        self._btn_print_plc.setEnabled(False)
         self._btn_print_music = toolbar.add_button(
             "print_music",
             "Noten drucken…",
@@ -207,8 +252,11 @@ class RechnungenView(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._table = DataTable(_TABLE_COLUMNS)
         self._hints_delegate = _HintsIconDelegate(self._table)
+        self._plc_delegate = _PlcActionDelegate(self._table)
         hint_col = _TABLE_COLUMNS.index("Hinweise")
+        plc_col = _TABLE_COLUMNS.index("PLC")
         self._table.setItemDelegateForColumn(hint_col, self._hints_delegate)
+        self._table.setItemDelegateForColumn(plc_col, self._plc_delegate)
         self._table.clicked.connect(self._on_table_clicked)
         splitter.addWidget(self._table)
 
@@ -254,6 +302,21 @@ class RechnungenView(QWidget):
         note_layout.addWidget(self._dl_note)
         self._gb_note.hide()
         detail_main.addWidget(self._gb_note)
+
+        self._gb_plc = QGroupBox("PLC Label Center")
+        plc_layout = QVBoxLayout(self._gb_plc)
+        self._plc_state = QLabel("Keine PLC-Markierung in Auswahl")
+        self._plc_state.setWordWrap(True)
+        self._plc_state.setStyleSheet("color: #64748b;")
+        plc_layout.addWidget(self._plc_state)
+        self._plc_last = QLabel("Letzter PLC-Druck: —")
+        self._plc_last.setStyleSheet("color: #64748b; font-size: 11px;")
+        plc_layout.addWidget(self._plc_last)
+        self._btn_plc_reprint = QPushButton("PLC-Label drucken")
+        self._btn_plc_reprint.clicked.connect(self._on_print_plc_selected)
+        self._btn_plc_reprint.setEnabled(False)
+        plc_layout.addWidget(self._btn_plc_reprint)
+        detail_main.addWidget(self._gb_plc)
 
         self._gb_stuecke = QGroupBox("Stücke")
         self._stuecke_layout = QVBoxLayout(self._gb_stuecke)
@@ -336,6 +399,7 @@ class RechnungenView(QWidget):
         self._btn_print.setEnabled(printing_allowed)
         self._btn_print_label.setEnabled(printing_allowed)
         self._btn_print_music.setEnabled(printing_allowed)
+        self._update_plc_controls()
 
     def _reload_first_page(self) -> None:
         self._next_offset = 0
@@ -459,6 +523,25 @@ class RechnungenView(QWidget):
 
         run_label_pdf_print(self, self._container)
 
+    def _on_print_plc_selected(self) -> None:
+        if not self._print_allowed:
+            return
+        row = self._table.selected_source_row()
+        if row is None or row < 0 or row >= len(self._summaries):
+            return
+        summary = self._summaries[row]
+        if not summary.has_plc_label_candidate():
+            return
+        from xw_studio.ui.modules.rechnungen.print_dialog import run_plc_label_pdf_print
+
+        run_plc_label_pdf_print(
+            self,
+            self._container,
+            invoice_number=summary.invoice_number,
+        )
+        self._last_plc_invoice = summary.invoice_number or summary.id
+        self._plc_last.setText(f"Letzter PLC-Druck: {self._last_plc_invoice}")
+
     def _on_print_music_clicked(self) -> None:
         if not self._print_allowed:
             return
@@ -474,8 +557,8 @@ class RechnungenView(QWidget):
         self._refresh_detail_for_selection()
 
     def _on_table_clicked(self, index: Any) -> None:
-        hint_col = _TABLE_COLUMNS.index("Hinweise")
-        if int(index.column()) != hint_col:
+        plc_col = _TABLE_COLUMNS.index("PLC")
+        if int(index.column()) != plc_col:
             return
         source_index = self._table.model().mapToSource(index)
         row = int(source_index.row())
@@ -484,13 +567,7 @@ class RechnungenView(QWidget):
         summary = self._summaries[row]
         if not summary.has_plc_label_candidate():
             return
-        from xw_studio.ui.modules.rechnungen.print_dialog import run_plc_label_pdf_print
-
-        run_plc_label_pdf_print(
-            self,
-            self._container,
-            invoice_number=summary.invoice_number,
-        )
+        self._on_print_plc_selected()
 
     def _refresh_detail_for_selection(self) -> None:
         row = self._table.selected_source_row()
@@ -512,6 +589,11 @@ class RechnungenView(QWidget):
             self._dl_note.setText("")
             self._gb_note.hide()
         self._dl_order_ref.setText(s.order_reference or "")
+        if s.has_plc_label_candidate():
+            self._plc_state.setText("PLC-Label verfügbar für diese Rechnung.")
+        else:
+            self._plc_state.setText("Keine PLC-Markierung in Auswahl")
+        self._update_plc_controls()
         if s.order_reference:
             self._load_stuecke(s.order_reference)
         else:
@@ -526,7 +608,17 @@ class RechnungenView(QWidget):
         self._dl_note.setText("")
         self._gb_note.hide()
         self._dl_order_ref.setText("—")
+        self._plc_state.setText("Keine PLC-Markierung in Auswahl")
+        self._update_plc_controls()
         self._reset_stuecke()
+
+    def _update_plc_controls(self) -> None:
+        row = self._table.selected_source_row()
+        enabled = False
+        if self._print_allowed and row is not None and 0 <= row < len(self._summaries):
+            enabled = self._summaries[row].has_plc_label_candidate()
+        self._btn_plc_reprint.setEnabled(enabled)
+        self._btn_print_plc.setEnabled(enabled)
 
     def _reset_stuecke(self) -> None:
         self._stuecke_hint.setText("—")
