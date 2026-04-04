@@ -117,6 +117,23 @@ def run_label_pdf_print(parent: QWidget, container: Container) -> None:
     )
 
 
+def run_plc_label_pdf_print(
+    parent: QWidget,
+    container: Container,
+    *,
+    invoice_number: str,
+) -> None:
+    """Pick and print PLC label PDF for a specific invoice row."""
+    dpi = int(container.config.printing.invoice_dpi or INVOICE_DPI)
+    title = f"PLC-Label PDF auswählen ({invoice_number})" if invoice_number else "PLC-Label PDF auswählen"
+    _print_with_dialog(
+        parent,
+        container,
+        title=title,
+        dpi=dpi,
+    )
+
+
 def run_music_pdf_print(parent: QWidget, container: Container) -> None:
     """Pick a PDF, show print dialog, print at music DPI for score quality."""
     dpi = int(container.config.printing.music_dpi or MUSIC_DPI)

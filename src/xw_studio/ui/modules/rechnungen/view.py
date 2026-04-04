@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QResizeEvent, QShowEvent
+from PySide6.QtGui import QPainter, QPixmap, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QStyledItemDelegate,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -50,6 +52,72 @@ _TABLE_COLUMNS = [
 ]
 
 _PAGE_SIZE = 50
+
+
+class _HintsIconDelegate(QStyledItemDelegate):
+    """Paint invoice hint icons in a compact row-friendly style."""
+
+    _ICON_FILES = {
+        "print": "print.png",
+        "printondemand": "printondemand.png",
+        "alternateshippingaddress": "alternateshippingaddress.png",
+        "country": "country.png",
+        "plc": "plc.png",
+    }
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._cache: dict[str, QPixmap] = {}
+        self._icons_dir = Path(__file__).resolve().parents[5] / "icons"
+
+    def _icon_for_key(self, key: str) -> QPixmap | None:
+        if key in self._cache:
+            pix = self._cache[key]
+            return pix if not pix.isNull() else None
+        file_name = self._ICON_FILES.get(key)
+        if not file_name:
+            self._cache[key] = QPixmap()
+            return None
+        pix = QPixmap(str(self._icons_dir / file_name))
+        self._cache[key] = pix
+        return pix if not pix.isNull() else None
+
+    def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
+        row_data = index.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row_data, dict):
+            super().paint(painter, option, index)
+            return
+        icon_keys = row_data.get("__icons__Hinweise")
+        if not isinstance(icon_keys, list) or not icon_keys:
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        size = min(18, max(14, option.rect.height() - 6))
+        gap = 6
+        total_width = len(icon_keys) * size + max(0, len(icon_keys) - 1) * gap
+        x = option.rect.x() + max(4, (option.rect.width() - total_width) // 2)
+        y = option.rect.y() + max(2, (option.rect.height() - size) // 2)
+
+        for key in icon_keys:
+            pix = self._icon_for_key(str(key))
+            if pix is None:
+                x += size + gap
+                continue
+            target = option.rect.adjusted(0, 0, 0, 0)
+            target.setX(x)
+            target.setY(y)
+            target.setWidth(size)
+            target.setHeight(size)
+            painter.drawPixmap(target, pix)
+            x += size + gap
+        painter.restore()
+
+    def sizeHint(self, option, index):  # type: ignore[override]
+        base = super().sizeHint(option, index)
+        if base.height() < 22:
+            base.setHeight(22)
+        return base
 
 
 class RechnungenView(QWidget):
@@ -138,6 +206,10 @@ class RechnungenView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self._table = DataTable(_TABLE_COLUMNS)
+        self._hints_delegate = _HintsIconDelegate(self._table)
+        hint_col = _TABLE_COLUMNS.index("Hinweise")
+        self._table.setItemDelegateForColumn(hint_col, self._hints_delegate)
+        self._table.clicked.connect(self._on_table_clicked)
         splitter.addWidget(self._table)
 
         # --- Structured detail panel ---
@@ -400,6 +472,25 @@ class RechnungenView(QWidget):
         _deselected: Any,
     ) -> None:
         self._refresh_detail_for_selection()
+
+    def _on_table_clicked(self, index: Any) -> None:
+        hint_col = _TABLE_COLUMNS.index("Hinweise")
+        if int(index.column()) != hint_col:
+            return
+        source_index = self._table.model().mapToSource(index)
+        row = int(source_index.row())
+        if row < 0 or row >= len(self._summaries):
+            return
+        summary = self._summaries[row]
+        if not summary.has_plc_label_candidate():
+            return
+        from xw_studio.ui.modules.rechnungen.print_dialog import run_plc_label_pdf_print
+
+        run_plc_label_pdf_print(
+            self,
+            self._container,
+            invoice_number=summary.invoice_number,
+        )
 
     def _refresh_detail_for_selection(self) -> None:
         row = self._table.selected_source_row()

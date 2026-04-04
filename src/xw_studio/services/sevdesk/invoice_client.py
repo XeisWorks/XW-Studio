@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -192,6 +193,37 @@ class InvoiceSummary(BaseModel):
             return f"✳ {label}"
         return label
 
+    def has_plc_label_candidate(self) -> bool:
+        """Detect invoices that likely need PLC label handling."""
+        hay = f"{self.order_reference} {self.buyer_note}".strip().lower()
+        if not hay:
+            return False
+        return any(
+            token in hay
+            for token in (
+                "plc",
+                "post label center",
+                "postlabelcenter",
+                "shipping label",
+                "versandlabel",
+            )
+        ) or bool(re.search(r"\bplc[-_ ]?\d+", hay))
+
+    def indicator_icon_keys(self) -> list[str]:
+        """Return icon keys used by the hints cell delegate."""
+        keys: list[str] = []
+        if self.status_code == 100:
+            keys.append("print")
+        if self.buyer_note.strip():
+            keys.append("printondemand")
+        if self.has_delivery_address_override:
+            keys.append("alternateshippingaddress")
+        if self.is_sensitive_country:
+            keys.append("country")
+        if self.has_plc_label_candidate():
+            keys.append("plc")
+        return keys
+
     def indicator_symbols(self) -> str:
         """Compact marker string for the invoice list."""
         markers: list[str] = []
@@ -219,6 +251,7 @@ class InvoiceSummary(BaseModel):
     def as_table_row(self) -> dict[str, str]:
         """Keys match German column headers used in :class:`DataTable`."""
         indicator_symbols = self.indicator_symbols()
+        icon_keys = self.indicator_icon_keys()
 
         row: dict[str, str] = {
             "Rechnungsnr.": self.invoice_number or "—",
@@ -232,6 +265,7 @@ class InvoiceSummary(BaseModel):
         }
 
         row["__align__Hinweise"] = "center"
+        row["__icons__Hinweise"] = icon_keys
         if indicator_symbols:
             row["__tooltip__Hinweise"] = self.indicator_tooltip()
             row["__fg__Hinweise"] = "#f59e0b" if self.status_code == 100 else "#ef4444"

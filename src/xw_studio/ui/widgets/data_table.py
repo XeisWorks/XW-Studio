@@ -42,6 +42,8 @@ class SimpleTableModel(QAbstractTableModel):
         col = self._columns[index.column()]
         if role == Qt.ItemDataRole.DisplayRole:
             return str(row.get(col, ""))
+        if role == Qt.ItemDataRole.UserRole:
+            return row
         if role == Qt.ItemDataRole.ToolTipRole:
             tip = row.get(f"__tooltip__{col}")
             if tip:

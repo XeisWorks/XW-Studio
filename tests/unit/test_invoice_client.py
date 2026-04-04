@@ -53,6 +53,7 @@ def test_invoice_summary_flags_delivery_override_and_sensitive_country() -> None
     assert summary.is_sensitive_country is True
     row = summary.as_table_row()
     assert row["Hinweise"] == "✎ ⌂ ⚠"
+    assert row["__icons__Hinweise"] == ["printondemand", "alternateshippingaddress", "country"]
     assert "Käufernotiz" in row["__tooltip__Hinweise"]
     assert "Heikles Zielland" in row["__tooltip__Hinweise"]
     details = summary.detail_lines()
@@ -72,7 +73,23 @@ def test_invoice_summary_highlights_draft_status() -> None:
     row = summary.as_table_row()
 
     assert row["Status"] == "✳ Entwurf"
+    assert row["__icons__Hinweise"] == ["print"]
     assert "abgearbeitet" in row["__tooltip__Status"]
+
+
+def test_invoice_summary_detects_plc_and_adds_plc_icon() -> None:
+    summary = InvoiceSummary.model_validate(
+        {
+            "id": "31",
+            "invoiceNumber": "R-31",
+            "status": 200,
+            "buyer_note": "Bitte mit PLC Label versenden",
+        }
+    )
+
+    assert summary.has_plc_label_candidate() is True
+    row = summary.as_table_row()
+    assert "plc" in row["__icons__Hinweise"]
 
 
 def test_invoice_client_list_parses_objects() -> None:
