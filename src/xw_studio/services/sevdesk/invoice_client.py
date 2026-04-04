@@ -313,7 +313,8 @@ class InvoiceSummary(BaseModel):
             "Kunde": self.contact_name or "—",
             "Hinweise": indicator_symbols,
             "AKTIONEN": "",
-            "ID": self.id,
+            # Hidden column is also used by text filter; include order ref for Wix-order search.
+            "ID": " ".join(part for part in (self.id, self.order_reference) if part).strip(),
         }
 
         row["__align__Hinweise"] = "center"

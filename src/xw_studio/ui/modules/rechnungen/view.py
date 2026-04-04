@@ -45,9 +45,11 @@ from xw_studio.services.draft_invoice.service import DraftInvoiceService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
+from xw_studio.services.sendungen.service import OffeneSendungenService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.wix.client import WixOrdersClient
+from xw_studio.ui.modules.rechnungen.offene_sendungen_dialog import OffeneSendungenDialog
 from xw_studio.ui.modules.rechnungen.refund_dialog import RefundDialog
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
@@ -417,6 +419,8 @@ class RechnungenView(QWidget):
         self._print_allowed = False
         self._open_draft_after_create = False
         self._mollie_alert_count = 0
+        self._sendungen_alert_count = 0
+        self._search_index: list[dict[str, str]] = []
         self._mollie_timer = QTimer(self)
         self._mollie_timer.setInterval(60000)
         self._mollie_timer.timeout.connect(self._refresh_mollie_alert_count)
@@ -446,9 +450,38 @@ class RechnungenView(QWidget):
             tooltip="Neuen sevDesk-Rechnungsentwurf aus Wix-Order-Nr erstellen",
         )
         self._btn_draft.clicked.connect(self._on_create_draft_clicked)
+        toolbar.add_stretch()
+        self._btn_sendungen_alert = toolbar.add_button(
+            "sendungen_alert",
+            "✉ OFFENE SENDUNGEN",
+            tooltip="Offene Versand-Mails anzeigen",
+        )
+        self._btn_sendungen_alert.setStyleSheet(
+            "QPushButton {"
+            "background-color: #b91c1c; color: white; border-radius: 6px;"
+            "font-weight: bold; padding: 0 14px;"
+            "}"
+            "QPushButton:hover { background-color: #991b1b; }"
+        )
+        self._btn_sendungen_alert.clicked.connect(self._on_sendungen_alert_clicked)
+        self._btn_sendungen_alert.hide()
+        self._btn_mollie_alert = toolbar.add_button(
+            "mollie_alert",
+            "💳 MOLLIE AUTH",
+            tooltip="Offene Mollie-Authorisierungen anzeigen",
+        )
+        self._btn_mollie_alert.setStyleSheet(
+            "QPushButton {"
+            "background-color: #b91c1c; color: white; border-radius: 6px;"
+            "font-weight: bold; padding: 0 14px;"
+            "}"
+            "QPushButton:hover { background-color: #991b1b; }"
+        )
+        self._btn_mollie_alert.clicked.connect(self._on_mollie_alert_clicked)
+        self._btn_mollie_alert.hide()
         layout.addWidget(toolbar)
 
-        self._search = SearchBar("Suchen…")
+        self._search = SearchBar("Suchen…", debounce_ms=220, min_chars=2, max_suggestions=12)
         self._search.set_suggestion_provider(self._invoice_search_suggestions)
         layout.addWidget(self._search)
 
@@ -732,6 +765,7 @@ class RechnungenView(QWidget):
             self._summaries = summaries
 
         self._search.refresh_suggestions()
+        self._rebuild_search_index()
         self._apply_table_column_layout()
         self._refresh_open_invoice_overview()
 
@@ -759,28 +793,53 @@ class RechnungenView(QWidget):
         if self._mollie_badge_worker is not None and self._mollie_badge_worker.isRunning():
             return
 
-        def job() -> int:
+        def job() -> dict[str, int]:
             service: DailyBusinessService = self._container.resolve(DailyBusinessService)
             counts = service.load_counts(open_invoice_count=0)
-            return max(0, int(counts.get("mollie", 0)))
+            sendungen_service: OffeneSendungenService = self._container.resolve(OffeneSendungenService)
+            return {
+                "mollie": max(0, int(counts.get("mollie", 0))),
+                "sendungen": max(0, int(sendungen_service.open_count())),
+            }
 
         self._mollie_badge_worker = BackgroundWorker(job)
         self._mollie_badge_worker.signals.result.connect(self._on_mollie_badge_result)
         self._mollie_badge_worker.start()
 
     def _on_mollie_badge_result(self, result: object) -> None:
-        count = max(0, int(result)) if isinstance(result, int) else 0
-        self.update_mollie_alert_count(count)
+        if isinstance(result, dict):
+            mollie = max(0, int(result.get("mollie") or 0))
+            sendungen = max(0, int(result.get("sendungen") or 0))
+        else:
+            mollie = max(0, int(result)) if isinstance(result, int) else 0
+            sendungen = 0
+        self.update_mollie_alert_count(mollie)
+        self.update_sendungen_alert_count(sendungen)
 
     def update_mollie_alert_count(self, count: int) -> None:
         self._mollie_alert_count = max(0, int(count))
-        if self._mollie_alert_count <= 0:
+        if self._mollie_alert_count > 0:
+            self._btn_mollie_alert.setText(f"💳 MOLLIE AUTH ({self._mollie_alert_count})")
+            self._btn_mollie_alert.show()
             return
-        logger.info("Mollie authorization alerts available: %d", self._mollie_alert_count)
+        self._btn_mollie_alert.hide()
+
+    def update_sendungen_alert_count(self, count: int) -> None:
+        self._sendungen_alert_count = max(0, int(count))
+        if self._sendungen_alert_count > 0:
+            self._btn_sendungen_alert.setText(f"✉ OFFENE SENDUNGEN ({self._sendungen_alert_count})")
+            self._btn_sendungen_alert.show()
+            return
+        self._btn_sendungen_alert.hide()
 
     def _on_mollie_alert_clicked(self) -> None:
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.navigate_to_module.emit(ModuleKey.MOLLIE.value)
+
+    def _on_sendungen_alert_clicked(self) -> None:
+        dlg = OffeneSendungenDialog(self._container, self)
+        dlg.exec()
+        self.update_sendungen_alert_count(dlg.open_count())
 
     def _selected_summary(self) -> InvoiceSummary | None:
         row = self._table.selected_source_row()
@@ -801,19 +860,52 @@ class RechnungenView(QWidget):
 
     def _invoice_search_suggestions(self, query: str) -> list[str]:
         q = query.lower().strip()
-        if len(q) < 3:
+        if len(q) < 2:
             return []
-        items: list[str] = []
-        for row in self._summaries:
-            hay = (
-                f"{row.invoice_number} {row.contact_name} {row.order_reference} "
-                f"{row.address_country_code} {row.buyer_note}"
-            ).lower()
-            if q in hay:
-                nr = row.invoice_number or "—"
-                customer = row.contact_name or "—"
-                items.append(f"{nr} - {customer}")
-        return items
+        exact: list[str] = []
+        starts: list[str] = []
+        contains: list[str] = []
+        for row in self._search_index:
+            inv = row.get("inv", "")
+            customer = row.get("customer", "")
+            order_nr = row.get("order", "")
+            label = row.get("label", "")
+
+            if inv == q or customer == q or order_nr == q:
+                exact.append(label)
+                continue
+            if inv.startswith(q) or customer.startswith(q) or order_nr.startswith(q):
+                starts.append(label)
+                continue
+            if q in inv or q in customer or q in order_nr:
+                contains.append(label)
+
+        out: list[str] = []
+        for bucket in (exact, starts, contains):
+            for item in bucket:
+                if item not in out:
+                    out.append(item)
+                if len(out) >= 12:
+                    return out
+        return out
+
+    def _rebuild_search_index(self) -> None:
+        self._search_index = []
+        for summary in self._summaries:
+            inv = str(summary.invoice_number or "").strip().lower()
+            customer = str(summary.contact_name or "").strip().lower()
+            order_ref = str(summary.order_reference or "").strip().lower()
+            numeric_order = "".join(ch for ch in order_ref if ch.isdigit())
+            order_search = numeric_order if numeric_order else order_ref
+            label = f"{summary.invoice_number or '—'} - {summary.contact_name or '—'}"
+            self._search_index.append(
+                {
+                    "inv": inv,
+                    "customer": customer,
+                    "order": order_search,
+                    "label": label,
+                }
+            )
 
     def _on_load_error(self, exc: Exception) -> None:
         logger.error("Invoice load failed: %s", exc)
