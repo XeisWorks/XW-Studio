@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPixmap, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QStyledItemDelegate,
-    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -28,7 +27,6 @@ from xw_studio.services.invoice_processing.service import InvoiceProcessingServi
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
-from xw_studio.services.sevdesk.part_client import PartClient
 from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
@@ -46,7 +44,6 @@ _TABLE_COLUMNS = [
     "Status",
     "Brutto",
     "Kunde",
-    "Land",
     "Hinweise",
     "PLC",
     "ID",
@@ -170,6 +167,8 @@ class RechnungenView(QWidget):
         self._last_plc_invoice = "—"
         self._next_offset = 0
         self._summaries: list[InvoiceSummary] = []
+        self._current_piece_blocks: list[PieceBlock] = []
+        self._piece_print_buttons: list[QPushButton] = []
         self._append_mode = False
         self._build_ui()
 
@@ -178,15 +177,11 @@ class RechnungenView(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        self._hint = QLabel()
-        self._hint.setWordWrap(True)
-        layout.addWidget(self._hint)
-
         toolbar = Toolbar()
         refresh = toolbar.add_button(
             "refresh",
             "Aktualisieren",
-            tooltip="Erste Seite neu laden (aktueller Statusfilter)",
+            tooltip="Erste Seite neu laden",
         )
         refresh.clicked.connect(self._reload_first_page)
         self._btn_print = toolbar.add_button(
@@ -220,36 +215,16 @@ class RechnungenView(QWidget):
         toolbar.add_stretch()
         layout.addWidget(toolbar)
 
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(8)
-        filter_row.addWidget(QLabel("Status:"))
-        self._status_combo = QComboBox()
-        self._status_combo.setMinimumWidth(220)
-        self._status_combo.blockSignals(True)
-        for label, code in [
-            ("Alle", None),
-            ("Entwurf", 100),
-            ("Offen", 200),
-            ("Teilweise bezahlt", 300),
-            ("Bezahlt", 1000),
-        ]:
-            self._status_combo.addItem(label, code)
-        self._status_combo.setCurrentIndex(0)
-        self._status_combo.blockSignals(False)
-        self._status_combo.currentIndexChanged.connect(self._on_status_filter_changed)
-        filter_row.addWidget(self._status_combo)
-        filter_row.addStretch()
-        self._btn_more = QPushButton("Weitere laden")
-        self._btn_more.setToolTip(f"Naechste bis zu {_PAGE_SIZE} Rechnungen anhaengen")
-        self._btn_more.clicked.connect(self._load_more)
-        filter_row.addWidget(self._btn_more)
-        layout.addLayout(filter_row)
-
         self._search = SearchBar("Suchen…")
         self._search.set_suggestion_provider(self._invoice_search_suggestions)
         layout.addWidget(self._search)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+
         self._table = DataTable(_TABLE_COLUMNS)
         self._hints_delegate = _HintsIconDelegate(self._table)
         self._plc_delegate = _PlcActionDelegate(self._table)
@@ -258,7 +233,19 @@ class RechnungenView(QWidget):
         self._table.setItemDelegateForColumn(hint_col, self._hints_delegate)
         self._table.setItemDelegateForColumn(plc_col, self._plc_delegate)
         self._table.clicked.connect(self._on_table_clicked)
-        splitter.addWidget(self._table)
+        left_layout.addWidget(self._table, stretch=1)
+
+        load_more_row = QHBoxLayout()
+        load_more_row.addStretch()
+        self._btn_more = QPushButton("Weitere laden")
+        self._btn_more.setToolTip(f"Naechste bis zu {_PAGE_SIZE} Rechnungen anhaengen")
+        self._btn_more.setFixedHeight(28)
+        self._btn_more.setFixedWidth(136)
+        self._btn_more.clicked.connect(self._load_more)
+        load_more_row.addWidget(self._btn_more)
+        left_layout.addLayout(load_more_row)
+
+        splitter.addWidget(left_panel)
 
         # --- Structured detail panel ---
         detail_scroll = QScrollArea()
@@ -270,30 +257,26 @@ class RechnungenView(QWidget):
         detail_main.setContentsMargins(8, 8, 8, 8)
         detail_main.setSpacing(10)
 
-        gb_invoice = QGroupBox("Rechnung")
+        gb_invoice = QGroupBox("Rechnung + Kunde")
         form_inv = QFormLayout(gb_invoice)
         self._dl_number = QLabel("—")
         self._dl_date = QLabel("—")
         self._dl_status = QLabel("—")
         self._dl_brutto = QLabel("—")
-        form_inv.addRow("Nummer:", self._dl_number)
-        form_inv.addRow("Datum:", self._dl_date)
-        form_inv.addRow("Status:", self._dl_status)
-        form_inv.addRow("Brutto:", self._dl_brutto)
-        detail_main.addWidget(gb_invoice)
-
-        gb_contact = QGroupBox("Kunde")
-        form_con = QFormLayout(gb_contact)
         self._dl_contact = QLabel("—")
         self._dl_contact.setWordWrap(True)
         self._dl_country = QLabel("—")
         self._dl_id = QLabel("—")
         self._dl_order_ref = QLabel("—")
-        form_con.addRow("Name:", self._dl_contact)
-        form_con.addRow("Land:", self._dl_country)
-        form_con.addRow("ID:", self._dl_id)
-        form_con.addRow("Order-Ref:", self._dl_order_ref)
-        detail_main.addWidget(gb_contact)
+        form_inv.addRow("Nummer:", self._dl_number)
+        form_inv.addRow("Datum:", self._dl_date)
+        form_inv.addRow("Status:", self._dl_status)
+        form_inv.addRow("Brutto:", self._dl_brutto)
+        form_inv.addRow("Kunde:", self._dl_contact)
+        form_inv.addRow("Land:", self._dl_country)
+        form_inv.addRow("ID:", self._dl_id)
+        form_inv.addRow("Order-Ref:", self._dl_order_ref)
+        detail_main.addWidget(gb_invoice)
 
         self._gb_note = QGroupBox("Käufernotiz")
         note_layout = QVBoxLayout(self._gb_note)
@@ -318,7 +301,7 @@ class RechnungenView(QWidget):
         plc_layout.addWidget(self._btn_plc_reprint)
         detail_main.addWidget(self._gb_plc)
 
-        self._gb_stuecke = QGroupBox("Stücke")
+        self._gb_stuecke = QGroupBox("Produkte")
         self._stuecke_layout = QVBoxLayout(self._gb_stuecke)
         self._stuecke_layout.setSpacing(4)
         self._stuecke_hint = QLabel("—")
@@ -342,42 +325,8 @@ class RechnungenView(QWidget):
         if sel is not None:
             sel.selectionChanged.connect(self._on_table_selection_changed)
 
-        self._update_token_hint()
-
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.printer_status_changed.connect(self._on_printer_status)
-
-    def _current_status(self) -> int | None:
-        data = self._status_combo.currentData()
-        if data is None:
-            return None
-        if isinstance(data, int):
-            return data
-        try:
-            return int(data)
-        except (TypeError, ValueError):
-            return None
-
-    def _on_status_filter_changed(self, _index: int) -> None:
-        if not self._has_sevdesk_token():
-            return
-        self._reload_first_page()
-
-    def _update_token_hint(self) -> None:
-        token = self._current_sevdesk_token()
-        if not token:
-            self._hint.setText(
-                "Kein sevDesk-API-Token gesetzt. Bitte Token in Settings (DB) "
-                "oder in .env eintragen."
-            )
-            self._hint.setStyleSheet("color: #ffa726; padding: 8px;")
-            self._hint.show()
-        else:
-            self._hint.setText(
-                "Hinweis: ✳ markiert Entwürfe zur Abarbeitung, ✎/⌂/⚠ zeigen Notiz, Lieferabweichung und heikles Land."
-            )
-            self._hint.setStyleSheet("color: #b45309; padding: 6px;")
-            self._hint.show()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -399,6 +348,8 @@ class RechnungenView(QWidget):
         self._btn_print.setEnabled(printing_allowed)
         self._btn_print_label.setEnabled(printing_allowed)
         self._btn_print_music.setEnabled(printing_allowed)
+        for button in self._piece_print_buttons:
+            button.setEnabled(printing_allowed)
         self._update_plc_controls()
 
     def _reload_first_page(self) -> None:
@@ -417,7 +368,6 @@ class RechnungenView(QWidget):
             return
 
         service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-        status = self._current_status()
         offset = self._next_offset if self._append_mode else 0
         append = self._append_mode
 
@@ -429,7 +379,7 @@ class RechnungenView(QWidget):
 
         def job() -> tuple[list[dict[str, str]], list[InvoiceSummary], bool]:
             rows, sums = service.load_invoice_batch(
-                status=status,
+                status=None,
                 limit=_PAGE_SIZE,
                 offset=offset,
             )
@@ -530,7 +480,10 @@ class RechnungenView(QWidget):
         if row is None or row < 0 or row >= len(self._summaries):
             return
         summary = self._summaries[row]
-        if not summary.has_plc_label_candidate():
+        self._run_plc_print(summary)
+
+    def _run_plc_print(self, summary: InvoiceSummary) -> None:
+        if not self._print_allowed:
             return
         from xw_studio.ui.modules.rechnungen.print_dialog import run_plc_label_pdf_print
 
@@ -565,9 +518,7 @@ class RechnungenView(QWidget):
         if row < 0 or row >= len(self._summaries):
             return
         summary = self._summaries[row]
-        if not summary.has_plc_label_candidate():
-            return
-        self._on_print_plc_selected()
+        self._run_plc_print(summary)
 
     def _refresh_detail_for_selection(self) -> None:
         row = self._table.selected_source_row()
@@ -580,7 +531,7 @@ class RechnungenView(QWidget):
         self._dl_status.setText(s.status_label())
         self._dl_brutto.setText(s.formatted_brutto)
         self._dl_contact.setText(s.contact_name or "")
-        self._dl_country.setText(s.address_country_code or "")
+        self._dl_country.setText(s.display_country or "")
         self._dl_id.setText(s.id)
         if s.buyer_note.strip():
             self._dl_note.setText(s.buyer_note)
@@ -589,10 +540,7 @@ class RechnungenView(QWidget):
             self._dl_note.setText("")
             self._gb_note.hide()
         self._dl_order_ref.setText(s.order_reference or "")
-        if s.has_plc_label_candidate():
-            self._plc_state.setText("PLC-Label verfügbar für diese Rechnung.")
-        else:
-            self._plc_state.setText("Keine PLC-Markierung in Auswahl")
+        self._plc_state.setText("PLC-Label druckbar für die ausgewählte Rechnung.")
         self._update_plc_controls()
         if s.order_reference:
             self._load_stuecke(s.order_reference)
@@ -608,7 +556,7 @@ class RechnungenView(QWidget):
         self._dl_note.setText("")
         self._gb_note.hide()
         self._dl_order_ref.setText("—")
-        self._plc_state.setText("Keine PLC-Markierung in Auswahl")
+        self._plc_state.setText("Keine Rechnung ausgewählt")
         self._update_plc_controls()
         self._reset_stuecke()
 
@@ -616,11 +564,13 @@ class RechnungenView(QWidget):
         row = self._table.selected_source_row()
         enabled = False
         if self._print_allowed and row is not None and 0 <= row < len(self._summaries):
-            enabled = self._summaries[row].has_plc_label_candidate()
+            enabled = True
         self._btn_plc_reprint.setEnabled(enabled)
         self._btn_print_plc.setEnabled(enabled)
 
     def _reset_stuecke(self) -> None:
+        self._current_piece_blocks = []
+        self._piece_print_buttons = []
         self._stuecke_hint.setText("—")
         # Remove dynamic item widgets (keep only the hint label)
         while self._stuecke_layout.count() > 1:
@@ -659,15 +609,28 @@ class RechnungenView(QWidget):
             self._stuecke_hint.setText("Keine Positionen gefunden.")
             self._stuecke_hint.show()
             return
-        for item in items:
-            if not isinstance(item, PieceBlock):
-                continue
+        self._current_piece_blocks = [item for item in items if isinstance(item, PieceBlock)]
+        for item in self._current_piece_blocks:
             # Header line: "×2  [XW-001]  Produktname ★"
             unreleased_marker = " \u2605" if item.is_unreleased else ""
             line = f"\u00d7{item.qty_needed}  [{item.sku}]  {item.name}{unreleased_marker}"
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
             lbl = QLabel(line)
             lbl.setWordWrap(True)
-            self._stuecke_layout.addWidget(lbl)
+            row_layout.addWidget(lbl, stretch=1)
+
+            if item.is_unreleased:
+                print_btn = QPushButton("Drucken")
+                print_btn.setFixedHeight(24)
+                print_btn.setEnabled(self._print_allowed)
+                print_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_print_clicked(block))
+                row_layout.addWidget(print_btn)
+                self._piece_print_buttons.append(print_btn)
+
+            self._stuecke_layout.addWidget(row_widget)
             # Stock status line
             stock_lbl = QLabel(f"  {item.stock_label}")
             stock_lbl.setWordWrap(True)
@@ -689,6 +652,23 @@ class RechnungenView(QWidget):
                 note_lbl.setWordWrap(True)
                 note_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
                 self._stuecke_layout.addWidget(note_lbl)
+
+    def _on_product_print_clicked(self, block: PieceBlock) -> None:
+        if not self._print_allowed:
+            return
+        from xw_studio.ui.modules.rechnungen.print_dialog import run_piece_pdf_print
+
+        if run_piece_pdf_print(self, self._container, piece=block):
+            try:
+                engine: PrintDecisionEngine = self._container.resolve(PrintDecisionEngine)
+                row = self._table.selected_source_row()
+                invoice_ref = ""
+                if row is not None and 0 <= row < len(self._summaries):
+                    invoice_ref = self._summaries[row].invoice_number or self._summaries[row].id
+                qty = max(1, int(block.print_qty or block.qty_needed or 1))
+                engine.record_print_and_update_sevdesk(block, qty, invoice_ref=invoice_ref)
+            except Exception as exc:
+                logger.warning("Stock update after product print failed: %s", exc)
 
     def _on_stuecke_error(self, exc: Exception) -> None:
         logger.warning("Stücke fetch failed: %s", exc)

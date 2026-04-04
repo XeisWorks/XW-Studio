@@ -73,7 +73,7 @@ def test_invoice_summary_highlights_draft_status() -> None:
     row = summary.as_table_row()
 
     assert row["Status"] == "✳ Entwurf"
-    assert row["__icons__Hinweise"] == ["print"]
+    assert row["__icons__Hinweise"] == []
     assert "abgearbeitet" in row["__tooltip__Status"]
 
 
@@ -133,3 +133,16 @@ def test_invoice_summary_coerces_null_invoice_number() -> None:
     assert summary.invoice_number == ""
     row = summary.as_table_row()
     assert row["Rechnungsnr."] == "—"
+
+
+def test_invoice_summary_extracts_country_from_string_code() -> None:
+    summary = InvoiceSummary.from_api_object(
+        {
+            "id": "52",
+            "invoiceNumber": "R-52",
+            "status": 200,
+            "addressCountryCode": "de",
+        }
+    )
+
+    assert summary.display_country == "DE"

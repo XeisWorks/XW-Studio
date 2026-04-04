@@ -1,43 +1,58 @@
 /* XeisWorks Studio — Light Theme Overrides */
 /* Applied on top of qt-material light_blue theme */
 
+QWidget {
+    color: #1e293b;
+}
+
 Sidebar {
-    background-color: #f5f5f5;
+    background-color: #eef2f7;
+    border-right: 1px solid #d4dce6;
 }
 
 SidebarButton {
     color: #1f2937;
+    background: transparent;
 }
 
 SidebarButton:checked {
     color: #0f172a;
-    background-color: rgba(37, 99, 235, 0.12);
+    background-color: rgba(29, 78, 216, 0.14);
 }
 
 QLabel {
     color: #334155;
-
-QTableView::item:selected {
-    background-color: rgba(37, 99, 235, 0.18);
-    color: #0f172a;
-}
-
-QTableView::item:selected:!active {
-    background-color: rgba(37, 99, 235, 0.10);
-    color: #334155;
-}
 }
 
 QPushButton {
-    color: #1f2937;
+    color: #0f172a;
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
 }
 
 QPushButton:hover {
-    color: #0f172a;
+    background-color: #eef4ff;
+    border-color: #93c5fd;
+}
+
+QPushButton:pressed {
+    background-color: #dbeafe;
 }
 
 QPushButton:disabled {
     color: #94a3b8;
+    background-color: #f1f5f9;
+    border-color: #e2e8f0;
+}
+
+QLineEdit,
+QPlainTextEdit,
+QTextEdit,
+QComboBox,
+QAbstractSpinBox {
+    color: #0f172a;
+    background-color: #ffffff;
+    border: 1px solid #cbd5e1;
 }
 
 QTabBar::tab {
@@ -49,19 +64,54 @@ QTabBar::tab:selected {
     font-weight: 600;
 }
 
+QTableView {
+    color: #0f172a;
+    background-color: #ffffff;
+    gridline-color: #dbe4ef;
+    selection-background-color: rgba(29, 78, 216, 0.14);
+    selection-color: #0f172a;
+}
+
+QTableView::item:selected {
+    background-color: rgba(29, 78, 216, 0.16);
+    color: #0f172a;
+}
+
+QTableView::item:selected:!active {
+    background-color: rgba(29, 78, 216, 0.10);
+    color: #1f2937;
+}
+
+QHeaderView::section {
+    color: #334155;
+    background-color: #f1f5f9;
+    border: 0;
+    border-bottom: 1px solid #dbe4ef;
+    padding: 6px 8px;
+}
+
+QGroupBox {
+    color: #1f2937;
+    border: 1px solid #dbe4ef;
+    border-radius: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+    padding: 0 4px;
+}
+
 DashboardCard {
     background-color: #ffffff;
-    border-color: #e0e0e0;
+    border-color: #dbe4ef;
 }
 
 Toast {
     background-color: #ffffff;
-    border: 1px solid #2196f3;
-}
-
-QTableView {
-    gridline-color: #e0e0e0;
-    selection-background-color: rgba(37, 99, 235, 0.16);
+    border: 1px solid #38bdf8;
 }
 
 QScrollBar:vertical {
@@ -73,5 +123,6 @@ QScrollBar:horizontal {
 }
 
 QStatusBar {
-    border-top: 1px solid #e0e0e0;
+    color: #334155;
+    border-top: 1px solid #dbe4ef;
 }

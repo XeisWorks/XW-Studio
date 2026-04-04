@@ -30,7 +30,7 @@ class SidebarConfig:
 @dataclass(frozen=True)
 class AppSection:
     name: str = "XeisWorks Studio"
-    theme: str = "dark_teal"
+    theme: str = "light_blue"
     language: str = "de"
     window: WindowConfig = field(default_factory=WindowConfig)
     sidebar: SidebarConfig = field(default_factory=SidebarConfig)

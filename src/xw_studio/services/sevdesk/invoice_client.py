@@ -55,6 +55,22 @@ DEFAULT_SENSITIVE_COUNTRY_CODES: set[str] = {
 }
 
 
+def _extract_country_code(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip().upper()
+    if isinstance(value, dict):
+        for key in ("translationCode", "code", "countryCode", "isoCode", "value"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().upper()
+        nested = value.get("country")
+        if nested is not None:
+            nested_code = _extract_country_code(nested)
+            if nested_code:
+                return nested_code
+    return ""
+
+
 class InvoiceSummary(BaseModel):
     """Normalized row for UI tables."""
 
@@ -71,6 +87,7 @@ class InvoiceSummary(BaseModel):
     delivery_country_code: str = ""
     has_delivery_address_override: bool = False
     is_sensitive_country: bool = False
+    has_unreleased_sku: bool = False
     order_reference: str = ""
 
     @field_validator("status_code", mode="before")
@@ -120,22 +137,34 @@ class InvoiceSummary(BaseModel):
                 contact_name = person
         cid = raw.get("id")
 
-        country = raw.get("addressCountry")
         country_code = ""
-        if isinstance(country, dict):
-            country_code = str(
-                country.get("translationCode") or country.get("code") or ""
-            ).strip()
+        for key in (
+            "addressCountry",
+            "addressCountryCode",
+            "country",
+            "countryCode",
+            "invoiceAddressCountry",
+        ):
+            country_code = _extract_country_code(raw.get(key))
+            if country_code:
+                break
+
+        if not country_code and isinstance(contact, dict):
+            for key in ("addressCountry", "country", "countryCode"):
+                country_code = _extract_country_code(contact.get(key))
+                if country_code:
+                    break
+            if not country_code:
+                address_obj = contact.get("address")
+                if isinstance(address_obj, dict):
+                    for key in ("country", "countryCode", "addressCountry"):
+                        country_code = _extract_country_code(address_obj.get(key))
+                        if country_code:
+                            break
 
         delivery_country_code = ""
         for key in ("deliveryAddressCountry", "deliveryCountry", "shippingCountry"):
-            candidate = raw.get(key)
-            if isinstance(candidate, dict):
-                delivery_country_code = str(
-                    candidate.get("translationCode") or candidate.get("code") or ""
-                ).strip()
-            elif isinstance(candidate, str):
-                delivery_country_code = candidate.strip()
+            delivery_country_code = _extract_country_code(raw.get(key))
             if delivery_country_code:
                 break
 
@@ -209,6 +238,10 @@ class InvoiceSummary(BaseModel):
             return f"✳ {label}"
         return label
 
+    @property
+    def display_country(self) -> str:
+        return self.delivery_country_code or self.address_country_code
+
     def has_plc_label_candidate(self) -> bool:
         """Detect invoices that likely need PLC label handling."""
         hay = f"{self.order_reference} {self.buyer_note}".strip().lower()
@@ -228,7 +261,7 @@ class InvoiceSummary(BaseModel):
     def indicator_icon_keys(self) -> list[str]:
         """Return icon keys used by the hints cell delegate."""
         keys: list[str] = []
-        if self.status_code == 100:
+        if self.has_unreleased_sku:
             keys.append("print")
         if self.buyer_note.strip():
             keys.append("printondemand")
@@ -241,6 +274,8 @@ class InvoiceSummary(BaseModel):
     def indicator_symbols(self) -> str:
         """Compact marker string for the invoice list."""
         markers: list[str] = []
+        if self.has_unreleased_sku:
+            markers.append("🖨")
         if self.buyer_note.strip():
             markers.append("✎")
         if self.has_delivery_address_override:
@@ -252,6 +287,8 @@ class InvoiceSummary(BaseModel):
     def indicator_tooltip(self) -> str:
         """Detailed explanation for the compact marker cell."""
         lines: list[str] = []
+        if self.has_unreleased_sku:
+            lines.append("🖨 SKU-Flag aktiv (unreleased/print-relevant)")
         if self.buyer_note.strip():
             lines.append(f"✎ Käufernotiz: {self.buyer_note}")
         if self.has_delivery_address_override:
@@ -273,7 +310,6 @@ class InvoiceSummary(BaseModel):
             "Status": self.status_display_label(),
             "Brutto": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
-            "Land": self.address_country_code or "—",
             "Hinweise": indicator_symbols,
             "PLC": "",
             "ID": self.id,
@@ -281,12 +317,11 @@ class InvoiceSummary(BaseModel):
 
         row["__align__Hinweise"] = "center"
         row["__icons__Hinweise"] = icon_keys
-        row["__plc__enabled"] = self.has_plc_label_candidate()
+        row["__plc__enabled"] = True
         if indicator_symbols:
             row["__tooltip__Hinweise"] = self.indicator_tooltip()
-            row["__fg__Hinweise"] = "#f59e0b" if self.status_code == 100 else "#ef4444"
-        if self.has_plc_label_candidate():
-            row["__tooltip__PLC"] = "PLC-Label verfügbar: klicken zum Drucken"
+            row["__fg__Hinweise"] = "#ef4444"
+        row["__tooltip__PLC"] = "PLC-Label drucken"
         if self.status_code == 100:
             row["__tooltip__Status"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
             row["__fg__Status"] = "#9a3412"
@@ -303,7 +338,7 @@ class InvoiceSummary(BaseModel):
             f"Status: {self.status_label()} ({self.status_code if self.status_code is not None else '—'})",
             f"Brutto: {self.formatted_brutto}",
             f"Kunde: {self.contact_name or '—'}",
-            f"Land: {self.address_country_code or '—'}",
+            f"Land: {self.display_country or '—'}",
         ]
         if self.has_delivery_address_override:
             lines.append("Lieferanschrift: abweichend")

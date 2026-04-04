@@ -295,9 +295,6 @@ class TagesgeschaeftView(QWidget):
         title = QLabel("Tagesgeschäft")
         title.setStyleSheet("font-size: 15px; font-weight: bold;")
         bar_lay.addWidget(title)
-        legend = QLabel("Legende: ✳ = Entwurf, ✎ = Käufernotiz, ⌂ = Lieferabweichung, ⚠ = heikles Land")
-        legend.setStyleSheet("color: #b45309; font-size: 12px;")
-        bar_lay.addWidget(legend)
         bar_lay.addStretch()
 
         btn_start = QPushButton("▶  START")

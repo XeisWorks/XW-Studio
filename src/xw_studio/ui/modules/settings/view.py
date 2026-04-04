@@ -41,6 +41,7 @@ _QUEUE_GUTSCHEINE_KEY = "daily_business.queue.gutscheine"
 _QUEUE_DOWNLOADS_KEY = "daily_business.queue.downloads"
 _QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
+_SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _URGENCY_RULES_KEY = "daily_business.urgency_rules"
 _CLICKUP_LIST_ID_KEY = "clickup.default_list_id"
 _EXTRA_SECRET_KEYS: tuple[str, ...] = (
@@ -234,6 +235,13 @@ class SettingsView(QWidget):
         self._sensitive_countries_json.setPlaceholderText('["RU", "IR", "SY"]')
         self._sensitive_countries_json.setMinimumHeight(70)
         queue_layout.addWidget(self._sensitive_countries_json)
+        queue_layout.addWidget(QLabel(f"{_SKU_FLAGS_KEY}:"))
+        self._sku_flags_json = QPlainTextEdit()
+        self._sku_flags_json.setPlaceholderText(
+            '{"exact": ["XW-010", "XW-011"], "prefixes": ["XW-4", "XW-6", "XW-7"]}'
+        )
+        self._sku_flags_json.setMinimumHeight(90)
+        queue_layout.addWidget(self._sku_flags_json)
         queue_layout.addWidget(QLabel(f"{_URGENCY_RULES_KEY}:"))
         self._urgency_rules_json = QPlainTextEdit()
         self._urgency_rules_json.setPlaceholderText(
@@ -330,6 +338,7 @@ class SettingsView(QWidget):
         queue_downloads = repo.get_value_json(_QUEUE_DOWNLOADS_KEY) or "[]"
         queue_refunds = repo.get_value_json(_QUEUE_REFUNDS_KEY) or "[]"
         sensitive_countries = repo.get_value_json(_SENSITIVE_COUNTRIES_KEY) or '["AF", "BY", "IQ", "IR", "KP", "RU", "SY"]'
+        sku_flags = repo.get_value_json(_SKU_FLAGS_KEY) or '{"exact": ["XW-010", "XW-011", "XW-600.0"], "prefixes": ["XW-4", "XW-6", "XW-7", "XW-12"]}'
         urgency_rules = repo.get_value_json(_URGENCY_RULES_KEY) or (
             '{"generic": ["offen", "fehl", "pending", "ueberweis", "überweis"], '
             '"mollie": ["auth", "authorized", "chargeback", "missing auth"], '
@@ -345,6 +354,7 @@ class SettingsView(QWidget):
         self._queue_downloads_json.setPlainText(queue_downloads)
         self._queue_refunds_json.setPlainText(queue_refunds)
         self._sensitive_countries_json.setPlainText(sensitive_countries)
+        self._sku_flags_json.setPlainText(sku_flags)
         self._urgency_rules_json.setPlainText(urgency_rules)
         self._queue_status.setText("Aktueller Stand aus DB geladen.")
         self._queue_status.setStyleSheet(_OK_STYLE)
@@ -361,6 +371,7 @@ class SettingsView(QWidget):
         queue_downloads_raw = self._queue_downloads_json.toPlainText().strip() or "[]"
         queue_refunds_raw = self._queue_refunds_json.toPlainText().strip() or "[]"
         sensitive_countries_raw = self._sensitive_countries_json.toPlainText().strip() or "[]"
+        sku_flags_raw = self._sku_flags_json.toPlainText().strip() or "{}"
         urgency_rules_raw = self._urgency_rules_json.toPlainText().strip() or "{}"
         try:
             stock_obj = json.loads(stock_raw)
@@ -371,6 +382,7 @@ class SettingsView(QWidget):
             queue_downloads_obj = json.loads(queue_downloads_raw)
             queue_refunds_obj = json.loads(queue_refunds_raw)
             sensitive_countries_obj = json.loads(sensitive_countries_raw)
+            sku_flags_obj = json.loads(sku_flags_raw)
             urgency_rules_obj = json.loads(urgency_rules_raw)
         except json.JSONDecodeError as exc:
             QMessageBox.warning(self, "JSON-Fehler", f"Ungueltiges JSON:\n\n{exc}")
@@ -384,12 +396,23 @@ class SettingsView(QWidget):
             or not isinstance(queue_downloads_obj, list)
             or not isinstance(queue_refunds_obj, list)
             or not isinstance(sensitive_countries_obj, list)
+            or not isinstance(sku_flags_obj, dict)
             or not isinstance(urgency_rules_obj, dict)
         ):
             QMessageBox.warning(
                 self,
                 "Formatfehler",
-                "Stock/Pending/Counts muessen Objekte sein; Queue/Sensitive-Countries muessen Listen sein; Urgency-Rules muss Objekt sein.",
+                "Stock/Pending/Counts muessen Objekte sein; Queue/Sensitive-Countries muessen Listen sein; SKU-Flags/Urgency-Rules muessen Objekte sein.",
+            )
+            return
+
+        exact_raw = sku_flags_obj.get("exact") if isinstance(sku_flags_obj, dict) else None
+        prefixes_raw = sku_flags_obj.get("prefixes") if isinstance(sku_flags_obj, dict) else None
+        if not isinstance(exact_raw, list) or not isinstance(prefixes_raw, list):
+            QMessageBox.warning(
+                self,
+                "Formatfehler",
+                "SKU-Flags braucht das Format: {\"exact\": [...], \"prefixes\": [...]}.",
             )
             return
 
@@ -398,6 +421,18 @@ class SettingsView(QWidget):
             for code in sensitive_countries_obj
             if str(code).strip()
         ]
+        normalized_sku_flags = {
+            "exact": [
+                str(code).strip().upper()
+                for code in exact_raw
+                if str(code).strip()
+            ],
+            "prefixes": [
+                str(code).strip().upper()
+                for code in prefixes_raw
+                if str(code).strip()
+            ],
+        }
         normalized_rules = {
             key: [
                 str(token).strip().lower()
@@ -417,6 +452,7 @@ class SettingsView(QWidget):
         repo.set_value_json(_QUEUE_DOWNLOADS_KEY, json.dumps(queue_downloads_obj))
         repo.set_value_json(_QUEUE_REFUNDS_KEY, json.dumps(queue_refunds_obj))
         repo.set_value_json(_SENSITIVE_COUNTRIES_KEY, json.dumps(normalized_sensitive))
+        repo.set_value_json(_SKU_FLAGS_KEY, json.dumps(normalized_sku_flags))
         repo.set_value_json(_URGENCY_RULES_KEY, json.dumps(normalized_rules))
         self._queue_status.setText("Queue-Daten gespeichert.")
         self._queue_status.setStyleSheet(_OK_STYLE)

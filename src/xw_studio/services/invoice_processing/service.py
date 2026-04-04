@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient, InvoiceSummary
@@ -11,6 +12,13 @@ from xw_studio.services.sevdesk.invoice_client import DEFAULT_SENSITIVE_COUNTRY_
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
+_SKU_FLAGS_KEY = "rechnungen.sku_flags"
+
+_DEFAULT_SKU_FLAGS = {
+    "exact": ["XW-010", "XW-011", "XW-600.0"],
+    "prefixes": ["XW-4", "XW-6", "XW-7", "XW-12"],
+}
+_SKU_TOKEN_RE = re.compile(r"\bXW-[A-Z0-9][A-Z0-9.-]*\b", re.IGNORECASE)
 
 
 class InvoiceProcessingService:
@@ -38,6 +46,7 @@ class InvoiceProcessingService:
             status=status,
         )
         self._apply_sensitive_country_flags(summaries)
+        self._apply_unreleased_sku_flags(summaries)
         logger.info(
             "Loaded %s invoices from sevDesk (status=%s offset=%s limit=%s)",
             len(summaries),
@@ -61,6 +70,7 @@ class InvoiceProcessingService:
             status=status,
         )
         self._apply_sensitive_country_flags(summaries)
+        self._apply_unreleased_sku_flags(summaries)
         return summaries
 
     def load_invoice_batch(
@@ -77,6 +87,7 @@ class InvoiceProcessingService:
             status=status,
         )
         self._apply_sensitive_country_flags(summaries)
+        self._apply_unreleased_sku_flags(summaries)
         rows = [s.as_table_row() for s in summaries]
         return rows, summaries
 
@@ -123,3 +134,48 @@ class InvoiceProcessingService:
             code = summary.address_country_code.strip().upper()
             delivery_code = summary.delivery_country_code.strip().upper()
             summary.is_sensitive_country = code in sensitive_codes or delivery_code in sensitive_codes
+
+    def _load_sku_flags(self) -> tuple[set[str], tuple[str, ...]]:
+        if self._settings_repo is None:
+            return self._default_sku_flags()
+        raw = self._settings_repo.get_value_json(_SKU_FLAGS_KEY)
+        if not raw:
+            return self._default_sku_flags()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._default_sku_flags()
+        if not isinstance(data, dict):
+            return self._default_sku_flags()
+
+        exact_raw = data.get("exact")
+        prefixes_raw = data.get("prefixes")
+        if not isinstance(exact_raw, list) or not isinstance(prefixes_raw, list):
+            return self._default_sku_flags()
+
+        exact = {str(item).strip().upper() for item in exact_raw if str(item).strip()}
+        prefixes = tuple(str(item).strip().upper() for item in prefixes_raw if str(item).strip())
+        if not exact and not prefixes:
+            return self._default_sku_flags()
+        return exact, prefixes
+
+    def _default_sku_flags(self) -> tuple[set[str], tuple[str, ...]]:
+        exact = {str(item).strip().upper() for item in _DEFAULT_SKU_FLAGS["exact"]}
+        prefixes = tuple(str(item).strip().upper() for item in _DEFAULT_SKU_FLAGS["prefixes"])
+        return exact, prefixes
+
+    def _apply_unreleased_sku_flags(self, summaries: list[InvoiceSummary]) -> None:
+        exact, prefixes = self._load_sku_flags()
+        for summary in summaries:
+            hay = " ".join(
+                [
+                    summary.order_reference,
+                    summary.buyer_note,
+                    summary.invoice_number,
+                ]
+            )
+            tokens = {match.group(0).upper() for match in _SKU_TOKEN_RE.finditer(hay)}
+            summary.has_unreleased_sku = any(
+                token in exact or any(token.startswith(prefix) for prefix in prefixes)
+                for token in tokens
+            )

@@ -62,3 +62,46 @@ def test_sensitive_country_falls_back_to_default_list() -> None:
     result = svc.load_invoice_summaries()
 
     assert result[0].is_sensitive_country is True
+
+
+def test_unreleased_sku_flags_from_settings() -> None:
+    rows = [
+        InvoiceSummary(
+            id="3",
+            invoice_number="R-3",
+            order_reference="WIX XW-6-003",
+            has_unreleased_sku=False,
+        )
+    ]
+    repo = _RepoStub(
+        {
+            "rechnungen.sku_flags": json.dumps(
+                {
+                    "exact": ["XW-123"],
+                    "prefixes": ["XW-6"],
+                }
+            )
+        }
+    )
+    svc = InvoiceProcessingService(_InvoiceClientStub(rows), repo)  # type: ignore[arg-type]
+
+    result = svc.load_invoice_summaries()
+
+    assert len(result) == 1
+    assert result[0].has_unreleased_sku is True
+
+
+def test_unreleased_sku_flags_fall_back_to_defaults() -> None:
+    rows = [
+        InvoiceSummary(
+            id="4",
+            invoice_number="R-4",
+            order_reference="XW-010",
+            has_unreleased_sku=False,
+        )
+    ]
+    svc = InvoiceProcessingService(_InvoiceClientStub(rows), None)  # type: ignore[arg-type]
+
+    result = svc.load_invoice_summaries()
+
+    assert result[0].has_unreleased_sku is True
