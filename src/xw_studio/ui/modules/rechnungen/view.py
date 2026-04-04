@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHeaderView,
     QStyledItemDelegate,
     QFormLayout,
@@ -415,12 +416,16 @@ class RechnungenView(QWidget):
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
         self._fulfillment_step_worker: BackgroundWorker | None = None
+        self._open_overview_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
         self._open_draft_after_create = False
         self._mollie_alert_count = 0
         self._sendungen_alert_count = 0
         self._search_index: list[dict[str, str]] = []
+        self._wix_digital_cache: dict[str, bool] = {}
+        self._pending_wix_reference = ""
+        self._open_overview_seq = 0
         self._mollie_timer = QTimer(self)
         self._mollie_timer.setInterval(60000)
         self._mollie_timer.timeout.connect(self._refresh_mollie_alert_count)
@@ -530,7 +535,7 @@ class RechnungenView(QWidget):
         # --- Structured detail panel ---
         detail_scroll = QScrollArea()
         detail_scroll.setWidgetResizable(True)
-        detail_scroll.setMinimumWidth(260)
+        detail_scroll.setMinimumWidth(420)
 
         detail_content = QWidget()
         detail_main = QVBoxLayout(detail_content)
@@ -554,7 +559,11 @@ class RechnungenView(QWidget):
         detail_main.addWidget(self._gb_open)
 
         self._gb_info = QGroupBox("INFO")
-        form_info = QFormLayout(self._gb_info)
+        info_layout = QHBoxLayout(self._gb_info)
+        left_form = QFormLayout()
+        right_form = QFormLayout()
+        info_layout.addLayout(left_form, stretch=1)
+        info_layout.addLayout(right_form, stretch=1)
         self._dl_number = QLabel("—")
         self._dl_date = QLabel("—")
         self._dl_status = QLabel("—")
@@ -569,18 +578,19 @@ class RechnungenView(QWidget):
         self._wix_customer_email = QLabel("—")
         self._wix_shipping = QLabel("—")
         self._wix_shipping.setWordWrap(True)
-        form_info.addRow("Rechnung:", self._dl_number)
-        form_info.addRow("Datum:", self._dl_date)
-        form_info.addRow("Status:", self._dl_status)
-        form_info.addRow("Brutto:", self._dl_brutto)
-        form_info.addRow("Kunde:", self._dl_contact)
-        form_info.addRow("Land:", self._dl_country)
-        form_info.addRow("ID:", self._dl_id)
-        form_info.addRow("Order-Ref:", self._dl_order_ref)
-        form_info.addRow("Wix-Order:", self._wix_order_no)
-        form_info.addRow("Wix-Kunde:", self._wix_customer)
-        form_info.addRow("Wix-E-Mail:", self._wix_customer_email)
-        form_info.addRow("Lieferadresse:", self._wix_shipping)
+        self._wix_shipping.setMinimumHeight(38)
+        left_form.addRow("Rechnung:", self._dl_number)
+        left_form.addRow("Status:", self._dl_status)
+        left_form.addRow("Kunde:", self._dl_contact)
+        left_form.addRow("ID:", self._dl_id)
+        left_form.addRow("Wix-Order:", self._wix_order_no)
+        left_form.addRow("Wix-E-Mail:", self._wix_customer_email)
+        right_form.addRow("Datum:", self._dl_date)
+        right_form.addRow("Brutto:", self._dl_brutto)
+        right_form.addRow("Land:", self._dl_country)
+        right_form.addRow("Order-Ref:", self._dl_order_ref)
+        right_form.addRow("Wix-Kunde:", self._wix_customer)
+        right_form.addRow("Lieferadresse:", self._wix_shipping)
         self._gb_info.hide()
         detail_main.addWidget(self._gb_info)
 
@@ -593,34 +603,34 @@ class RechnungenView(QWidget):
         detail_main.addWidget(self._gb_note)
 
         self._gb_actions = QGroupBox("AKTIONEN")
-        actions_layout = QVBoxLayout(self._gb_actions)
+        actions_layout = QGridLayout(self._gb_actions)
         self._action_state = QLabel("Keine Rechnung ausgewählt")
         self._action_state.setWordWrap(True)
         self._action_state.setStyleSheet("color: #64748b;")
-        actions_layout.addWidget(self._action_state)
+        actions_layout.addWidget(self._action_state, 0, 0, 1, 2)
         self._plc_last = QLabel("Letzter PLC-Druck: —")
         self._plc_last.setStyleSheet("color: #64748b; font-size: 11px;")
-        actions_layout.addWidget(self._plc_last)
+        actions_layout.addWidget(self._plc_last, 1, 0, 1, 2)
 
         self._btn_print = QPushButton("Rechnung drucken")
         self._btn_print.clicked.connect(self._on_print_clicked)
         self._btn_print.setEnabled(False)
-        actions_layout.addWidget(self._btn_print)
+        actions_layout.addWidget(self._btn_print, 2, 0)
 
         self._btn_print_label = QPushButton("Label drucken")
         self._btn_print_label.clicked.connect(self._on_print_label_clicked)
         self._btn_print_label.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_label)
+        actions_layout.addWidget(self._btn_print_label, 2, 1)
 
         self._btn_print_plc = QPushButton("PLC-Label drucken")
         self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
         self._btn_print_plc.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_plc)
+        actions_layout.addWidget(self._btn_print_plc, 3, 0)
 
         self._btn_print_music = QPushButton("Noten drucken")
         self._btn_print_music.clicked.connect(self._on_print_music_clicked)
         self._btn_print_music.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_music)
+        actions_layout.addWidget(self._btn_print_music, 3, 1)
         self._gb_actions.hide()
         detail_main.addWidget(self._gb_actions)
 
@@ -926,17 +936,77 @@ class RechnungenView(QWidget):
         plc = sum(1 for s in open_rows if s.has_plc_label_candidate())
         with_note = sum(1 for s in open_rows if s.buyer_note.strip())
 
-        # Approximation aligned with legacy analysis intent: invoices with Wix order refs
-        # are considered physical candidates, remainder digital-only.
-        physical = with_ref
-        digital = max(0, total - physical)
-
         self._open_total.setText(str(total))
-        self._open_physical.setText(str(physical))
-        self._open_digital.setText(str(digital))
         self._open_with_ref.setText(str(with_ref))
         self._open_plc.setText(str(plc))
         self._open_note.setText(str(with_note))
+
+        if total == 0:
+            self._open_physical.setText("0")
+            self._open_digital.setText("0")
+            return
+
+        self._open_physical.setText("…")
+        self._open_digital.setText("…")
+        self._open_overview_seq += 1
+        seq = self._open_overview_seq
+
+        refs = [s.order_reference.strip() for s in open_rows]
+
+        def job() -> dict[str, object]:
+            wix_orders: WixOrdersClient = self._container.resolve(WixOrdersClient)
+            physical = 0
+            digital = 0
+            cache_updates: dict[str, bool] = {}
+
+            for ref in refs:
+                if not ref:
+                    digital += 1
+                    continue
+
+                digital_only = self._wix_digital_cache.get(ref)
+                if digital_only is None:
+                    digital_only = wix_orders.is_reference_digital_only(ref)
+                    cache_updates[ref] = bool(digital_only)
+
+                if digital_only:
+                    digital += 1
+                else:
+                    physical += 1
+
+            return {
+                "seq": seq,
+                "physical": physical,
+                "digital": digital,
+                "cache_updates": cache_updates,
+            }
+
+        self._open_overview_worker = BackgroundWorker(job)
+        self._open_overview_worker.signals.result.connect(self._on_open_overview_result)
+        self._open_overview_worker.signals.error.connect(self._on_open_overview_error)
+        self._open_overview_worker.start()
+
+    def _on_open_overview_result(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+        seq = int(payload.get("seq") or 0)
+        if seq != self._open_overview_seq:
+            return
+        cache_updates = payload.get("cache_updates")
+        if isinstance(cache_updates, dict):
+            for key, value in cache_updates.items():
+                self._wix_digital_cache[str(key)] = bool(value)
+        physical = int(payload.get("physical") or 0)
+        digital = int(payload.get("digital") or 0)
+        self._open_physical.setText(str(max(0, physical)))
+        self._open_digital.setText(str(max(0, digital)))
+
+    def _on_open_overview_error(self, exc: Exception) -> None:
+        logger.warning("Open-overview digital classification failed: %s", exc)
+        with_ref = int(self._open_with_ref.text() or "0") if self._open_with_ref.text().isdigit() else 0
+        total = int(self._open_total.text() or "0") if self._open_total.text().isdigit() else 0
+        self._open_physical.setText(str(with_ref))
+        self._open_digital.setText(str(max(0, total - with_ref)))
 
     def _on_print_clicked(self) -> None:
         if not self._print_allowed:
@@ -1255,6 +1325,7 @@ class RechnungenView(QWidget):
         self._reset_stuecke()
 
     def _reset_wix_meta(self, text: str) -> None:
+        self._pending_wix_reference = ""
         self._wix_order_no.setText(text)
         self._wix_customer.setText("—")
         self._wix_customer_email.setText("—")
@@ -1267,13 +1338,16 @@ class RechnungenView(QWidget):
         if not ref:
             self._reset_wix_meta("Keine Wix-Order-Referenz")
             return
+        self._pending_wix_reference = ref
 
         def job() -> dict[str, str]:
             service: SecretService = self._container.resolve(SecretService)
             wix = WixOrdersClient(secret_service=service)
             if not wix.has_credentials():
-                return {"status": "Kein Wix-API-Key konfiguriert."}
-            return wix.resolve_order_summary(ref)
+                return {"status": "Kein Wix-API-Key konfiguriert.", "__requested_ref": ref}
+            data = wix.resolve_order_summary(ref)
+            data["__requested_ref"] = ref
+            return data
 
         self._wix_meta_worker = BackgroundWorker(job)
         self._wix_meta_worker.signals.result.connect(self._on_wix_meta_loaded)
@@ -1282,6 +1356,11 @@ class RechnungenView(QWidget):
 
     def _on_wix_meta_loaded(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
+        requested_ref = str(data.get("__requested_ref") or "").strip()
+        selected = self._selected_summary()
+        current_ref = selected.order_reference.strip() if selected is not None else ""
+        if requested_ref and requested_ref != current_ref:
+            return
         if not data:
             self._reset_wix_meta("Wix-Order nicht gefunden")
             return

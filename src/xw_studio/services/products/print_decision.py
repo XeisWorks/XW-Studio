@@ -7,7 +7,9 @@ Integrates:
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -132,6 +134,7 @@ class PrintDecisionEngine:
     ) -> None:
         self._catalog = catalog
         self._part_client = part_client
+        self._legacy_pdf_paths = self._load_legacy_pdf_paths()
 
     # ------------------------------------------------------------------ #
     # Main entry points                                                    #
@@ -210,6 +213,11 @@ class PrintDecisionEngine:
         product = self._catalog.resolve_sku(item.sku)
         stock_status: StockStatus | None = None
 
+        if product is not None and not product.print_file_path.strip():
+            legacy_pdf = self._legacy_pdf_paths.get(item.sku.strip().upper())
+            if legacy_pdf:
+                product.print_file_path = legacy_pdf
+
         if product is not None and not product.is_digital and product.sevdesk_part_id:
             on_hand = self._fetch_stock_safe(product.sevdesk_part_id)
             stock_status = StockStatus(
@@ -242,6 +250,75 @@ class PrintDecisionEngine:
             product=product,
             stock_status=stock_status,
         )
+
+    def _load_legacy_pdf_paths(self) -> dict[str, str]:
+        inventory_path = self._detect_legacy_inventory_store_path()
+        if inventory_path is None:
+            return {}
+        try:
+            payload = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not load legacy inventory store (%s): %s", inventory_path, exc)
+            return {}
+        records = payload.get("records") if isinstance(payload, dict) else {}
+        if not isinstance(records, dict):
+            return {}
+
+        out: dict[str, str] = {}
+        for raw_sku, raw_record in records.items():
+            if not isinstance(raw_record, dict):
+                continue
+            sku = str(raw_sku or "").strip().upper()
+            if not sku:
+                continue
+            pdfs = raw_record.get("pdfs")
+            if not isinstance(pdfs, list):
+                continue
+            resolved = self._resolve_default_legacy_pdf_path(inventory_path, pdfs)
+            if resolved:
+                out[sku] = resolved
+        if out:
+            logger.info("Loaded %d legacy PDF paths from %s", len(out), inventory_path)
+        return out
+
+    @staticmethod
+    def _resolve_default_legacy_pdf_path(inventory_path: Path, pdfs: list[object]) -> str:
+        for raw in pdfs:
+            if not isinstance(raw, dict):
+                continue
+            path_raw = str(raw.get("path") or "").strip()
+            if not path_raw:
+                continue
+            path = Path(path_raw)
+            if not path.is_absolute():
+                path = (inventory_path.parent / path).resolve()
+            if path.exists():
+                return str(path)
+        return ""
+
+    @staticmethod
+    def _detect_legacy_inventory_store_path() -> Path | None:
+        env_path = str(os.getenv("XW_LEGACY_INVENTORY_STORE_PATH") or "").strip()
+        candidates: list[Path] = []
+        if env_path:
+            candidates.append(Path(env_path).expanduser())
+
+        repo_root = Path(__file__).resolve().parents[4]
+        candidates.extend(
+            [
+                repo_root / "data" / "inventory_store.json",
+                repo_root.parent / "sevDesk" / "sevdesk_wix_fulfillment" / "data" / "inventory_store.json",
+            ]
+        )
+
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None
 
     def _fetch_stock_by_sku_safe(self, sku: str) -> StockStatus | None:
         """Fallback: find sevDesk Part by SKU and return a transient StockStatus."""

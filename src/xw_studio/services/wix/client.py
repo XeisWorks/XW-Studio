@@ -295,7 +295,7 @@ class WixOrdersClient:
                 return {}
 
     def _search_order_by_number(self, number: str) -> dict[str, Any]:
-        body = {"filter": {"number": {"$eq": number}}, "paging": {"limit": 1}}
+        body = {"filter": {"number": {"$eq": number}}, "paging": {"limit": 25}}
         with httpx.Client(timeout=_TIMEOUT) as client:
             try:
                 resp = client.post(
@@ -306,23 +306,73 @@ class WixOrdersClient:
                 resp.raise_for_status()
                 payload = resp.json()
                 orders = payload.get("orders") or []
-                return orders[0] if orders else {}
+                return self._pick_exact_order_match(str(number), orders)
             except httpx.HTTPError as exc:
                 logger.warning("WixOrdersClient search number=%s failed: %s", number, exc)
                 return {}
+
+    @staticmethod
+    def _normalize_order_number(value: str) -> str:
+        text = str(value or "").strip()
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return digits if digits else text.casefold()
+
+    @classmethod
+    def _pick_exact_order_match(cls, requested_number: str, orders: list[Any]) -> dict[str, Any]:
+        if not isinstance(orders, list):
+            return {}
+        requested_norm = cls._normalize_order_number(requested_number)
+        if not requested_norm:
+            return {}
+        for raw in orders:
+            if not isinstance(raw, dict):
+                continue
+            candidate_norm = cls._normalize_order_number(str(raw.get("number") or ""))
+            if candidate_norm and candidate_norm == requested_norm:
+                return raw
+        return {}
 
     def _resolve_order(self, reference: str) -> dict[str, Any]:
         ref = str(reference or "").strip()
         if not ref or not self.has_credentials():
             return {}
         if self._looks_like_uuid(ref):
-            return self._get_order_by_id(ref)
+            order_by_id = self._get_order_by_id(ref)
+            if order_by_id:
+                return order_by_id
         order = self._search_order_by_number(ref)
         if not order and not ref.startswith("00"):
             digits = "".join(c for c in ref if c.isdigit())
             if digits and digits != ref:
                 order = self._search_order_by_number(digits)
         return order
+
+    @staticmethod
+    def line_item_is_digital(raw: dict[str, Any]) -> bool:
+        product_type = str(raw.get("productType") or "").strip().lower()
+        if product_type == "digital":
+            return True
+        item_type = raw.get("itemType") if isinstance(raw.get("itemType"), dict) else {}
+        preset = str(item_type.get("preset") or "").strip().lower()
+        if preset == "digital":
+            return True
+        physical_props = raw.get("physicalProperties") if isinstance(raw.get("physicalProperties"), dict) else {}
+        shippable_raw = physical_props.get("shippable")
+        shippable = str(shippable_raw).strip().lower() if shippable_raw is not None else ""
+        if shippable in ("false", "0", "no"):
+            return True
+        if raw.get("digitalFile"):
+            return True
+        return False
+
+    def is_reference_digital_only(self, reference: str) -> bool:
+        order = self._resolve_order(reference)
+        if not order:
+            return False
+        raw_items = order.get("lineItems") if isinstance(order.get("lineItems"), list) else []
+        if not raw_items:
+            return False
+        return all(self.line_item_is_digital(item) for item in raw_items if isinstance(item, dict))
 
     def _resolve_order_id(self, reference: str) -> str:
         order = self._resolve_order(reference)
