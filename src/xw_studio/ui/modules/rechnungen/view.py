@@ -18,12 +18,15 @@ from PySide6.QtGui import (
     QShowEvent,
 )
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QHeaderView,
     QStyledItemDelegate,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -36,6 +39,7 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
+from xw_studio.services.draft_invoice.service import DraftInvoiceService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
@@ -306,6 +310,53 @@ class _FulfillmentDelegate(QStyledItemDelegate):
         return base
 
 
+class _DraftInvoiceDialog(QDialog):
+    """Collect Wix order number for draft invoice creation."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Rechnungs-Entwurf erstellen")
+        self.setMinimumWidth(420)
+
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            "Wix-Order-Nr eingeben (keine ID).\n"
+            "Es wird daraus ein sevDesk-Rechnungsentwurf erzeugt."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._order_number = QLineEdit(self)
+        self._order_number.setPlaceholderText("z.B. 10023")
+        self._order_number.setClearButtonEnabled(True)
+        layout.addWidget(self._order_number)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color: #64748b;")
+        layout.addWidget(self._status)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @property
+    def wix_order_number(self) -> str:
+        return self._order_number.text().strip()
+
+    def _accept_if_valid(self) -> None:
+        value = self.wix_order_number
+        if not value:
+            self._status.setText("Bitte eine Wix-Order-Nr eingeben.")
+            self._order_number.setFocus()
+            return
+        self.accept()
+
+
 class RechnungenView(QWidget):
     """Load and display sevDesk invoices (non-blocking)."""
 
@@ -314,6 +365,7 @@ class RechnungenView(QWidget):
         self._container = container
         self._worker: BackgroundWorker | None = None
         self._refund_worker: BackgroundWorker | None = None
+        self._draft_worker: BackgroundWorker | None = None
         self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
@@ -344,49 +396,12 @@ class RechnungenView(QWidget):
             tooltip="Erste Seite neu laden",
         )
         refresh.clicked.connect(self._reload_first_page)
-        self._btn_print = toolbar.add_button(
-            "print",
-            "PDF drucken…",
-            tooltip="PDF mit Rechnungs-DPI (und Seitenbereich aus dem Druckdialog)",
+        self._btn_draft = toolbar.add_button(
+            "draft",
+            "Rechnungs-Entwurf",
+            tooltip="Neuen sevDesk-Rechnungsentwurf aus Wix-Order-Nr erstellen",
         )
-        self._btn_print.clicked.connect(self._on_print_clicked)
-        self._btn_print.setEnabled(False)
-        self._btn_print_label = toolbar.add_button(
-            "print_label",
-            "Label drucken…",
-            tooltip="PDF fuer Versandetiketten drucken (Seitenbereich aus dem Druckdialog)",
-        )
-        self._btn_print_label.clicked.connect(self._on_print_label_clicked)
-        self._btn_print_label.setEnabled(False)
-        self._btn_print_plc = toolbar.add_button(
-            "print_plc",
-            "PLC-Label…",
-            tooltip="PLC-Label für die aktuell gewählte Rechnung drucken",
-        )
-        self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
-        self._btn_print_plc.setEnabled(False)
-        self._btn_print_music = toolbar.add_button(
-            "print_music",
-            "Noten drucken…",
-            tooltip="PDF mit 600 DPI fuer Noten (Seitenbereich aus dem Druckdialog)",
-        )
-        self._btn_print_music.clicked.connect(self._on_print_music_clicked)
-        self._btn_print_music.setEnabled(False)
-        toolbar.add_stretch()
-        self._btn_mollie_alert = toolbar.add_button(
-            "mollie_alert",
-            "💳 MOLLIE AUTH",
-            tooltip="Offene Mollie-Authorisierungen anzeigen",
-        )
-        self._btn_mollie_alert.setStyleSheet(
-            "QPushButton {"
-            "background-color: #b91c1c; color: white; border-radius: 6px;"
-            "font-weight: bold; padding: 0 14px;"
-            "}"
-            "QPushButton:hover { background-color: #991b1b; }"
-        )
-        self._btn_mollie_alert.clicked.connect(self._on_mollie_alert_clicked)
-        self._btn_mollie_alert.hide()
+        self._btn_draft.clicked.connect(self._on_create_draft_clicked)
         layout.addWidget(toolbar)
 
         self._search = SearchBar("Suchen…")
@@ -482,20 +497,37 @@ class RechnungenView(QWidget):
         self._gb_note.hide()
         detail_main.addWidget(self._gb_note)
 
-        self._gb_plc = QGroupBox("PLC Label Center")
-        plc_layout = QVBoxLayout(self._gb_plc)
-        self._plc_state = QLabel("Keine PLC-Markierung in Auswahl")
-        self._plc_state.setWordWrap(True)
-        self._plc_state.setStyleSheet("color: #64748b;")
-        plc_layout.addWidget(self._plc_state)
+        self._gb_actions = QGroupBox("AKTIONEN")
+        actions_layout = QVBoxLayout(self._gb_actions)
+        self._action_state = QLabel("Keine Rechnung ausgewählt")
+        self._action_state.setWordWrap(True)
+        self._action_state.setStyleSheet("color: #64748b;")
+        actions_layout.addWidget(self._action_state)
         self._plc_last = QLabel("Letzter PLC-Druck: —")
         self._plc_last.setStyleSheet("color: #64748b; font-size: 11px;")
-        plc_layout.addWidget(self._plc_last)
-        self._btn_plc_reprint = QPushButton("PLC-Label drucken")
-        self._btn_plc_reprint.clicked.connect(self._on_print_plc_selected)
-        self._btn_plc_reprint.setEnabled(False)
-        plc_layout.addWidget(self._btn_plc_reprint)
-        detail_main.addWidget(self._gb_plc)
+        actions_layout.addWidget(self._plc_last)
+
+        self._btn_print = QPushButton("Rechnung drucken")
+        self._btn_print.clicked.connect(self._on_print_clicked)
+        self._btn_print.setEnabled(False)
+        actions_layout.addWidget(self._btn_print)
+
+        self._btn_print_label = QPushButton("Label drucken")
+        self._btn_print_label.clicked.connect(self._on_print_label_clicked)
+        self._btn_print_label.setEnabled(False)
+        actions_layout.addWidget(self._btn_print_label)
+
+        self._btn_print_plc = QPushButton("PLC-Label drucken")
+        self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
+        self._btn_print_plc.setEnabled(False)
+        actions_layout.addWidget(self._btn_print_plc)
+
+        self._btn_print_music = QPushButton("Noten drucken")
+        self._btn_print_music.clicked.connect(self._on_print_music_clicked)
+        self._btn_print_music.setEnabled(False)
+        actions_layout.addWidget(self._btn_print_music)
+        self._gb_actions.hide()
+        detail_main.addWidget(self._gb_actions)
 
         self._gb_stuecke = QGroupBox("Produkte")
         self._stuecke_layout = QVBoxLayout(self._gb_stuecke)
@@ -557,9 +589,6 @@ class RechnungenView(QWidget):
 
     def _on_printer_status(self, printing_allowed: bool) -> None:
         self._print_allowed = printing_allowed
-        self._btn_print.setEnabled(printing_allowed)
-        self._btn_print_label.setEnabled(printing_allowed)
-        self._btn_print_music.setEnabled(printing_allowed)
         for button in self._piece_print_buttons:
             button.setEnabled(printing_allowed)
         self._update_plc_controls()
@@ -671,15 +700,30 @@ class RechnungenView(QWidget):
 
     def update_mollie_alert_count(self, count: int) -> None:
         self._mollie_alert_count = max(0, int(count))
-        if self._mollie_alert_count > 0:
-            self._btn_mollie_alert.setText(f"💳 MOLLIE AUTH ({self._mollie_alert_count})")
-            self._btn_mollie_alert.show()
-        else:
-            self._btn_mollie_alert.hide()
+        if self._mollie_alert_count <= 0:
+            return
+        logger.info("Mollie authorization alerts available: %d", self._mollie_alert_count)
 
     def _on_mollie_alert_clicked(self) -> None:
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.navigate_to_module.emit(ModuleKey.MOLLIE.value)
+
+    def _selected_summary(self) -> InvoiceSummary | None:
+        row = self._table.selected_source_row()
+        if row is None or row < 0 or row >= len(self._summaries):
+            return None
+        return self._summaries[row]
+
+    def _require_selected_invoice(self) -> InvoiceSummary | None:
+        summary = self._selected_summary()
+        if summary is not None:
+            return summary
+        QMessageBox.information(
+            self,
+            "Aktion",
+            "Bitte zuerst eine Rechnung in der Liste auswählen.",
+        )
+        return None
 
     def _invoice_search_suggestions(self, query: str) -> list[str]:
         q = query.lower().strip()
@@ -712,12 +756,16 @@ class RechnungenView(QWidget):
     def _on_print_clicked(self) -> None:
         if not self._print_allowed:
             return
+        if self._require_selected_invoice() is None:
+            return
         from xw_studio.ui.modules.rechnungen.print_dialog import run_invoice_pdf_print
 
         run_invoice_pdf_print(self, self._container)
 
     def _on_print_label_clicked(self) -> None:
         if not self._print_allowed:
+            return
+        if self._require_selected_invoice() is None:
             return
         from xw_studio.ui.modules.rechnungen.print_dialog import run_label_pdf_print
 
@@ -726,10 +774,9 @@ class RechnungenView(QWidget):
     def _on_print_plc_selected(self) -> None:
         if not self._print_allowed:
             return
-        row = self._table.selected_source_row()
-        if row is None or row < 0 or row >= len(self._summaries):
+        summary = self._require_selected_invoice()
+        if summary is None:
             return
-        summary = self._summaries[row]
         self._run_plc_print(summary)
 
     def _run_plc_print(self, summary: InvoiceSummary) -> None:
@@ -747,6 +794,8 @@ class RechnungenView(QWidget):
 
     def _on_print_music_clicked(self) -> None:
         if not self._print_allowed:
+            return
+        if self._require_selected_invoice() is None:
             return
         from xw_studio.ui.modules.rechnungen.print_dialog import run_music_pdf_print
 
@@ -991,7 +1040,8 @@ class RechnungenView(QWidget):
             self._gb_note.hide()
         self._dl_order_ref.setText(s.order_reference or "")
         self._reset_wix_meta("Lade Wix-Daten…")
-        self._plc_state.setText("PLC-Label druckbar für die ausgewählte Rechnung.")
+        self._action_state.setText("Aktionen für die ausgewählte Rechnung verfügbar.")
+        self._gb_actions.show()
         self._update_plc_controls()
         if s.order_reference:
             self._load_wix_meta(s.order_reference)
@@ -1010,7 +1060,8 @@ class RechnungenView(QWidget):
         self._gb_note.hide()
         self._dl_order_ref.setText("—")
         self._reset_wix_meta("—")
-        self._plc_state.setText("Keine Rechnung ausgewählt")
+        self._action_state.setText("Keine Rechnung ausgewählt")
+        self._gb_actions.hide()
         self._update_plc_controls()
         self._reset_stuecke()
 
@@ -1060,12 +1111,61 @@ class RechnungenView(QWidget):
         self._reset_wix_meta(f"Wix-Fehler: {exc}")
 
     def _update_plc_controls(self) -> None:
-        row = self._table.selected_source_row()
-        enabled = False
-        if self._print_allowed and row is not None and 0 <= row < len(self._summaries):
-            enabled = True
-        self._btn_plc_reprint.setEnabled(enabled)
+        enabled = self._print_allowed and (self._selected_summary() is not None)
+        self._btn_print.setEnabled(enabled)
+        self._btn_print_label.setEnabled(enabled)
         self._btn_print_plc.setEnabled(enabled)
+        self._btn_print_music.setEnabled(enabled)
+
+    def _on_create_draft_clicked(self) -> None:
+        if self._draft_worker is not None and self._draft_worker.isRunning():
+            return
+        dlg = _DraftInvoiceDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        order_number = dlg.wix_order_number
+        self._overlay.show_with_message("Rechnungsentwurf wird erstellt…")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        def job() -> dict[str, str]:
+            service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            return service.create_draft_from_wix_order_number(order_number)
+
+        self._draft_worker = BackgroundWorker(job)
+        self._draft_worker.signals.result.connect(self._on_create_draft_result)
+        self._draft_worker.signals.error.connect(self._on_create_draft_error)
+        self._draft_worker.signals.finished.connect(self._on_create_draft_finished)
+        self._draft_worker.start()
+
+    def _on_create_draft_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        invoice_id = str(data.get("invoice_id") or "").strip()
+        invoice_number = str(data.get("invoice_number") or "").strip()
+        wix_order_number = str(data.get("wix_order_number") or "").strip()
+        positions = str(data.get("positions") or "0")
+        QMessageBox.information(
+            self,
+            "Rechnungs-Entwurf erstellt",
+            (
+                f"Wix-Order-Nr: {wix_order_number}\n"
+                f"Rechnung: {invoice_number}\n"
+                f"sevDesk-ID: {invoice_id}\n"
+                f"Positionen: {positions}"
+            ),
+        )
+        self._reload_first_page()
+
+    def _on_create_draft_error(self, exc: Exception) -> None:
+        QMessageBox.warning(
+            self,
+            "Rechnungs-Entwurf fehlgeschlagen",
+            f"Der Entwurf konnte nicht erstellt werden:\n\n{exc}",
+        )
+
+    def _on_create_draft_finished(self) -> None:
+        self._overlay.hide()
 
     def _reset_stuecke(self) -> None:
         self._current_piece_blocks = []

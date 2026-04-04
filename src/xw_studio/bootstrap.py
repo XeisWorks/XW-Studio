@@ -20,6 +20,7 @@ from xw_studio.services.ideas.stores import (
 )
 from xw_studio.services.inventory.service import InventoryService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.services.draft_invoice.service import DraftInvoiceService
 from xw_studio.services.layout.service import LayoutToolsService
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
@@ -93,6 +94,15 @@ def register_default_services(container: Container) -> None:
             c.resolve(InvoiceClient),
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
             c.resolve(WixOrdersClient),
+        ),
+    )
+    container.register(
+        DraftInvoiceService,
+        lambda c: DraftInvoiceService(
+            c.resolve(SevdeskConnection),
+            c.resolve(WixOrdersClient),
+            c.resolve(PartClient),
+            c.resolve(ContactClient),
         ),
     )
 

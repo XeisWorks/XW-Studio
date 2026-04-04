@@ -32,11 +32,12 @@ def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
     qtbot.addWidget(view)
 
     assert view._btn_more.text() == "Weitere laden"  # noqa: SLF001
-    assert view._btn_print.text() == "PDF drucken…"  # noqa: SLF001
-    assert view._btn_print_label.text() == "Label drucken…"  # noqa: SLF001
-    assert view._btn_print_plc.text() == "PLC-Label…"  # noqa: SLF001
-    assert view._btn_print_music.text() == "Noten drucken…"  # noqa: SLF001
-    assert view._btn_mollie_alert.isHidden()  # noqa: SLF001
+    assert view._btn_draft.text() == "Rechnungs-Entwurf"  # noqa: SLF001
+    assert view._btn_print.text() == "Rechnung drucken"  # noqa: SLF001
+    assert view._btn_print_label.text() == "Label drucken"  # noqa: SLF001
+    assert view._btn_print_plc.text() == "PLC-Label drucken"  # noqa: SLF001
+    assert view._btn_print_music.text() == "Noten drucken"  # noqa: SLF001
+    assert view._gb_actions.isHidden()  # noqa: SLF001
     assert not view._btn_print.isEnabled()  # noqa: SLF001
     assert not view._btn_print_label.isEnabled()  # noqa: SLF001
     assert not view._btn_print_plc.isEnabled()  # noqa: SLF001
@@ -49,8 +50,7 @@ def test_rechnungen_mollie_alert_button_visibility(qtbot: object) -> None:
     qtbot.addWidget(view)
 
     view.update_mollie_alert_count(0)  # noqa: SLF001
-    assert view._btn_mollie_alert.isHidden()  # noqa: SLF001
+    assert view._mollie_alert_count == 0  # noqa: SLF001
 
     view.update_mollie_alert_count(3)  # noqa: SLF001
-    assert not view._btn_mollie_alert.isHidden()  # noqa: SLF001
-    assert "3" in view._btn_mollie_alert.text()  # noqa: SLF001
+    assert view._mollie_alert_count == 3  # noqa: SLF001
