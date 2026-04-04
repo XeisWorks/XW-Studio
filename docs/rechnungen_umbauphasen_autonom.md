@@ -91,4 +91,13 @@ Umfang:
   - Fulfillment-Erzeugung
 
 Offen:
-- START-Flow entkoppelt pruefen, ob Wix-Adresslookup im Labeldruck parallelisiert oder vorab gebuendelt werden soll.
+- keine offenen Punkte in dieser Umbauwelle.
+
+Phase 6C - START-Flow Wix-Adresslookup vorbuendeln/parallelisieren
+Status: abgeschlossen
+
+Umfang:
+- Prefetch der Wix-Adressdaten fuer alle offenen Rechnungen vor dem Label-Schritt.
+- Parallelisierung via ThreadPool (kontrollierte Workerzahl).
+- Service-interner Address-Cache, damit wiederholte Label-Adressabfragen denselben Ref nicht erneut laden.
+- Laufzeit-Metriken fuer START-Gesamtdauer und Wix-Prefetch-Dauer.

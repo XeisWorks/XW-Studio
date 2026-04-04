@@ -31,10 +31,14 @@ class _RepoStub:
 
 
 class _WixOrdersStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def has_credentials(self) -> bool:
         return True
 
     def resolve_order_address_lines(self, reference: str) -> list[str]:
+        self.calls += 1
         if reference == "12345":
             return ["Wix Name", "Wix Strasse 1", "1010 Wien", "AT"]
         return []
@@ -120,13 +124,32 @@ def test_unreleased_sku_flags_fall_back_to_defaults() -> None:
 
 def test_shipping_lines_prefer_wix_when_available() -> None:
     summary = InvoiceSummary(id="5", invoiceNumber="R-5", order_reference="12345")
+    wix = _WixOrdersStub()
     svc = InvoiceProcessingService(
         AppConfig(),
         _InvoiceClientStub([summary]),  # type: ignore[arg-type]
         None,
-        _WixOrdersStub(),  # type: ignore[arg-type]
+        wix,  # type: ignore[arg-type]
     )
 
     lines = svc._shipping_lines_from_invoice({}, summary)  # noqa: SLF001
 
     assert lines == ["Wix Name", "Wix Strasse 1", "1010 Wien", "AT"]
+    assert wix.calls == 1
+
+
+def test_shipping_lines_use_wix_cache_for_same_reference() -> None:
+    summary = InvoiceSummary(id="6", invoiceNumber="R-6", order_reference="12345")
+    wix = _WixOrdersStub()
+    svc = InvoiceProcessingService(
+        AppConfig(),
+        _InvoiceClientStub([summary]),  # type: ignore[arg-type]
+        None,
+        wix,  # type: ignore[arg-type]
+    )
+
+    first = svc._shipping_lines_from_invoice({}, summary)  # noqa: SLF001
+    second = svc._shipping_lines_from_invoice({}, summary)  # noqa: SLF001
+
+    assert first == second
+    assert wix.calls == 1

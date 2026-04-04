@@ -1,9 +1,11 @@
 """Orchestrates invoice-related operations (no UI)."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -88,6 +90,7 @@ class InvoiceProcessingService:
         self._wix_orders = wix_orders
         self._invoice_printer = InvoicePrinter(config.printing)
         self._label_printer = LabelPrinter(config.printing)
+        self._wix_address_cache: dict[str, list[str]] = {}
 
     def load_invoice_table_rows(
         self,
@@ -183,7 +186,10 @@ class InvoiceProcessingService:
 
     def run_start_fullflow(self, *, full_mode: bool) -> dict[str, object]:
         """Execute invoice processing flow for all open drafts (status=100)."""
+        started = time.perf_counter()
         summaries = self._load_all_open_drafts(limit_per_page=100, max_pages=20)
+        if full_mode:
+            self._prefetch_wix_address_lines(summaries)
         updates: dict[str, FulfillmentFlags] = {}
         processed = 0
         failures = 0
@@ -202,11 +208,65 @@ class InvoiceProcessingService:
                 flags = self._with_error(flags, exc)
             updates[summary.id] = flags
         self.write_fulfillment_flags_batch(updates)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "START metric total_ms=%s processed=%s failures=%s full_mode=%s",
+            elapsed_ms,
+            processed,
+            failures,
+            full_mode,
+        )
         return {
             "processed": processed,
             "failures": failures,
             "full_mode": full_mode,
         }
+
+    def _prefetch_wix_address_lines(self, summaries: list[InvoiceSummary]) -> None:
+        if self._wix_orders is None or not self._wix_orders.has_credentials():
+            return
+        refs = sorted({s.order_reference.strip() for s in summaries if s.order_reference.strip()})
+        if not refs:
+            return
+
+        missing = [ref for ref in refs if ref not in self._wix_address_cache]
+        if not missing:
+            return
+
+        started = time.perf_counter()
+        workers = max(2, min(8, len(missing)))
+
+        def load_ref(ref: str) -> tuple[str, list[str]]:
+            lines = self._wix_orders.resolve_order_address_lines(ref)
+            return ref, lines
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(load_ref, ref) for ref in missing]
+            for fut in as_completed(futures):
+                try:
+                    ref, lines = fut.result()
+                    self._wix_address_cache[ref] = list(lines)
+                except Exception as exc:
+                    logger.warning("Wix prefetch failed: %s", exc)
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "START metric wix_prefetch_ms=%s refs=%s workers=%s",
+            elapsed_ms,
+            len(missing),
+            workers,
+        )
+
+    def _get_wix_address_lines_cached(self, reference: str) -> list[str]:
+        ref = str(reference or "").strip()
+        if not ref or self._wix_orders is None or not self._wix_orders.has_credentials():
+            return []
+        cached = self._wix_address_cache.get(ref)
+        if cached is not None:
+            return list(cached)
+        lines = self._wix_orders.resolve_order_address_lines(ref)
+        self._wix_address_cache[ref] = list(lines)
+        return list(lines)
 
     def retry_fulfillment_step(self, invoice_id: str, step: str) -> FulfillmentFlags:
         """Retry one fulfillment step for a single invoice and persist state."""
@@ -400,8 +460,8 @@ class InvoiceProcessingService:
         )
 
     def _shipping_lines_from_invoice(self, invoice: dict[str, Any], summary: InvoiceSummary) -> list[str]:
-        if self._wix_orders is not None and summary.order_reference.strip() and self._wix_orders.has_credentials():
-            wix_lines = self._wix_orders.resolve_order_address_lines(summary.order_reference)
+        if summary.order_reference.strip():
+            wix_lines = self._get_wix_address_lines_cached(summary.order_reference)
             if wix_lines:
                 return wix_lines
 

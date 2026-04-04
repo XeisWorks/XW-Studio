@@ -441,6 +441,11 @@ class RechnungenView(QWidget):
         self._current_piece_blocks: list[PieceBlock] = []
         self._piece_print_buttons: list[QPushButton] = []
         self._append_mode = False
+        self._queued_wix_context_ref = ""
+        self._table_layout_initialized = False
+        self._open_overview_key = ""
+        self._open_overview_cached_physical = 0
+        self._open_overview_cached_digital = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -807,7 +812,9 @@ class RechnungenView(QWidget):
 
         self._search.refresh_suggestions()
         self._rebuild_search_index()
-        self._apply_table_column_layout()
+        if not self._append_mode or not self._table_layout_initialized:
+            self._apply_table_column_layout()
+            self._table_layout_initialized = True
         self._refresh_open_invoice_overview()
 
         self._next_offset = len(self._summaries)
@@ -966,6 +973,8 @@ class RechnungenView(QWidget):
         with_ref = sum(1 for s in open_rows if s.order_reference.strip())
         plc = sum(1 for s in open_rows if s.has_plc_label_candidate())
         with_note = sum(1 for s in open_rows if s.buyer_note.strip())
+        refs = [s.order_reference.strip() for s in open_rows]
+        overview_key = "|".join(sorted(refs))
 
         self._open_total.setText(str(total))
         self._open_with_ref.setText(str(with_ref))
@@ -975,14 +984,20 @@ class RechnungenView(QWidget):
         if total == 0:
             self._open_physical.setText("0")
             self._open_digital.setText("0")
+            self._open_overview_key = ""
+            self._open_overview_cached_physical = 0
+            self._open_overview_cached_digital = 0
+            return
+
+        if overview_key and overview_key == self._open_overview_key:
+            self._open_physical.setText(str(self._open_overview_cached_physical))
+            self._open_digital.setText(str(self._open_overview_cached_digital))
             return
 
         self._open_physical.setText("…")
         self._open_digital.setText("…")
         self._open_overview_seq += 1
         seq = self._open_overview_seq
-
-        refs = [s.order_reference.strip() for s in open_rows]
 
         def job() -> dict[str, object]:
             wix_orders: WixOrdersClient = self._container.resolve(WixOrdersClient)
@@ -1010,6 +1025,7 @@ class RechnungenView(QWidget):
                 "physical": physical,
                 "digital": digital,
                 "cache_updates": cache_updates,
+                "overview_key": overview_key,
             }
 
         self._open_overview_worker = BackgroundWorker(job)
@@ -1029,6 +1045,9 @@ class RechnungenView(QWidget):
                 self._wix_digital_cache[str(key)] = bool(value)
         physical = int(payload.get("physical") or 0)
         digital = int(payload.get("digital") or 0)
+        self._open_overview_key = str(payload.get("overview_key") or "")
+        self._open_overview_cached_physical = max(0, physical)
+        self._open_overview_cached_digital = max(0, digital)
         self._open_physical.setText(str(max(0, physical)))
         self._open_digital.setText(str(max(0, digital)))
 
@@ -1036,8 +1055,10 @@ class RechnungenView(QWidget):
         logger.warning("Open-overview digital classification failed: %s", exc)
         with_ref = int(self._open_with_ref.text() or "0") if self._open_with_ref.text().isdigit() else 0
         total = int(self._open_total.text() or "0") if self._open_total.text().isdigit() else 0
-        self._open_physical.setText(str(with_ref))
-        self._open_digital.setText(str(max(0, total - with_ref)))
+        self._open_overview_cached_physical = with_ref
+        self._open_overview_cached_digital = max(0, total - with_ref)
+        self._open_physical.setText(str(self._open_overview_cached_physical))
+        self._open_digital.setText(str(self._open_overview_cached_digital))
 
     def _on_print_clicked(self) -> None:
         if not self._print_allowed:
@@ -1390,6 +1411,7 @@ class RechnungenView(QWidget):
             return
 
         if self._wix_context_worker is not None and self._wix_context_worker.isRunning():
+            self._queued_wix_context_ref = ref
             return
 
         self._wix_context_seq += 1
@@ -1427,6 +1449,7 @@ class RechnungenView(QWidget):
         self._wix_context_worker = BackgroundWorker(job)
         self._wix_context_worker.signals.result.connect(self._on_wix_context_loaded)
         self._wix_context_worker.signals.error.connect(self._on_wix_context_error)
+        self._wix_context_worker.signals.finished.connect(self._on_wix_context_finished)
         self._wix_context_worker.start()
 
     def _on_wix_context_loaded(self, payload: object) -> None:
@@ -1462,6 +1485,17 @@ class RechnungenView(QWidget):
         self._stuecke_hint.setText(f"Fehler: {exc}")
         self._stuecke_hint.show()
         self._gb_stuecke.show()
+
+    def _on_wix_context_finished(self) -> None:
+        queued_ref = self._queued_wix_context_ref.strip()
+        self._queued_wix_context_ref = ""
+        if not queued_ref:
+            return
+        selected = self._selected_summary()
+        current_ref = selected.order_reference.strip() if selected is not None else ""
+        if not current_ref or queued_ref != current_ref:
+            return
+        self._load_wix_context(queued_ref)
 
     def _get_cached_wix_context(self, reference: str) -> dict[str, object] | None:
         ref = str(reference or "").strip()
