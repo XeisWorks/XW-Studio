@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -382,38 +383,105 @@ class WixOrdersClient:
         """Resolve an order by order number/reference or UUID."""
         return self._resolve_order(reference)
 
-    def resolve_order_summary(self, reference: str) -> dict[str, str]:
-        """Return normalized customer/order fields used by the details panel."""
-        order = self._resolve_order(reference)
-        if not order:
-            return {}
+    @staticmethod
+    def _norm_text(value: object) -> str:
+        return str(value or "").strip()
 
+    @classmethod
+    def shipping_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        if not isinstance(order, dict):
+            return []
         buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
         shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
-        shipping_address = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
 
-        first = str(buyer.get("firstName") or "").strip()
-        last = str(buyer.get("lastName") or "").strip()
+        first = cls._norm_text(buyer.get("firstName"))
+        last = cls._norm_text(buyer.get("lastName"))
+        name = " ".join(part for part in (first, last) if part).strip()
+
+        street1 = cls._norm_text(destination.get("addressLine1"))
+        street2 = cls._norm_text(destination.get("addressLine2"))
+        postal_code = cls._norm_text(destination.get("postalCode"))
+        city = cls._norm_text(destination.get("city"))
+        country = cls._norm_text(destination.get("country"))
+        city_line = " ".join(part for part in (postal_code, city) if part)
+
+        return [line for line in (name, street1, street2, city_line, country) if line]
+
+    @classmethod
+    def billing_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        if not isinstance(order, dict):
+            return []
+        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
+        details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
+        address = billing.get("address") if isinstance(billing.get("address"), dict) else {}
+
+        company = cls._norm_text(details.get("company"))
+        first = cls._norm_text(details.get("firstName"))
+        last = cls._norm_text(details.get("lastName"))
+        name = company or " ".join(part for part in (first, last) if part).strip()
+
+        street = cls._norm_text(address.get("addressLine1") or address.get("street"))
+        street2 = cls._norm_text(address.get("addressLine2"))
+        postal_code = cls._norm_text(address.get("postalCode"))
+        city = cls._norm_text(address.get("city"))
+        country = cls._norm_text(address.get("country"))
+        city_line = " ".join(part for part in (postal_code, city) if part)
+
+        return [line for line in (name, street, street2, city_line, country) if line]
+
+    @classmethod
+    def best_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        shipping_lines = cls.shipping_address_lines_from_order(order)
+        if shipping_lines:
+            return shipping_lines
+        return cls.billing_address_lines_from_order(order)
+
+    def resolve_order_address_lines(self, reference: str) -> list[str]:
+        order = self._resolve_order(reference)
+        if not order:
+            return []
+        return self.best_address_lines_from_order(order)
+
+    @classmethod
+    def _summary_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        first = cls._norm_text(buyer.get("firstName"))
+        last = cls._norm_text(buyer.get("lastName"))
         full_name = " ".join(part for part in (first, last) if part).strip()
-        email = str(buyer.get("email") or "").strip()
-        city = str(shipping_address.get("city") or "").strip()
-        street1 = str(shipping_address.get("addressLine1") or "").strip()
-        street2 = str(shipping_address.get("addressLine2") or "").strip()
-        postal_code = str(shipping_address.get("postalCode") or "").strip()
-        country = str(shipping_address.get("country") or "").strip()
-        shipping_lines = [line for line in (street1, street2, " ".join(part for part in (postal_code, city) if part), country) if line]
+        email = cls._norm_text(buyer.get("email"))
+
+        shipping_lines = cls.best_address_lines_from_order(order)
+        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
+        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+
         return {
-            "wix_order_id": str(order.get("id") or "").strip(),
-            "wix_order_number": str(order.get("number") or "").strip(),
+            "wix_order_id": cls._norm_text(order.get("id")),
+            "wix_order_number": cls._norm_text(order.get("number")),
             "wix_customer_name": full_name,
             "wix_customer_email": email,
-            "wix_shipping_street": street1,
-            "wix_shipping_street2": street2,
-            "wix_shipping_zip": postal_code,
-            "wix_shipping_city": city,
-            "wix_shipping_country": country,
+            "wix_shipping_street": cls._norm_text(destination.get("addressLine1")),
+            "wix_shipping_street2": cls._norm_text(destination.get("addressLine2")),
+            "wix_shipping_zip": cls._norm_text(destination.get("postalCode")),
+            "wix_shipping_city": cls._norm_text(destination.get("city")),
+            "wix_shipping_country": cls._norm_text(destination.get("country")),
             "wix_shipping_address": "\n".join(shipping_lines),
         }
+
+    def resolve_order_summary(self, reference: str) -> dict[str, str]:
+        """Return normalized customer/order fields used by the details panel."""
+        started = time.perf_counter()
+        order = self._resolve_order(reference)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "Wix metric summary_ms=%s ref=%s found=%s",
+            elapsed_ms,
+            str(reference or "").strip(),
+            bool(order),
+        )
+        if not order:
+            return {}
+        return self._summary_from_order(order)
 
     def resolve_order_dashboard_url(self, reference: str) -> str:
         """Return Wix dashboard URL for an order reference (number or UUID)."""
@@ -448,6 +516,7 @@ class WixOrdersClient:
                 return []
 
     def get_fulfillable_items(self, reference: str) -> list[dict[str, Any]]:
+        started = time.perf_counter()
         order_id = self._resolve_order_id(reference)
         if not order_id or not self.has_credentials():
             return []
@@ -462,8 +531,22 @@ class WixOrdersClient:
                 if isinstance(payload, dict):
                     data = payload.get("fulfillableLineItems")
                     if isinstance(data, list):
+                        elapsed_ms = int((time.perf_counter() - started) * 1000)
+                        logger.info(
+                            "Wix metric fulfillable_items_ms=%s ref=%s items=%s",
+                            elapsed_ms,
+                            str(reference or "").strip(),
+                            len(data),
+                        )
                         return [item for item in data if isinstance(item, dict)]
                 if isinstance(payload, list):
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    logger.info(
+                        "Wix metric fulfillable_items_ms=%s ref=%s items=%s",
+                        elapsed_ms,
+                        str(reference or "").strip(),
+                        len(payload),
+                    )
                     return [item for item in payload if isinstance(item, dict)]
                 return []
             except httpx.HTTPError as exc:
@@ -477,6 +560,7 @@ class WixOrdersClient:
         *,
         notify_customer: bool = False,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
         order_id = self._resolve_order_id(reference)
         items = [item for item in line_items if isinstance(item, dict)]
         if not order_id or not items or not self.has_credentials():
@@ -496,6 +580,13 @@ class WixOrdersClient:
                     json=payload,
                 )
                 resp.raise_for_status()
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                logger.info(
+                    "Wix metric create_fulfillment_ms=%s ref=%s lines=%s",
+                    elapsed_ms,
+                    str(reference or "").strip(),
+                    len(items),
+                )
                 return resp.json() if resp.content else {}
             except httpx.HTTPError as exc:
                 logger.warning("WixOrdersClient create fulfillment failed: %s", exc)
@@ -621,6 +712,7 @@ class WixOrdersClient:
         *reference* can be a Wix order number (digits) or order UUID.
         Returns an empty list when credentials are missing or order not found.
         """
+        started = time.perf_counter()
         ref = str(reference or "").strip()
         if not ref or not self.has_credentials():
             return []
@@ -633,8 +725,11 @@ class WixOrdersClient:
 
         raw_items = order.get("lineItems") or []
         items = [_parse_order_line_item(item) for item in raw_items if isinstance(item, dict)]
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.info(
-            "WixOrdersClient: reference=%r → %s line items",
-            ref, len(items),
+            "Wix metric line_items_ms=%s ref=%s items=%s",
+            elapsed_ms,
+            ref,
+            len(items),
         )
         return items

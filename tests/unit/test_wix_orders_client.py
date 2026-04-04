@@ -50,3 +50,39 @@ def test_is_reference_digital_only_checks_all_line_items() -> None:
     assert client.is_reference_digital_only("all-digital") is True
     assert client.is_reference_digital_only("mixed") is False
     assert client.is_reference_digital_only("missing") is False
+
+
+def test_best_address_lines_prefers_shipping_then_billing() -> None:
+    order_shipping = {
+        "buyerInfo": {"firstName": "Max", "lastName": "Mustermann"},
+        "shippingInfo": {
+            "shippingDestination": {
+                "addressLine1": "Musterstrasse 1",
+                "postalCode": "1010",
+                "city": "Wien",
+                "country": "AT",
+            }
+        },
+        "billingInfo": {
+            "contactDetails": {"company": "Fallback GmbH"},
+            "address": {"addressLine1": "Fallbackweg 9"},
+        },
+    }
+    lines = WixOrdersClient.best_address_lines_from_order(order_shipping)
+    assert lines[0] == "Max Mustermann"
+    assert "Musterstrasse 1" in lines
+
+    order_billing_only = {
+        "billingInfo": {
+            "contactDetails": {"company": "Billing GmbH"},
+            "address": {
+                "addressLine1": "Rechnungsweg 7",
+                "postalCode": "5020",
+                "city": "Salzburg",
+                "country": "AT",
+            },
+        }
+    }
+    lines2 = WixOrdersClient.best_address_lines_from_order(order_billing_only)
+    assert lines2[0] == "Billing GmbH"
+    assert "Rechnungsweg 7" in lines2

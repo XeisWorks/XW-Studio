@@ -30,6 +30,16 @@ class _RepoStub:
         return self._data.get(key)
 
 
+class _WixOrdersStub:
+    def has_credentials(self) -> bool:
+        return True
+
+    def resolve_order_address_lines(self, reference: str) -> list[str]:
+        if reference == "12345":
+            return ["Wix Name", "Wix Strasse 1", "1010 Wien", "AT"]
+        return []
+
+
 def test_sensitive_country_override_from_settings() -> None:
     rows = [
         InvoiceSummary(
@@ -106,3 +116,17 @@ def test_unreleased_sku_flags_fall_back_to_defaults() -> None:
     result = svc.load_invoice_summaries()
 
     assert result[0].has_unreleased_sku is True
+
+
+def test_shipping_lines_prefer_wix_when_available() -> None:
+    summary = InvoiceSummary(id="5", invoiceNumber="R-5", order_reference="12345")
+    svc = InvoiceProcessingService(
+        AppConfig(),
+        _InvoiceClientStub([summary]),  # type: ignore[arg-type]
+        None,
+        _WixOrdersStub(),  # type: ignore[arg-type]
+    )
+
+    lines = svc._shipping_lines_from_invoice({}, summary)  # noqa: SLF001
+
+    assert lines == ["Wix Name", "Wix Strasse 1", "1010 Wien", "AT"]

@@ -400,6 +400,11 @@ class InvoiceProcessingService:
         )
 
     def _shipping_lines_from_invoice(self, invoice: dict[str, Any], summary: InvoiceSummary) -> list[str]:
+        if self._wix_orders is not None and summary.order_reference.strip() and self._wix_orders.has_credentials():
+            wix_lines = self._wix_orders.resolve_order_address_lines(summary.order_reference)
+            if wix_lines:
+                return wix_lines
+
         contact = invoice.get("contact") if isinstance(invoice.get("contact"), dict) else {}
         delivery_name = str(invoice.get("deliveryName") or "").strip()
         name = delivery_name or str(invoice.get("name") or contact.get("name") or summary.contact_name or "").strip()

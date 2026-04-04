@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -75,6 +76,7 @@ _TABLE_COLUMNS = [
 ]
 
 _PAGE_SIZE = 50
+_WIX_CONTEXT_CACHE_TTL_SECONDS = 75.0
 
 
 class _HintsIconDelegate(QStyledItemDelegate):
@@ -415,6 +417,7 @@ class RechnungenView(QWidget):
         self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
+        self._wix_context_worker: BackgroundWorker | None = None
         self._fulfillment_step_worker: BackgroundWorker | None = None
         self._open_overview_worker: BackgroundWorker | None = None
         self._did_initial_load = False
@@ -425,6 +428,9 @@ class RechnungenView(QWidget):
         self._search_index: list[dict[str, str]] = []
         self._wix_digital_cache: dict[str, bool] = {}
         self._pending_wix_reference = ""
+        self._pending_stuecke_reference = ""
+        self._wix_context_cache: dict[str, dict[str, object]] = {}
+        self._wix_context_seq = 0
         self._open_overview_seq = 0
         self._mollie_timer = QTimer(self)
         self._mollie_timer.setInterval(60000)
@@ -535,7 +541,7 @@ class RechnungenView(QWidget):
         # --- Structured detail panel ---
         detail_scroll = QScrollArea()
         detail_scroll.setWidgetResizable(True)
-        detail_scroll.setMinimumWidth(420)
+        detail_scroll.setMinimumWidth(520)
 
         detail_content = QWidget()
         detail_main = QVBoxLayout(detail_content)
@@ -562,6 +568,10 @@ class RechnungenView(QWidget):
         info_layout = QHBoxLayout(self._gb_info)
         left_form = QFormLayout()
         right_form = QFormLayout()
+        for form in (left_form, right_form):
+            form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         info_layout.addLayout(left_form, stretch=1)
         info_layout.addLayout(right_form, stretch=1)
         self._dl_number = QLabel("—")
@@ -579,6 +589,23 @@ class RechnungenView(QWidget):
         self._wix_shipping = QLabel("—")
         self._wix_shipping.setWordWrap(True)
         self._wix_shipping.setMinimumHeight(38)
+        info_labels = (
+            self._dl_number,
+            self._dl_date,
+            self._dl_status,
+            self._dl_brutto,
+            self._dl_contact,
+            self._dl_country,
+            self._dl_id,
+            self._dl_order_ref,
+            self._wix_order_no,
+            self._wix_customer,
+            self._wix_customer_email,
+            self._wix_shipping,
+        )
+        for lbl in info_labels:
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         left_form.addRow("Rechnung:", self._dl_number)
         left_form.addRow("Status:", self._dl_status)
         left_form.addRow("Kunde:", self._dl_contact)
@@ -604,6 +631,10 @@ class RechnungenView(QWidget):
 
         self._gb_actions = QGroupBox("AKTIONEN")
         actions_layout = QGridLayout(self._gb_actions)
+        actions_layout.setHorizontalSpacing(8)
+        actions_layout.setVerticalSpacing(6)
+        actions_layout.setColumnStretch(0, 1)
+        actions_layout.setColumnStretch(1, 1)
         self._action_state = QLabel("Keine Rechnung ausgewählt")
         self._action_state.setWordWrap(True)
         self._action_state.setStyleSheet("color: #64748b;")
@@ -1301,8 +1332,7 @@ class RechnungenView(QWidget):
         self._gb_actions.show()
         self._update_plc_controls()
         if s.order_reference:
-            self._load_wix_meta(s.order_reference)
-            self._load_stuecke(s.order_reference)
+            self._load_wix_context(s.order_reference)
         else:
             self._reset_wix_meta("Keine Wix-Order-Referenz")
             self._reset_stuecke()
@@ -1330,29 +1360,154 @@ class RechnungenView(QWidget):
         self._wix_customer.setText("—")
         self._wix_customer_email.setText("—")
         self._wix_shipping.setText("—")
+        self._adjust_shipping_label_height("—")
 
-    def _load_wix_meta(self, order_reference: str) -> None:
-        if self._wix_meta_worker is not None and self._wix_meta_worker.isRunning():
-            return
+    def _load_wix_context(self, order_reference: str) -> None:
         ref = order_reference.strip()
         if not ref:
             self._reset_wix_meta("Keine Wix-Order-Referenz")
+            self._reset_stuecke()
             return
+
+        cached = self._get_cached_wix_context(ref)
+        if cached is not None:
+            self._wix_context_seq += 1
+            seq = self._wix_context_seq
+            self._pending_wix_reference = ref
+            self._pending_stuecke_reference = ref
+            status = str(cached.get("status") or "").strip()
+            if status:
+                self._reset_wix_meta(status)
+                self._reset_stuecke()
+                self._stuecke_hint.setText(status)
+                self._stuecke_hint.show()
+                self._gb_stuecke.show()
+                return
+            meta = cached.get("meta") if isinstance(cached.get("meta"), dict) else {}
+            items = cached.get("items") if isinstance(cached.get("items"), list) else []
+            self._on_wix_meta_loaded({**meta, "__requested_ref": ref, "seq": seq})
+            self._on_stuecke_loaded({"__requested_ref": ref, "items": items, "seq": seq})
+            return
+
+        if self._wix_context_worker is not None and self._wix_context_worker.isRunning():
+            return
+
+        self._wix_context_seq += 1
+        seq = self._wix_context_seq
+        self._reset_wix_meta("Lade Wix-Daten…")
         self._pending_wix_reference = ref
+        self._pending_stuecke_reference = ref
+        self._reset_stuecke()
+        self._stuecke_hint.setText("Wird geladen…")
+        self._gb_stuecke.show()
 
-        def job() -> dict[str, str]:
-            service: SecretService = self._container.resolve(SecretService)
-            wix = WixOrdersClient(secret_service=service)
-            if not wix.has_credentials():
-                return {"status": "Kein Wix-API-Key konfiguriert.", "__requested_ref": ref}
-            data = wix.resolve_order_summary(ref)
-            data["__requested_ref"] = ref
-            return data
+        def job() -> dict[str, object]:
+            wix_client: WixOrdersClient = self._container.resolve(WixOrdersClient)
+            if not wix_client.has_credentials():
+                return {
+                    "seq": seq,
+                    "__requested_ref": ref,
+                    "status": "Kein Wix-API-Key konfiguriert.",
+                    "meta": {},
+                    "items": [],
+                }
 
-        self._wix_meta_worker = BackgroundWorker(job)
-        self._wix_meta_worker.signals.result.connect(self._on_wix_meta_loaded)
-        self._wix_meta_worker.signals.error.connect(self._on_wix_meta_error)
-        self._wix_meta_worker.start()
+            meta = wix_client.resolve_order_summary(ref)
+            wix_items = wix_client.fetch_order_line_items(ref)
+            engine: PrintDecisionEngine = self._container.resolve(PrintDecisionEngine)
+            pieces = engine.get_piece_blocks(wix_items, invoice_ref=ref)
+            return {
+                "seq": seq,
+                "__requested_ref": ref,
+                "status": "",
+                "meta": meta,
+                "items": pieces,
+            }
+
+        self._wix_context_worker = BackgroundWorker(job)
+        self._wix_context_worker.signals.result.connect(self._on_wix_context_loaded)
+        self._wix_context_worker.signals.error.connect(self._on_wix_context_error)
+        self._wix_context_worker.start()
+
+    def _on_wix_context_loaded(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        seq = int(data.get("seq") or 0)
+        if seq != self._wix_context_seq:
+            return
+        requested_ref = str(data.get("__requested_ref") or "").strip()
+        selected = self._selected_summary()
+        current_ref = selected.order_reference.strip() if selected is not None else ""
+        if requested_ref and requested_ref != current_ref:
+            return
+
+        status = str(data.get("status") or "").strip()
+        if status:
+            self._put_cached_wix_context(requested_ref, status=status, meta={}, items=[])
+            self._reset_wix_meta(status)
+            self._reset_stuecke()
+            self._stuecke_hint.setText(status)
+            self._stuecke_hint.show()
+            self._gb_stuecke.show()
+            return
+
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        items = data.get("items") if isinstance(data.get("items"), list) else []
+        self._put_cached_wix_context(requested_ref, status="", meta=meta, items=items)
+        self._on_wix_meta_loaded({**meta, "__requested_ref": requested_ref})
+        self._on_stuecke_loaded({"__requested_ref": requested_ref, "items": items})
+
+    def _on_wix_context_error(self, exc: Exception) -> None:
+        self._reset_wix_meta(f"Wix-Fehler: {exc}")
+        self._reset_stuecke()
+        self._stuecke_hint.setText(f"Fehler: {exc}")
+        self._stuecke_hint.show()
+        self._gb_stuecke.show()
+
+    def _get_cached_wix_context(self, reference: str) -> dict[str, object] | None:
+        ref = str(reference or "").strip()
+        if not ref:
+            return None
+        cached = self._wix_context_cache.get(ref)
+        if not cached:
+            return None
+        ts = float(cached.get("ts") or 0.0)
+        if (time.monotonic() - ts) > _WIX_CONTEXT_CACHE_TTL_SECONDS:
+            self._wix_context_cache.pop(ref, None)
+            return None
+        return cached
+
+    def _put_cached_wix_context(
+        self,
+        reference: str,
+        *,
+        status: str,
+        meta: dict[str, str],
+        items: list[PieceBlock],
+    ) -> None:
+        ref = str(reference or "").strip()
+        if not ref:
+            return
+        self._wix_context_cache[ref] = {
+            "ts": time.monotonic(),
+            "status": status,
+            "meta": dict(meta),
+            "items": list(items),
+        }
+
+    def _adjust_shipping_label_height(self, text: str) -> None:
+        content = str(text or "").strip()
+        if not content or content == "—":
+            self._wix_shipping.setMinimumHeight(38)
+            return
+        fm = self._wix_shipping.fontMetrics()
+        explicit_lines = max(1, content.count("\n") + 1)
+        approx_wrap_lines = max(1, len(content) // 38)
+        lines = max(explicit_lines, approx_wrap_lines)
+        target_height = max(38, min(160, lines * fm.lineSpacing() + 10))
+        self._wix_shipping.setMinimumHeight(target_height)
+
+    def _load_wix_meta(self, order_reference: str) -> None:
+        self._load_wix_context(order_reference)
 
     def _on_wix_meta_loaded(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -1376,6 +1531,7 @@ class RechnungenView(QWidget):
             country = data.get("wix_shipping_country") or ""
             shipping = " / ".join(part for part in (city, country) if part)
         self._wix_shipping.setText(shipping or "—")
+        self._adjust_shipping_label_height(shipping or "—")
 
     def _on_wix_meta_error(self, exc: Exception) -> None:
         self._reset_wix_meta(f"Wix-Fehler: {exc}")
@@ -1493,36 +1649,25 @@ class RechnungenView(QWidget):
         self._gb_stuecke.hide()
 
     def _load_stuecke(self, order_reference: str) -> None:
-        self._reset_stuecke()
-        self._stuecke_hint.setText("Wird geladen…")
-        self._gb_stuecke.show()
-
-        service: SecretService = self._container.resolve(SecretService)
-        wix_client = WixOrdersClient(secret_service=service)
-
-        if not wix_client.has_credentials():
-            self._stuecke_hint.setText("Kein Wix-API-Key konfiguriert.")
-            return
-
-        ref = order_reference
-
-        def job() -> list[PieceBlock]:
-            wix_items = wix_client.fetch_order_line_items(ref)
-            engine: PrintDecisionEngine = self._container.resolve(PrintDecisionEngine)
-            return engine.get_piece_blocks(wix_items, invoice_ref=ref)
-
-        self._stuecke_worker = BackgroundWorker(job)
-        self._stuecke_worker.signals.result.connect(self._on_stuecke_loaded)
-        self._stuecke_worker.signals.error.connect(self._on_stuecke_error)
-        self._stuecke_worker.start()
+        self._load_wix_context(order_reference)
 
     def _on_stuecke_loaded(self, items: object) -> None:
+        requested_ref = ""
+        payload_items: object = items
+        if isinstance(items, dict):
+            requested_ref = str(items.get("__requested_ref") or "").strip()
+            payload_items = items.get("items")
+        selected = self._selected_summary()
+        current_ref = selected.order_reference.strip() if selected is not None else ""
+        if requested_ref and requested_ref != current_ref:
+            return
+
         self._stuecke_hint.hide()
-        if not isinstance(items, list) or not items:
+        if not isinstance(payload_items, list) or not payload_items:
             self._stuecke_hint.setText("Keine Positionen gefunden.")
             self._stuecke_hint.show()
             return
-        self._current_piece_blocks = [item for item in items if isinstance(item, PieceBlock)]
+        self._current_piece_blocks = [item for item in payload_items if isinstance(item, PieceBlock)]
         for item in self._current_piece_blocks:
             # Header line: "×2  [XW-001]  Produktname ★"
             unreleased_marker = " \u2605" if item.is_unreleased else ""

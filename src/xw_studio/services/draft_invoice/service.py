@@ -276,24 +276,8 @@ class DraftInvoiceService:
         return ""
 
     def _build_address_text(self, order: dict[str, Any]) -> str:
-        billing_obj = order.get("billingInfo")
-        billing: dict[str, Any] = billing_obj if isinstance(billing_obj, dict) else {}
-        address_obj = billing.get("address")
-        address: dict[str, Any] = address_obj if isinstance(address_obj, dict) else {}
-        details_obj = billing.get("contactDetails")
-        details: dict[str, Any] = details_obj if isinstance(details_obj, dict) else {}
-
-        company = str(details.get("company") or "").strip()
-        first = str(details.get("firstName") or "").strip()
-        last = str(details.get("lastName") or "").strip()
-        street = str(address.get("addressLine1") or address.get("street") or "").strip()
-        zip_code = str(address.get("postalCode") or "").strip()
-        city = str(address.get("city") or "").strip()
-        country = str(address.get("country") or "").strip()
-
-        line_name = company or " ".join(part for part in (first, last) if part).strip()
-        lines = [line_name, street, " ".join(part for part in (zip_code, city) if part), country]
-        return "\n".join(part for part in lines if part)
+        lines = WixOrdersClient.best_address_lines_from_order(order)
+        return "\n".join(lines)
 
     @staticmethod
     def _extract_first_object(payload: object) -> dict[str, Any]:
