@@ -485,10 +485,19 @@ class WixOrdersClient:
 
     def resolve_order_dashboard_url(self, reference: str) -> str:
         """Return Wix dashboard URL for an order reference (number or UUID)."""
-        order = self._resolve_order(reference)
+        ref = str(reference or "").strip()
+        order: dict[str, Any] = {}
+        # Wix search can be briefly stale on first lookup; retry once/twice before failing.
+        for attempt in range(3):
+            order = self._resolve_order(ref)
+            if order:
+                break
+            if attempt < 2:
+                time.sleep(0.25)
         order_id = str(order.get("id") or "").strip()
         site_id = self._site_id().strip()
         if not order_id or not site_id:
+            logger.info("Wix dashboard resolve failed ref=%s attempts=%s", ref, 3)
             return ""
         return f"https://manage.wix.com/dashboard/{site_id}/ecom-platform/order-details/{order_id}"
 
