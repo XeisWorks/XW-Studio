@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import smtplib
+from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QTextDocument
@@ -18,7 +21,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTabWidget,
     QTextBrowser,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -48,6 +50,7 @@ _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
 _SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _URGENCY_RULES_KEY = "daily_business.urgency_rules"
 _FULFILLMENT_MAIL_TEMPLATE_KEY = "rechnungen.fulfillment_mail_template_html"
+_FULFILLMENT_MAIL_SUBJECT_KEY = "rechnungen.fulfillment_mail_subject"
 _CLICKUP_LIST_ID_KEY = "clickup.default_list_id"
 _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "MOLLIE_ACCESS_TOKEN",
@@ -57,10 +60,20 @@ _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "GOOGLE_MAPS_API_KEY",
     "MS_GRAPH_CLIENT_ID",
     "MS_GRAPH_TENANT_ID",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_FROM",
+    "SMTP_STARTTLS",
+    "SMTP_SSL",
     "FON_TEILNEHMER_ID",
     "FON_BENUTZER_ID",
     "FON_PIN",
 )
+
+_DEFAULT_FULFILLMENT_SUBJECT = "Deine Bestellung {{invoice_number}} ist bereit"
+_DEFAULT_TEST_MAIL_RECIPIENT = "bernhard.holl@gmx.at"
 
 _DEFAULT_FULFILLMENT_TEMPLATE = (
     "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
@@ -88,6 +101,7 @@ class SettingsView(QWidget):
         self._container = container
         self._db_worker: BackgroundWorker | None = None
         self._clickup_worker: BackgroundWorker | None = None
+        self._mail_test_worker: BackgroundWorker | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -310,13 +324,22 @@ class SettingsView(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
 
-        gb_template = QGroupBox("Globale Vorlage + Variablen")
+        gb_template = QGroupBox("Vorlagen mit Variablen")
         template_layout = QVBoxLayout(gb_template)
         info = QLabel(
             "Variablen: {{customer_name}}, {{invoice_number}}, {{download_link}}, {{items_html}}"
         )
         info.setWordWrap(True)
         template_layout.addWidget(info)
+
+        subject_row = QFormLayout()
+        self._mail_subject_editor = QLineEdit()
+        self._mail_subject_editor.setPlaceholderText(_DEFAULT_FULFILLMENT_SUBJECT)
+        subject_row.addRow("Betreff-Vorlage:", self._mail_subject_editor)
+        template_layout.addLayout(subject_row)
+
+        body_lbl = QLabel("Nachrichtentext (HTML-Vorlage):")
+        template_layout.addWidget(body_lbl)
 
         self._mail_template_editor = QPlainTextEdit()
         self._mail_template_editor.setMinimumHeight(320)
@@ -331,6 +354,13 @@ class SettingsView(QWidget):
         btn_save_template.clicked.connect(self._save_fulfillment_mail_template)
         btn_save_template.setEnabled(self._has_settings_repo())
         mail_btn_row.addWidget(btn_save_template)
+        self._mail_test_recipient = QLineEdit(_DEFAULT_TEST_MAIL_RECIPIENT)
+        self._mail_test_recipient.setPlaceholderText("Empfänger Test-Mail")
+        self._mail_test_recipient.setMinimumWidth(240)
+        mail_btn_row.addWidget(self._mail_test_recipient)
+        btn_send_test = QPushButton("Test-Mail senden")
+        btn_send_test.clicked.connect(self._send_template_test_mail)
+        mail_btn_row.addWidget(btn_send_test)
         mail_btn_row.addStretch()
         template_layout.addLayout(mail_btn_row)
 
@@ -340,6 +370,9 @@ class SettingsView(QWidget):
 
         gb_html = QGroupBox("HTML-Ansicht")
         html_layout = QVBoxLayout(gb_html)
+        self._mail_subject_preview = QLabel("Betreff: —")
+        self._mail_subject_preview.setTextInteractionFlags(self._mail_subject_preview.textInteractionFlags())
+        html_layout.addWidget(self._mail_subject_preview)
         self._mail_template_preview = QTextBrowser()
         self._mail_template_preview.setOpenExternalLinks(True)
         self._mail_template_preview.setMinimumHeight(420)
@@ -555,15 +588,19 @@ class SettingsView(QWidget):
 
     def _load_fulfillment_mail_template(self) -> None:
         if not self._has_settings_repo():
+            self._mail_subject_editor.setText(_DEFAULT_FULFILLMENT_SUBJECT)
             self._mail_template_editor.setPlainText(_DEFAULT_FULFILLMENT_TEMPLATE)
             self._render_fulfillment_preview()
             return
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        subject = repo.get_value_json(_FULFILLMENT_MAIL_SUBJECT_KEY) or _DEFAULT_FULFILLMENT_SUBJECT
         raw = repo.get_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY) or _DEFAULT_FULFILLMENT_TEMPLATE
+        self._mail_subject_editor.setText(subject)
         self._mail_template_editor.setPlainText(raw)
         self._render_fulfillment_preview()
 
     def _render_fulfillment_preview(self) -> None:
+        subject_template = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
         html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
         preview = html
         substitutions = {
@@ -572,8 +609,11 @@ class SettingsView(QWidget):
             "{{download_link}}": "https://example.com/download/RE-2026-0042",
             "{{items_html}}": "XW-7001 - 1x Brandlalm Boarischer<br>XW-600.0 - 2x Zusatzstimme",
         }
+        subject_preview = subject_template
         for token, value in substitutions.items():
             preview = preview.replace(token, value)
+            subject_preview = subject_preview.replace(token, value)
+        self._mail_subject_preview.setText(f"Betreff: {subject_preview}")
         self._mail_template_preview.setHtml(preview)
         doc = QTextDocument()
         doc.setHtml(preview)
@@ -585,12 +625,111 @@ class SettingsView(QWidget):
         if not self._has_settings_repo():
             QMessageBox.warning(self, "Fehler", "DB-Repository nicht verfuegbar.")
             return
+        subject = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
         html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
+        repo.set_value_json(_FULFILLMENT_MAIL_SUBJECT_KEY, subject)
         repo.set_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY, html)
         self._mail_template_status.setText("Vorlage gespeichert")
         self._mail_template_status.setStyleSheet(_OK_STYLE)
         self._render_fulfillment_preview()
+
+    def _send_template_test_mail(self) -> None:
+        if self._mail_test_worker is not None and self._mail_test_worker.isRunning():
+            return
+        recipient = self._mail_test_recipient.text().strip()
+        if not recipient:
+            QMessageBox.warning(self, "Test-Mail", "Bitte Empfängeradresse eingeben.")
+            return
+
+        subject_template = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
+        html_template = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        substitutions = {
+            "{{customer_name}}": "Bernhard Holl",
+            "{{invoice_number}}": "RE-TEST-0001",
+            "{{download_link}}": "https://example.com/download/test",
+            "{{items_html}}": "XW-TEST - 1x Testartikel",
+        }
+        subject = subject_template
+        html = html_template
+        for token, value in substitutions.items():
+            subject = subject.replace(token, value)
+            html = html.replace(token, value)
+        plain_doc = QTextDocument()
+        plain_doc.setHtml(html)
+        plain = plain_doc.toPlainText()
+
+        self._mail_template_status.setText("Sende Test-Mail...")
+        self._mail_template_status.setStyleSheet(_WARN_STYLE)
+
+        def _secret_or_env(key: str, default: str = "") -> str:
+            secrets: SecretService = self._container.resolve(SecretService)
+            value = str(secrets.get_secret(key) or "").strip()
+            if value:
+                return value
+            return str(os.getenv(key) or default).strip()
+
+        host = _secret_or_env("SMTP_HOST")
+        port_raw = _secret_or_env("SMTP_PORT", "587")
+        username = _secret_or_env("SMTP_USERNAME")
+        password = _secret_or_env("SMTP_PASSWORD")
+        sender = _secret_or_env("SMTP_FROM", username)
+        use_starttls = _secret_or_env("SMTP_STARTTLS", "1").lower() not in {"0", "false", "no"}
+        use_ssl = _secret_or_env("SMTP_SSL", "0").lower() in {"1", "true", "yes"}
+
+        missing = [name for name, value in (("SMTP_HOST", host), ("SMTP_FROM", sender)) if not value]
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Test-Mail",
+                f"Bitte zuerst SMTP konfigurieren (fehlend: {', '.join(missing)}).",
+            )
+            self._mail_template_status.setText("SMTP-Konfiguration fehlt")
+            self._mail_template_status.setStyleSheet(_ERR_STYLE)
+            return
+
+        try:
+            port = int(port_raw)
+        except ValueError:
+            port = 587
+
+        def job() -> str:
+            msg = EmailMessage()
+            msg["From"] = sender
+            msg["To"] = recipient
+            msg["Subject"] = subject
+            msg.set_content(plain)
+            msg.add_alternative(html, subtype="html")
+
+            if use_ssl:
+                with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
+                    if username:
+                        smtp.login(username, password)
+                    smtp.send_message(msg)
+            else:
+                with smtplib.SMTP(host, port, timeout=20) as smtp:
+                    if use_starttls:
+                        smtp.starttls()
+                    if username:
+                        smtp.login(username, password)
+                    smtp.send_message(msg)
+            return recipient
+
+        self._mail_test_worker = BackgroundWorker(job)
+        self._mail_test_worker.signals.result.connect(self._on_test_mail_sent)
+        self._mail_test_worker.signals.error.connect(self._on_test_mail_error)
+        self._mail_test_worker.start()
+
+    def _on_test_mail_sent(self, result: object) -> None:
+        target = str(result or self._mail_test_recipient.text().strip() or "Empfänger")
+        self._mail_template_status.setText(f"Test-Mail gesendet an {target}")
+        self._mail_template_status.setStyleSheet(_OK_STYLE)
+        QMessageBox.information(self, "Test-Mail", f"Test-Mail erfolgreich gesendet an {target}.")
+
+    def _on_test_mail_error(self, exc: Exception) -> None:
+        self._mail_template_status.setText(f"Test-Mail fehlgeschlagen: {exc}")
+        self._mail_template_status.setStyleSheet(_ERR_STYLE)
+        QMessageBox.warning(self, "Test-Mail", f"Senden fehlgeschlagen:\n\n{exc}")
 
     def _save_tokens(self) -> None:
         service: SecretService = self._container.resolve(SecretService)

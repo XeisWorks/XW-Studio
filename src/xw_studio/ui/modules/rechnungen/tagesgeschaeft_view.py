@@ -323,19 +323,6 @@ class TagesgeschaeftView(QWidget):
         self._btn_start.clicked.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
         bar_lay.addWidget(self._btn_start)
 
-        btn_reprints = QPushButton("🖨  Nachdrucke")
-        btn_reprints.setToolTip("Lagerbestand auffüllen: Nachdrucke nur Lagerfüllung (kein Invoice-Konsum)")
-        btn_reprints.setFixedHeight(34)
-        btn_reprints.setFixedWidth(140)
-        btn_reprints.setStyleSheet(
-            "QPushButton { background-color: #388e3c; color: white; border-radius: 6px;"
-            " font-weight: bold; font-size: 13px; }"
-            " QPushButton:hover { background-color: #2e7d32; }"
-            " QPushButton:pressed { background-color: #1b5e20; }"
-        )
-        btn_reprints.clicked.connect(self._on_reprints_clicked)
-        bar_lay.addWidget(btn_reprints)
-
         btn_beenden = QPushButton("■  Beenden")
         btn_beenden.setToolTip("App beenden (laufende Hintergrundaufgaben werden abgewartet)")
         btn_beenden.setFixedHeight(34)

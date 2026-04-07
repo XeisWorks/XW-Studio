@@ -52,6 +52,7 @@ from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.ui.modules.rechnungen.offene_sendungen_dialog import OffeneSendungenDialog
+from xw_studio.ui.modules.rechnungen.plc_label_dialog import PlcLabelPrintDialog
 from xw_studio.ui.modules.rechnungen.refund_dialog import RefundDialog
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
@@ -1098,35 +1099,8 @@ class RechnungenView(QWidget):
         self._plc_last.setText(f"Letzter PLC-Druck: {self._last_plc_invoice}")
 
     def _open_plc_post_popup(self, summary: InvoiceSummary) -> None:
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Post Label Center (PLC)")
-        dlg.setMinimumWidth(460)
-
-        layout = QVBoxLayout(dlg)
-        info = QLabel(
-            "PLC-Aktion wie im alten Tkinter-Flow.\n"
-            "Nach Klick auf Druck starten öffnet sich der PLC-Label-Druckdialog."
-        )
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        details = QLabel(
-            f"Rechnung: {summary.invoice_number or summary.id}\n"
-            f"Wix-Referenz: {summary.order_reference or '—'}"
-        )
-        details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        details.setWordWrap(True)
-        layout.addWidget(details)
-
-        buttons = QDialogButtonBox(self)
-        start_btn = buttons.addButton("Druck starten", QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton("Abbrechen", QDialogButtonBox.ButtonRole.RejectRole)
-        start_btn.clicked.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        layout.addWidget(buttons)
-
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._run_plc_print(summary)
+        dlg = PlcLabelPrintDialog(self._container, summary, self)
+        dlg.exec()
 
     def _on_print_music_clicked(self) -> None:
         if not self._print_allowed:
