@@ -62,26 +62,37 @@ class SidebarButton(QPushButton):
         self.setMinimumHeight(44)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 8px 16px;
-                border: none;
-                border-left: 3px solid transparent;
-                font-size: 14px;
-                color: palette(window-text);
-            }
-            QPushButton:checked {
-                border-left: 3px solid #4fc3f7;
-                font-weight: bold;
-                color: palette(window-text);
-            }
-            QPushButton:hover {
-                background-color: rgba(79, 195, 247, 0.1);
-                color: palette(window-text);
-            }
-        """)
+        self._apply_theme(is_light=False)
         self._badge_count = 0
+
+    def _apply_theme(self, *, is_light: bool) -> None:
+        text_color = "#1f2937" if is_light else "#e8e8e8"
+        checked_color = "#0f172a" if is_light else "#ffffff"
+        checked_bg = "rgba(29, 78, 216, 0.14)" if is_light else "rgba(79, 195, 247, 0.15)"
+        hover_bg = "rgba(29, 78, 216, 0.08)" if is_light else "rgba(79, 195, 247, 0.10)"
+        self.setStyleSheet(
+            "QPushButton {"
+            "text-align: left;"
+            "padding: 8px 16px;"
+            "border: none;"
+            "border-left: 3px solid transparent;"
+            "font-size: 14px;"
+            f"color: {text_color};"
+            "}"
+            "QPushButton:checked {"
+            "border-left: 3px solid #4fc3f7;"
+            "font-weight: bold;"
+            f"color: {checked_color};"
+            f"background-color: {checked_bg};"
+            "}"
+            "QPushButton:hover {"
+            f"background-color: {hover_bg};"
+            f"color: {checked_color};"
+            "}"
+        )
+
+    def apply_theme_name(self, theme_name: str) -> None:
+        self._apply_theme(is_light="light" in str(theme_name or "").lower())
 
     def set_badge(self, count: int) -> None:
         self._badge_count = count
@@ -149,6 +160,7 @@ class Sidebar(QFrame):
                 self._nav_layout.addWidget(sep)
 
             btn = SidebarButton(entry)
+            btn.apply_theme_name(self._current_theme)
             btn.clicked.connect(lambda checked, k=entry.key.value: self._select_module(k))
             self._buttons[entry.key.value] = btn
             self._nav_layout.addWidget(btn)
@@ -214,6 +226,8 @@ class Sidebar(QFrame):
         from xw_studio.core.signals import AppSignals
 
         self._container.resolve(AppSignals).theme_changed.emit(self._current_theme)
+        for btn in self._buttons.values():
+            btn.apply_theme_name(self._current_theme)
         icon = "○" if "light" in self._current_theme else "◉"
         self._theme_btn.setText(icon)
 

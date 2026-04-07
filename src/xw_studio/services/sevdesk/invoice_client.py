@@ -43,7 +43,21 @@ _INVOICE_STATUS_DE: dict[int, str] = {
     200: "Offen",
     300: "Teilweise bezahlt",
     1000: "Bezahlt",
+    1001: "Storniert",
 }
+
+_TABLE_STATUS_COLUMN = "🔎"
+
+
+def _format_date_de_short(raw: str | None) -> str:
+    """Parse ISO date string from sevDesk and return DD.MM.YY."""
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(raw)
+        return dt.strftime("%d.%m.%y")
+    except (ValueError, TypeError):
+        return raw
 
 DEFAULT_SENSITIVE_COUNTRY_CODES: set[str] = {
     "AF",
@@ -227,17 +241,32 @@ class InvoiceSummary(BaseModel):
         """Gross amount formatted in German locale (e.g. 1.234,56 €)."""
         return _format_amount_de(self.sum_gross)
 
+    @property
+    def formatted_date_short(self) -> str:
+        """Invoice date as DD.MM.YY for compact table display."""
+        return _format_date_de_short(self.invoice_date)
+
     def status_label(self) -> str:
         if self.status_code is None:
             return "—"
         return _INVOICE_STATUS_DE.get(self.status_code, str(self.status_code))
 
     def status_display_label(self) -> str:
-        """Return the UI label with Entwurf visually prioritized."""
-        label = self.status_label()
+        """Return a compact status symbol used by the invoice table."""
+        label = self.status_label().casefold()
         if self.status_code == 100:
-            return f"✳ {label}"
-        return label
+            return "📝"
+        if self.status_code == 200:
+            return "🟠"
+        if self.status_code == 300:
+            return "🟡"
+        if self.status_code == 1000:
+            return "✅"
+        if self.status_code in {1001, 500, 700} or "storn" in label or "cancel" in label:
+            return "⛔"
+        if self.status_code is None:
+            return "—"
+        return "•"
 
     @property
     def display_country(self) -> str:
@@ -258,6 +287,22 @@ class InvoiceSummary(BaseModel):
                 "versandlabel",
             )
         ) or bool(re.search(r"\bplc[-_ ]?\d+", hay))
+
+    def wix_order_number(self) -> str:
+        """Best-effort Wix order number extracted from order reference.
+
+        Never return UUID-like IDs in the dedicated WIX number column.
+        """
+        ref = str(self.order_reference or "").strip()
+        if not ref:
+            return ""
+        if re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            ref,
+        ):
+            return ""
+        digits = "".join(ch for ch in ref if ch.isdigit())
+        return digits if digits else ref
 
     def indicator_icon_keys(self) -> list[str]:
         """Return icon keys used by the hints cell delegate."""
@@ -306,9 +351,10 @@ class InvoiceSummary(BaseModel):
         icon_keys = self.indicator_icon_keys()
 
         row: dict[str, str] = {
-            "RE-NR": self.invoice_number or "—",
-            "Datum": self.formatted_date,
-            "Status": self.status_display_label(),
+            "sevDesk": self.invoice_number or "—",
+            "WIX": self.wix_order_number() or "—",
+            "Datum": self.formatted_date_short,
+            _TABLE_STATUS_COLUMN: self.status_display_label(),
             "BETRAG": self.formatted_brutto,
             "Kunde": self.contact_name or "—",
             "Hinweise": indicator_symbols,
@@ -325,11 +371,13 @@ class InvoiceSummary(BaseModel):
         if indicator_symbols:
             row["__tooltip__Hinweise"] = self.indicator_tooltip()
             row["__fg__Hinweise"] = "#ef4444"
-        row["__tooltip__AKTIONEN"] = "PLC / Rückerstattung / Download-Links"
+        row[f"__tooltip__{_TABLE_STATUS_COLUMN}"] = self.status_label()
+        row[f"__align__{_TABLE_STATUS_COLUMN}"] = "center"
+        row["__tooltip__AKTIONEN"] = "Post Label Center / Wix-Bestellung öffnen"
         if self.status_code == 100:
-            row["__tooltip__Status"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
-            row["__fg__Status"] = "#9a3412"
-            row["__bg__Status"] = "#fff7ed"
+            row[f"__tooltip__{_TABLE_STATUS_COLUMN}"] = "Entwurf: diese Rechnung muss im Tagesgeschäft abgearbeitet werden"
+            row[f"__fg__{_TABLE_STATUS_COLUMN}"] = "#9a3412"
+            row[f"__bg__{_TABLE_STATUS_COLUMN}"] = "#fff7ed"
 
         return row
 

@@ -5,8 +5,10 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import (
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -14,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QTabWidget,
     QTextBrowser,
     QScrollArea,
     QVBoxLayout,
@@ -88,16 +91,28 @@ class SettingsView(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        tabs = QTabWidget(self)
+        tabs.addTab(self._build_system_tab(), "System")
+        tabs.addTab(self._build_preflight_tab(), "START-Daten")
+        tabs.addTab(self._build_mail_templates_tab(), "Mail-Templates")
+        outer.addWidget(tabs)
+
+        self._load_queue_settings()
+        self._load_fulfillment_mail_template()
+
+    def _build_system_tab(self) -> QWidget:
         cfg = self._container.config
+        secret_service: SecretService = self._container.resolve(SecretService)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        main = QVBoxLayout(content)
-        main.setContentsMargins(12, 12, 12, 12)
-        main.setSpacing(14)
+        panel = QWidget()
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
 
-        # --- Datenbank ---
         gb_db = QGroupBox("Datenbank (PostgreSQL / Railway)")
         form_db = QFormLayout(gb_db)
         db_url = (cfg.database_url or "").strip()
@@ -113,12 +128,10 @@ class SettingsView(QWidget):
         row_btn.addWidget(btn_test)
         row_btn.addStretch()
         form_db.addRow("", row_btn)  # type: ignore[arg-type]
-        main.addWidget(gb_db)
+        grid.addWidget(gb_db, 0, 0)
 
-        # --- Secrets / API-Token ---
         gb_secrets = QGroupBox("API-Zugangsdaten")
         form_sec = QFormLayout(gb_secrets)
-        secret_service: SecretService = self._container.resolve(SecretService)
         sevdesk_ok = bool(secret_service.get_secret("SEVDESK_API_TOKEN"))
         wix_ok = bool(secret_service.get_secret("WIX_API_KEY"))
         clickup_ok = bool(secret_service.get_secret("CLICKUP_API_TOKEN"))
@@ -127,39 +140,20 @@ class SettingsView(QWidget):
         form_sec.addRow("WIX_API_KEY:", _pill("gesetzt ✓", wix_ok) if wix_ok else _pill("fehlt ✗", False))
         form_sec.addRow("CLICKUP_API_TOKEN:", _pill("gesetzt ✓", clickup_ok) if clickup_ok else _pill("fehlt ✗", False))
         form_sec.addRow("FERNET_MASTER_KEY:", _pill("gesetzt ✓", fernet_ok) if fernet_ok else _pill("fehlt ✗", False))
-        main.addWidget(gb_secrets)
+        grid.addWidget(gb_secrets, 0, 1)
 
-        gb_secret_edit = QGroupBox("Token-Verwaltung (DB verschluesselt)")
-        sec_edit = QFormLayout(gb_secret_edit)
-        self._inp_sevdesk = QLineEdit(secret_service.get_secret("SEVDESK_API_TOKEN"))
-        self._inp_sevdesk.setEchoMode(QLineEdit.EchoMode.Password)
-        self._inp_wix = QLineEdit(secret_service.get_secret("WIX_API_KEY"))
-        self._inp_wix.setEchoMode(QLineEdit.EchoMode.Password)
-        self._inp_wix_site = QLineEdit(secret_service.get_secret("WIX_SITE_ID"))
-        self._inp_wix_account = QLineEdit(secret_service.get_secret("WIX_ACCOUNT_ID"))
-        sec_edit.addRow("sevDesk Token:", self._inp_sevdesk)
-        sec_edit.addRow("Wix API Key:", self._inp_wix)
-        sec_edit.addRow("Wix Site ID:", self._inp_wix_site)
-        sec_edit.addRow("Wix Account ID:", self._inp_wix_account)
-        self._extra_tokens_json = QPlainTextEdit()
-        extra_tokens_obj = {
-            key: secret_service.get_secret(key)
-            for key in _EXTRA_SECRET_KEYS
-            if secret_service.get_secret(key)
-        }
-        self._extra_tokens_json.setPlaceholderText(
-            '{"MOLLIE_ACCESS_TOKEN": "...", "STRIPE_SECRET_KEY": "..."}'
-        )
-        self._extra_tokens_json.setPlainText(json.dumps(extra_tokens_obj, ensure_ascii=False, indent=2))
-        self._extra_tokens_json.setMinimumHeight(120)
-        sec_edit.addRow("Weitere Tokens (JSON):", self._extra_tokens_json)
-        self._secret_status = QLabel("—")
-        self._secret_status.setStyleSheet("color: #9e9e9e;")
-        sec_edit.addRow("Status:", self._secret_status)
-        btn_save_tokens = QPushButton("Tokens sicher speichern")
-        btn_save_tokens.clicked.connect(self._save_tokens)
-        sec_edit.addRow("", btn_save_tokens)
-        main.addWidget(gb_secret_edit)
+        gb_printer = QGroupBox("Drucker (konfiguriert)")
+        form_pr = QFormLayout(gb_printer)
+        printer_names = cfg.printing.configured_printer_names or []
+        form_pr.addRow("Musik-DPI:", QLabel(str(cfg.printing.music_dpi)))
+        form_pr.addRow("Rechnungs-DPI:", QLabel(str(cfg.printing.invoice_dpi)))
+        form_pr.addRow("Puffer-Menge:", QLabel(str(cfg.printing.buffer_quantity)))
+        if printer_names:
+            for i, name in enumerate(printer_names, 1):
+                form_pr.addRow(f"Drucker {i}:", QLabel(name))
+        else:
+            form_pr.addRow("Drucker:", _pill("keine konfiguriert", False))
+        grid.addWidget(gb_printer, 1, 0)
 
         gb_clickup = QGroupBox("ClickUp Schnellanlage")
         clickup_form = QFormLayout(gb_clickup)
@@ -179,113 +173,158 @@ class SettingsView(QWidget):
         self._clickup_create_btn = QPushButton("Task in ClickUp erstellen")
         self._clickup_create_btn.clicked.connect(self._create_clickup_task)
         clickup_form.addRow("", self._clickup_create_btn)
-        main.addWidget(gb_clickup)
+        grid.addWidget(gb_clickup, 1, 1)
 
-        # --- Drucker ---
-        gb_printer = QGroupBox("Drucker (konfiguriert)")
-        form_pr = QFormLayout(gb_printer)
-        printer_names = cfg.printing.configured_printer_names or []
-        form_pr.addRow("Musik-DPI:", QLabel(str(cfg.printing.music_dpi)))
-        form_pr.addRow("Rechnungs-DPI:", QLabel(str(cfg.printing.invoice_dpi)))
-        form_pr.addRow("Puffer-Menge:", QLabel(str(cfg.printing.buffer_quantity)))
-        if printer_names:
-            for i, name in enumerate(printer_names, 1):
-                form_pr.addRow(f"Drucker {i}:", QLabel(name))
-        else:
-            form_pr.addRow("Drucker:", _pill("keine konfiguriert", False))
-        main.addWidget(gb_printer)
+        gb_secret_edit = QGroupBox("Token-Verwaltung (DB verschluesselt)")
+        sec_edit = QFormLayout(gb_secret_edit)
+        self._inp_sevdesk = QLineEdit(secret_service.get_secret("SEVDESK_API_TOKEN"))
+        self._inp_sevdesk.setEchoMode(QLineEdit.EchoMode.Password)
+        self._inp_wix = QLineEdit(secret_service.get_secret("WIX_API_KEY"))
+        self._inp_wix.setEchoMode(QLineEdit.EchoMode.Password)
+        self._inp_wix_site = QLineEdit(secret_service.get_secret("WIX_SITE_ID"))
+        self._inp_wix_account = QLineEdit(secret_service.get_secret("WIX_ACCOUNT_ID"))
+        sec_edit.addRow("sevDesk Token:", self._inp_sevdesk)
+        sec_edit.addRow("Wix API Key:", self._inp_wix)
+        sec_edit.addRow("Wix Site ID:", self._inp_wix_site)
+        sec_edit.addRow("Wix Account ID:", self._inp_wix_account)
+        self._extra_tokens_json = QPlainTextEdit()
+        extra_tokens_obj = {
+            key: secret_service.get_secret(key)
+            for key in _EXTRA_SECRET_KEYS
+            if secret_service.get_secret(key)
+        }
+        self._extra_tokens_json.setPlaceholderText('{"MOLLIE_ACCESS_TOKEN": "...", "STRIPE_SECRET_KEY": "..."}')
+        self._extra_tokens_json.setPlainText(json.dumps(extra_tokens_obj, ensure_ascii=False, indent=2))
+        self._extra_tokens_json.setMinimumHeight(100)
+        sec_edit.addRow("Weitere Tokens (JSON):", self._extra_tokens_json)
+        self._secret_status = QLabel("—")
+        self._secret_status.setStyleSheet("color: #9e9e9e;")
+        sec_edit.addRow("Status:", self._secret_status)
+        btn_save_tokens = QPushButton("Tokens sicher speichern")
+        btn_save_tokens.clicked.connect(self._save_tokens)
+        sec_edit.addRow("", btn_save_tokens)
+        grid.addWidget(gb_secret_edit, 2, 0, 1, 2)
 
-        # --- START-Queue / Inventar JSON ---
-        gb_queue = QGroupBox("START-Preflight Daten (JSON)")
-        queue_layout = QVBoxLayout(gb_queue)
-        queue_layout.addWidget(
-            QLabel(
-                "Definiert die Druckentscheidung im START-Dialog. "
-                "Format: JSON-Objekt mit SKU als Key und Menge als Zahl."
-            )
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(3, 1)
+        return panel
+
+    def _json_box(self, key: str, placeholder: str, min_height: int) -> tuple[QGroupBox, QPlainTextEdit]:
+        box = QGroupBox(key)
+        layout = QVBoxLayout(box)
+        editor = QPlainTextEdit()
+        editor.setPlaceholderText(placeholder)
+        editor.setMinimumHeight(min_height)
+        layout.addWidget(editor)
+        return box, editor
+
+    def _build_preflight_tab(self) -> QWidget:
+        panel = QWidget()
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+
+        intro = QLabel(
+            "Definiert die Druckentscheidung im START-Dialog. "
+            "JSON-Felder sind in Spalten organisiert, um schneller zu arbeiten."
         )
-        queue_layout.addWidget(QLabel(f"{_INV_STOCK_KEY}:"))
-        self._stock_json = QPlainTextEdit()
-        self._stock_json.setPlaceholderText('{"XW-4-001": 5, "XW-6-003": 1}')
-        self._stock_json.setMinimumHeight(90)
-        queue_layout.addWidget(self._stock_json)
-        queue_layout.addWidget(QLabel(f"{_PENDING_REQ_KEY}:"))
-        self._pending_json = QPlainTextEdit()
-        self._pending_json.setPlaceholderText('{"XW-4-001": 7, "XW-6-003": 2}')
-        self._pending_json.setMinimumHeight(90)
-        queue_layout.addWidget(self._pending_json)
-        queue_layout.addWidget(QLabel(f"{_PENDING_COUNTS_KEY}:"))
-        self._pending_counts_json = QPlainTextEdit()
-        self._pending_counts_json.setPlaceholderText(
-            '{"mollie": 3, "gutscheine": 1, "downloads": 2, "refunds": 0}'
+        intro.setWordWrap(True)
+        grid.addWidget(intro, 0, 0, 1, 2)
+
+        stock_box, self._stock_json = self._json_box(_INV_STOCK_KEY, '{"XW-4-001": 5, "XW-6-003": 1}', 90)
+        pending_box, self._pending_json = self._json_box(_PENDING_REQ_KEY, '{"XW-4-001": 7, "XW-6-003": 2}', 90)
+        pending_counts_box, self._pending_counts_json = self._json_box(
+            _PENDING_COUNTS_KEY,
+            '{"mollie": 3, "gutscheine": 1, "downloads": 2, "refunds": 0}',
+            80,
         )
-        self._pending_counts_json.setMinimumHeight(80)
-        queue_layout.addWidget(self._pending_counts_json)
-        queue_layout.addWidget(QLabel(f"{_QUEUE_MOLLIE_KEY}:"))
-        self._queue_mollie_json = QPlainTextEdit()
-        self._queue_mollie_json.setPlaceholderText(
-            '[{"ref": "MOL-1001", "customer": "Max Mustermann", "amount": "19.90", "status": "Authorized", "note": "wartet auf Rechnung"}]'
+        mollie_box, self._queue_mollie_json = self._json_box(
+            _QUEUE_MOLLIE_KEY,
+            '[{"ref": "MOL-1001", "customer": "Max Mustermann", "amount": "19.90", "status": "Authorized", "note": "wartet auf Rechnung"}]',
+            90,
         )
-        self._queue_mollie_json.setMinimumHeight(90)
-        queue_layout.addWidget(self._queue_mollie_json)
-        queue_layout.addWidget(QLabel(f"{_QUEUE_GUTSCHEINE_KEY}:"))
-        self._queue_gutscheine_json = QPlainTextEdit()
-        self._queue_gutscheine_json.setPlaceholderText('[{"ref": "GUT-23", "customer": "Erika Muster", "status": "Offen"}]')
-        self._queue_gutscheine_json.setMinimumHeight(80)
-        queue_layout.addWidget(self._queue_gutscheine_json)
-        queue_layout.addWidget(QLabel(f"{_QUEUE_DOWNLOADS_KEY}:"))
-        self._queue_downloads_json = QPlainTextEdit()
-        self._queue_downloads_json.setPlaceholderText('[{"ref": "DL-1", "customer": "Demo", "status": "Bereit"}]')
-        self._queue_downloads_json.setMinimumHeight(80)
-        queue_layout.addWidget(self._queue_downloads_json)
-        queue_layout.addWidget(QLabel(f"{_QUEUE_REFUNDS_KEY}:"))
-        self._queue_refunds_json = QPlainTextEdit()
-        self._queue_refunds_json.setPlaceholderText('[{"ref": "RF-77", "customer": "Demo", "amount": "-9.90", "status": "Offen"}]')
-        self._queue_refunds_json.setMinimumHeight(80)
-        queue_layout.addWidget(self._queue_refunds_json)
-        queue_layout.addWidget(QLabel(f"{_SENSITIVE_COUNTRIES_KEY}:"))
-        self._sensitive_countries_json = QPlainTextEdit()
-        self._sensitive_countries_json.setPlaceholderText('["RU", "IR", "SY"]')
-        self._sensitive_countries_json.setMinimumHeight(70)
-        queue_layout.addWidget(self._sensitive_countries_json)
-        queue_layout.addWidget(QLabel(f"{_SKU_FLAGS_KEY}:"))
-        self._sku_flags_json = QPlainTextEdit()
-        self._sku_flags_json.setPlaceholderText(
-            '{"exact": ["XW-010", "XW-011"], "prefixes": ["XW-4", "XW-6", "XW-7"]}'
+        gutscheine_box, self._queue_gutscheine_json = self._json_box(
+            _QUEUE_GUTSCHEINE_KEY,
+            '[{"ref": "GUT-23", "customer": "Erika Muster", "status": "Offen"}]',
+            80,
         )
-        self._sku_flags_json.setMinimumHeight(90)
-        queue_layout.addWidget(self._sku_flags_json)
-        queue_layout.addWidget(QLabel(f"{_URGENCY_RULES_KEY}:"))
-        self._urgency_rules_json = QPlainTextEdit()
-        self._urgency_rules_json.setPlaceholderText(
-            '{"generic": ["offen", "pending"], "mollie": ["authorized", "chargeback"], '
-            '"gutscheine": ["ungueltig"], "downloads": ["link fehlt"], "refunds": ["refund"]}'
+        downloads_box, self._queue_downloads_json = self._json_box(
+            _QUEUE_DOWNLOADS_KEY,
+            '[{"ref": "DL-1", "customer": "Demo", "status": "Bereit"}]',
+            80,
         )
-        self._urgency_rules_json.setMinimumHeight(100)
-        queue_layout.addWidget(self._urgency_rules_json)
+        refunds_box, self._queue_refunds_json = self._json_box(
+            _QUEUE_REFUNDS_KEY,
+            '[{"ref": "RF-77", "customer": "Demo", "amount": "-9.90", "status": "Offen"}]',
+            80,
+        )
+        countries_box, self._sensitive_countries_json = self._json_box(
+            _SENSITIVE_COUNTRIES_KEY,
+            '["RU", "IR", "SY"]',
+            70,
+        )
+        sku_flags_box, self._sku_flags_json = self._json_box(
+            _SKU_FLAGS_KEY,
+            '{"exact": ["XW-010", "XW-011"], "prefixes": ["XW-4", "XW-6", "XW-7"]}',
+            90,
+        )
+        urgency_box, self._urgency_rules_json = self._json_box(
+            _URGENCY_RULES_KEY,
+            '{"generic": ["offen", "pending"], "mollie": ["authorized", "chargeback"], "gutscheine": ["ungueltig"], "downloads": ["link fehlt"], "refunds": ["refund"]}',
+            100,
+        )
+
+        grid.addWidget(stock_box, 1, 0)
+        grid.addWidget(pending_box, 1, 1)
+        grid.addWidget(pending_counts_box, 2, 0)
+        grid.addWidget(mollie_box, 2, 1)
+        grid.addWidget(gutscheine_box, 3, 0)
+        grid.addWidget(downloads_box, 3, 1)
+        grid.addWidget(refunds_box, 4, 0)
+        grid.addWidget(countries_box, 4, 1)
+        grid.addWidget(sku_flags_box, 5, 0)
+        grid.addWidget(urgency_box, 5, 1)
+
+        footer = QHBoxLayout()
         self._queue_status = QLabel("—")
         self._queue_status.setStyleSheet("color: #9e9e9e;")
-        queue_layout.addWidget(self._queue_status)
+        footer.addWidget(self._queue_status)
+        footer.addStretch()
         save_queue = QPushButton("Queue speichern")
         save_queue.clicked.connect(self._save_queue_settings)
         save_queue.setEnabled(self._has_settings_repo())
-        queue_layout.addWidget(save_queue)
-        main.addWidget(gb_queue)
+        footer.addWidget(save_queue)
+        grid.addLayout(footer, 6, 0, 1, 2)
 
-        gb_mail_tpl = QGroupBox("Fulfillment E-Mail (HTML)")
-        mail_layout = QVBoxLayout(gb_mail_tpl)
-        mail_layout.addWidget(
-            QLabel(
-                "Globale Vorlage mit Variablen: {{customer_name}}, {{invoice_number}}, {{download_link}}, {{items_html}}"
-            )
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.setRowStretch(7, 1)
+        return panel
+
+    def _build_mail_templates_tab(self) -> QWidget:
+        panel = QWidget()
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(12, 12, 12, 12)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(12)
+
+        gb_template = QGroupBox("Globale Vorlage + Variablen")
+        template_layout = QVBoxLayout(gb_template)
+        info = QLabel(
+            "Variablen: {{customer_name}}, {{invoice_number}}, {{download_link}}, {{items_html}}"
         )
+        info.setWordWrap(True)
+        template_layout.addWidget(info)
+
         self._mail_template_editor = QPlainTextEdit()
-        self._mail_template_editor.setMinimumHeight(180)
+        self._mail_template_editor.setMinimumHeight(320)
         self._mail_template_editor.setPlaceholderText(_DEFAULT_FULFILLMENT_TEMPLATE)
-        mail_layout.addWidget(self._mail_template_editor)
+        template_layout.addWidget(self._mail_template_editor)
 
         mail_btn_row = QHBoxLayout()
-        btn_preview = QPushButton("Live-Vorschau aktualisieren")
+        btn_preview = QPushButton("Vorschau aktualisieren")
         btn_preview.clicked.connect(self._render_fulfillment_preview)
         mail_btn_row.addWidget(btn_preview)
         btn_save_template = QPushButton("Vorlage speichern")
@@ -293,25 +332,33 @@ class SettingsView(QWidget):
         btn_save_template.setEnabled(self._has_settings_repo())
         mail_btn_row.addWidget(btn_save_template)
         mail_btn_row.addStretch()
-        mail_layout.addLayout(mail_btn_row)
+        template_layout.addLayout(mail_btn_row)
 
-        self._mail_template_preview = QTextBrowser()
-        self._mail_template_preview.setOpenExternalLinks(True)
-        self._mail_template_preview.setMinimumHeight(220)
-        mail_layout.addWidget(self._mail_template_preview)
         self._mail_template_status = QLabel("—")
         self._mail_template_status.setStyleSheet("color: #9e9e9e;")
-        mail_layout.addWidget(self._mail_template_status)
-        main.addWidget(gb_mail_tpl)
+        template_layout.addWidget(self._mail_template_status)
 
-        self._load_queue_settings()
-        self._load_fulfillment_mail_template()
+        gb_html = QGroupBox("HTML-Ansicht")
+        html_layout = QVBoxLayout(gb_html)
+        self._mail_template_preview = QTextBrowser()
+        self._mail_template_preview.setOpenExternalLinks(True)
+        self._mail_template_preview.setMinimumHeight(420)
+        html_layout.addWidget(self._mail_template_preview)
 
-        main.addStretch()
-        scroll.setWidget(content)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        gb_plain = QGroupBox("Nur-Text-Ansicht (Outlook)")
+        plain_layout = QVBoxLayout(gb_plain)
+        self._mail_template_plain_preview = QPlainTextEdit()
+        self._mail_template_plain_preview.setReadOnly(True)
+        self._mail_template_plain_preview.setMinimumHeight(420)
+        plain_layout.addWidget(self._mail_template_plain_preview)
+
+        grid.addWidget(gb_template, 0, 0)
+        grid.addWidget(gb_html, 0, 1)
+        grid.addWidget(gb_plain, 0, 2)
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 2)
+        return panel
 
     def _test_db(self) -> None:
         if self._db_worker is not None and self._db_worker.isRunning():
@@ -528,6 +575,9 @@ class SettingsView(QWidget):
         for token, value in substitutions.items():
             preview = preview.replace(token, value)
         self._mail_template_preview.setHtml(preview)
+        doc = QTextDocument()
+        doc.setHtml(preview)
+        self._mail_template_plain_preview.setPlainText(doc.toPlainText())
         self._mail_template_status.setText("Vorschau aktualisiert")
         self._mail_template_status.setStyleSheet(_OK_STYLE)
 

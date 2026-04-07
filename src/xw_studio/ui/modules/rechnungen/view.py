@@ -64,9 +64,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE_COLUMNS = [
-    "RE-NR",
+    "sevDesk",
+    "WIX",
     "Datum",
-    "Status",
+    "🔎",
     "BETRAG",
     "Kunde",
     "Hinweise",
@@ -146,13 +147,12 @@ class _HintsIconDelegate(QStyledItemDelegate):
 
 
 class _ActionsDelegate(QStyledItemDelegate):
-    """Paint action icons (PLC / Refund / Download-Links) in one column."""
+    """Paint action icons (Post/PLC + Wix) in one column."""
 
-    _ACTION_KEYS = ("plc", "refund", "download_links")
+    _ACTION_KEYS = ("post", "wix")
     _ICON_FILES = {
-        "plc": "plc.png",
-        "refund": "refund.png",
-        "download_links": "download_links.png",
+        "post": "post.png",
+        "wix": "wix.png",
     }
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -197,17 +197,13 @@ class _ActionsDelegate(QStyledItemDelegate):
             super().paint(painter, option, index)
             return
 
-        plc_enabled = bool(row_data.get("__plc__enabled"))
-        has_order_ref = bool(row_data.get("__has_order_ref__"))
-
         painter.save()
         y = option.rect.y() + max(2, (option.rect.height() - min(18, max(14, option.rect.height() - 6))) // 2)
         for key, x_local, size in self._layout(option.rect.width(), option.rect.height()):
             pix = self._icon_for_key(key)
             if pix is None:
                 continue
-            enabled = plc_enabled if key in ("plc", "refund") else has_order_ref
-            painter.setOpacity(1.0 if enabled else 0.25)
+            painter.setOpacity(1.0)
             target = option.rect.adjusted(0, 0, 0, 0)
             target.setX(option.rect.x() + x_local)
             target.setY(y)
@@ -1220,14 +1216,12 @@ class RechnungenView(QWidget):
         self._overlay.hide()
 
     def _run_row_action(self, summary: InvoiceSummary, action: str) -> None:
-        if action == "plc":
+        if action == "post":
             self._run_plc_print(summary)
             return
-        if action == "download_links":
+        if action == "wix":
             self._open_wix_download_links(summary)
             return
-        if action == "refund":
-            self._open_refund_dialog(summary)
 
     def _open_wix_download_links(self, summary: InvoiceSummary) -> None:
         if not summary.order_reference.strip():

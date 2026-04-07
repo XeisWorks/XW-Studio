@@ -21,9 +21,10 @@ def test_invoice_summary_from_api_object() -> None:
     assert summary.status_code == 200
     assert summary.contact_name == "Test GmbH"
     row = summary.as_table_row()
-    assert row["RE-NR"] == "R-99"
-    assert row["Status"] == "Offen"
-    assert row["Datum"] == "01.03.2024"
+    assert row["sevDesk"] == "R-99"
+    assert row["WIX"] == "—"
+    assert row["🔎"] == "🟠"
+    assert row["Datum"] == "01.03.24"
     assert row["BETRAG"] == "19,99 €"
     assert "Test GmbH" in summary.detail_lines()
     assert summary.formatted_date == "01.03.2024"
@@ -72,9 +73,9 @@ def test_invoice_summary_highlights_draft_status() -> None:
 
     row = summary.as_table_row()
 
-    assert row["Status"] == "✳ Entwurf"
+    assert row["🔎"] == "📝"
     assert row["__icons__Hinweise"] == []
-    assert "abgearbeitet" in row["__tooltip__Status"]
+    assert "abgearbeitet" in row["__tooltip__🔎"]
 
 
 def test_invoice_summary_detects_plc_and_adds_plc_icon() -> None:
@@ -132,7 +133,7 @@ def test_invoice_summary_coerces_null_invoice_number() -> None:
 
     assert summary.invoice_number == ""
     row = summary.as_table_row()
-    assert row["RE-NR"] == "—"
+    assert row["sevDesk"] == "—"
 
 
 def test_invoice_summary_extracts_country_from_string_code() -> None:
@@ -146,3 +147,23 @@ def test_invoice_summary_extracts_country_from_string_code() -> None:
     )
 
     assert summary.display_country == "DE"
+
+
+def test_invoice_summary_wix_order_column_uses_order_number_not_uuid() -> None:
+    numeric_ref = InvoiceSummary.model_validate(
+        {
+            "id": "77",
+            "invoiceNumber": "R-77",
+            "order_reference": "WIX-10023",
+        }
+    )
+    uuid_ref = InvoiceSummary.model_validate(
+        {
+            "id": "78",
+            "invoiceNumber": "R-78",
+            "order_reference": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        }
+    )
+
+    assert numeric_ref.as_table_row()["WIX"] == "10023"
+    assert uuid_ref.as_table_row()["WIX"] == "—"
