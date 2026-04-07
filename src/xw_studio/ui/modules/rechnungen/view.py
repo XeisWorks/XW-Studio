@@ -519,6 +519,8 @@ class RechnungenView(QWidget):
         self._table.setItemDelegateForColumn(actions_col, self._actions_delegate)
         self._table.clicked.connect(self._on_table_clicked)
         self._table.viewport().installEventFilter(self)
+        self._table.setMouseTracking(True)
+        self._table.viewport().setMouseTracking(True)
         self._table.setSortingEnabled(False)
         self._table.horizontalHeader().setSectionsClickable(False)
         self._table.horizontalHeader().resizeSection(hint_col, 150)
@@ -1095,6 +1097,37 @@ class RechnungenView(QWidget):
         self._last_plc_invoice = summary.invoice_number or summary.id
         self._plc_last.setText(f"Letzter PLC-Druck: {self._last_plc_invoice}")
 
+    def _open_plc_post_popup(self, summary: InvoiceSummary) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Post Label Center (PLC)")
+        dlg.setMinimumWidth(460)
+
+        layout = QVBoxLayout(dlg)
+        info = QLabel(
+            "PLC-Aktion wie im alten Tkinter-Flow.\n"
+            "Nach Klick auf Druck starten öffnet sich der PLC-Label-Druckdialog."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        details = QLabel(
+            f"Rechnung: {summary.invoice_number or summary.id}\n"
+            f"Wix-Referenz: {summary.order_reference or '—'}"
+        )
+        details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details.setWordWrap(True)
+        layout.addWidget(details)
+
+        buttons = QDialogButtonBox(self)
+        start_btn = buttons.addButton("Druck starten", QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.addButton("Abbrechen", QDialogButtonBox.ButtonRole.RejectRole)
+        start_btn.clicked.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._run_plc_print(summary)
+
     def _on_print_music_clicked(self) -> None:
         if not self._print_allowed:
             return
@@ -1118,13 +1151,36 @@ class RechnungenView(QWidget):
         self._table.selectRow(row)
 
     def eventFilter(self, watched: Any, event: QEvent) -> bool:  # type: ignore[override]
-        if watched is self._table.viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+        if watched is self._table.viewport() and event.type() in (
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonRelease,
+            QEvent.Type.Leave,
+        ):
+            if event.type() == QEvent.Type.Leave:
+                self._table.viewport().unsetCursor()
+                return super().eventFilter(watched, event)
             if isinstance(event, QMouseEvent):
                 index = self._table.indexAt(event.position().toPoint())
                 if index.isValid():
+                    actions_col = _TABLE_COLUMNS.index("AKTIONEN")
+                    if event.type() == QEvent.Type.MouseMove:
+                        if int(index.column()) == actions_col:
+                            rect = self._table.visualRect(index)
+                            action = self._actions_delegate.action_at_x(
+                                local_x=event.position().x() - rect.x(),
+                                width=rect.width(),
+                                height=rect.height(),
+                            )
+                            if action:
+                                self._table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
+                            else:
+                                self._table.viewport().unsetCursor()
+                        else:
+                            self._table.viewport().unsetCursor()
+                        return super().eventFilter(watched, event)
+
                     self._table.selectRow(int(index.row()))
                     fulfillment_col = _TABLE_COLUMNS.index("FULFILLMENT")
-                    actions_col = _TABLE_COLUMNS.index("AKTIONEN")
                     if int(index.column()) == fulfillment_col:
                         rect = self._table.visualRect(index)
                         chip = self._fulfillment_delegate.chip_at_x(
@@ -1151,6 +1207,8 @@ class RechnungenView(QWidget):
                             row = int(source_index.row())
                             if 0 <= row < len(self._summaries):
                                 self._run_row_action(self._summaries[row], action)
+                else:
+                    self._table.viewport().unsetCursor()
         return super().eventFilter(watched, event)
 
     def _run_fulfillment_chip_action(
@@ -1217,7 +1275,7 @@ class RechnungenView(QWidget):
 
     def _run_row_action(self, summary: InvoiceSummary, action: str) -> None:
         if action == "post":
-            self._run_plc_print(summary)
+            self._open_plc_post_popup(summary)
             return
         if action == "wix":
             self._open_wix_download_links(summary)
