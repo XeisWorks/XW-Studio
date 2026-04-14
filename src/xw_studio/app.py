@@ -92,6 +92,6 @@ def create_application() -> QApplication:
 
     from xw_studio.ui.main_window import MainWindow
     window = MainWindow(container)
-    window.show()
+    window.showMaximized()
 
     return app

@@ -291,6 +291,21 @@ class TagesgeschaeftView(QWidget):
         self._wait_for_workers()
         super().closeEvent(event)
 
+    def has_active_flow(self) -> bool:
+        return any(
+            worker is not None and worker.isRunning()
+            for worker in (
+                self._start_worker,
+                self._start_exec_worker,
+                self._reprint_worker,
+                self._reprint_exec_worker,
+            )
+        )
+
+    def prepare_shutdown(self) -> None:
+        self._badge_timer.stop()
+        self._wait_for_workers()
+
     def _wait_for_workers(self) -> None:
         for worker in (self._badge_worker, self._start_worker, self._start_exec_worker, 
                        self._reprint_worker, self._reprint_exec_worker):
@@ -625,6 +640,19 @@ class TagesgeschaeftView(QWidget):
 
     def _on_beenden_clicked(self) -> None:
         """Gracefully shut down the application."""
+        if self.has_active_flow():
+            QMessageBox.warning(
+                self,
+                "App beenden",
+                "Es laeuft noch ein Workflow. Bitte zuerst STOP bzw. den laufenden Flow abschliessen.",
+            )
+            return
+        logger.info("User requested application shutdown via BEENDEN button.")
+        window = self.window()
+        if isinstance(window, QWidget):
+            window.close()
+            return
+        QApplication.quit()
         running = any(
             w is not None and w.isRunning()
             for w in (

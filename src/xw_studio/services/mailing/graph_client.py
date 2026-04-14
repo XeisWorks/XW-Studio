@@ -199,7 +199,7 @@ class GraphMailClient:
         mailbox_user = str(mailbox_user or "").strip()
         self.mailbox_user = mailbox_user or None
         self._mailbox_segment = f"users/{mailbox_user}" if mailbox_user else "me"
-        self.scopes = scopes or ["Mail.Read", "Mail.Read.Shared", "Mail.Send"]
+        self.scopes = scopes or ["Mail.Read", "Mail.Read.Shared", "Mail.Send", "Mail.Send.Shared"]
         self._cache_path = cache_path or default_graph_cache_path()
         self._cache = msal.SerializableTokenCache()
         self._load_cache()
@@ -270,11 +270,13 @@ class GraphMailClient:
             },
             "toRecipients": [{"emailAddress": {"address": to_email}}],
         }
+        if self.mailbox_user:
+            message["from"] = {"emailAddress": {"address": self.mailbox_user}}
         attachment_items = self._build_attachment_payloads(attachments or [])
         if attachment_items:
             message["attachments"] = attachment_items
         payload = {"message": message, "saveToSentItems": True}
-        url = f"https://graph.microsoft.com/v1.0/{self._mailbox_segment}/sendMail"
+        url = "https://graph.microsoft.com/v1.0/me/sendMail"
         response = requests.post(url, headers=self._auth_headers(), json=payload, timeout=60)
         self._raise_for_status(response)
 
