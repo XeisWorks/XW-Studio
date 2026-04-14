@@ -59,13 +59,7 @@ _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "GOOGLE_MAPS_API_KEY",
     "MS_GRAPH_CLIENT_ID",
     "MS_GRAPH_TENANT_ID",
-    "SMTP_HOST",
-    "SMTP_PORT",
-    "SMTP_USERNAME",
-    "SMTP_PASSWORD",
-    "SMTP_FROM",
-    "SMTP_STARTTLS",
-    "SMTP_SSL",
+    "MS_GRAPH_MAILBOX",
     "FON_TEILNEHMER_ID",
     "FON_BENUTZER_ID",
     "FON_PIN",
@@ -672,9 +666,9 @@ class SettingsView(QWidget):
             QMessageBox.warning(
                 self,
                 "Test-Mail",
-                "Bitte zuerst SMTP konfigurieren (fehlend: SMTP_HOST oder SMTP_FROM).",
+                "Bitte zuerst MS Graph konfigurieren (fehlend: MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID oder MS_GRAPH_MAILBOX).",
             )
-            self._mail_template_status.setText("SMTP-Konfiguration fehlt")
+            self._mail_template_status.setText("MS-Graph-Konfiguration fehlt")
             self._mail_template_status.setStyleSheet(_ERR_STYLE)
             return
 

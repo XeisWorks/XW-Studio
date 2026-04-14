@@ -1,13 +1,14 @@
-"""SMTP-backed mail delivery for invoice/customer messages."""
+"""Microsoft Graph-backed mail delivery for invoice/customer messages."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from email.message import EmailMessage
 import html
 import os
+from pathlib import Path
 import re
-import smtplib
 from typing import TYPE_CHECKING
+
+from xw_studio.services.mailing.graph_client import GraphMailClient, default_graph_cache_path
 
 if TYPE_CHECKING:
     from xw_studio.services.secrets.service import SecretService
@@ -23,57 +24,60 @@ class MailAttachment:
 
 
 @dataclass(frozen=True)
-class SmtpConfig:
-    """Resolved SMTP configuration from DB/env secrets."""
+class GraphMailConfig:
+    """Resolved Graph mail configuration from DB/env secrets."""
 
-    host: str
-    port: int
-    username: str
-    password: str
-    sender: str
-    use_starttls: bool
-    use_ssl: bool
+    tenant_id: str
+    client_id: str
+    mailbox_user: str
+    cache_path: Path
 
 
 class MailDeliveryService:
-    """Render and send multipart customer mails via SMTP."""
+    """Render and send customer mails via Microsoft Graph only."""
 
     def __init__(self, *, secret_service: "SecretService | None" = None) -> None:
         self._secrets = secret_service
+        self._client: GraphMailClient | None = None
+        self._client_key: tuple[str, str, str, str] | None = None
 
     def is_configured(self) -> bool:
         try:
-            config = self.load_smtp_config()
+            self.load_graph_config()
         except RuntimeError:
             return False
-        return bool(config.host and config.sender)
+        return True
 
-    def load_smtp_config(self) -> SmtpConfig:
-        host = self._secret_or_env("SMTP_HOST")
-        port_raw = self._secret_or_env("SMTP_PORT", "587")
-        username = self._secret_or_env("SMTP_USERNAME")
-        password = self._secret_or_env("SMTP_PASSWORD")
-        sender = self._secret_or_env("SMTP_FROM", username)
-        use_starttls = self._secret_or_env("SMTP_STARTTLS", "1").lower() not in {"0", "false", "no"}
-        use_ssl = self._secret_or_env("SMTP_SSL", "0").lower() in {"1", "true", "yes"}
+    def load_graph_config(self) -> GraphMailConfig:
+        tenant_id = self._secret_or_env("MS_GRAPH_TENANT_ID")
+        client_id = self._secret_or_env("MS_GRAPH_CLIENT_ID")
+        mailbox_user = self._secret_or_env("MS_GRAPH_MAILBOX")
+        cache_override = self._secret_or_env("XW_STUDIO_MSAL_CACHE_PATH") or self._secret_or_env(
+            "SEVDESK_MSAL_CACHE_PATH"
+        )
 
-        missing = [name for name, value in (("SMTP_HOST", host), ("SMTP_FROM", sender)) if not value]
+        missing = [
+            name
+            for name, value in (
+                ("MS_GRAPH_TENANT_ID", tenant_id),
+                ("MS_GRAPH_CLIENT_ID", client_id),
+                ("MS_GRAPH_MAILBOX", mailbox_user),
+            )
+            if not value
+        ]
         if missing:
-            raise RuntimeError(f"SMTP-Konfiguration fehlt: {', '.join(missing)}")
+            raise RuntimeError(f"MS-Graph-Konfiguration fehlt: {', '.join(missing)}")
 
-        try:
-            port = int(port_raw)
-        except ValueError:
-            port = 587
+        cache_path = default_graph_cache_path()
+        if cache_override:
+            raw_path = Path(os.path.expandvars(os.path.expanduser(cache_override)))
+            cache_path = raw_path if raw_path.is_absolute() else Path.cwd() / raw_path
 
-        return SmtpConfig(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            sender=sender,
-            use_starttls=use_starttls,
-            use_ssl=use_ssl,
+        return GraphMailConfig(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            mailbox_user=mailbox_user,
+            cache_path=cache_path,
         )
 
     def send_mail(
@@ -85,43 +89,15 @@ class MailDeliveryService:
         html_body: str = "",
         attachments: list[MailAttachment] | None = None,
     ) -> None:
-        config = self.load_smtp_config()
-        message = EmailMessage()
-        message["From"] = config.sender
-        message["To"] = str(to_email or "").strip()
-        message["Subject"] = str(subject or "").strip()
-        message.set_content(str(text_body or "").strip())
-
-        html_content = str(html_body or "").strip()
-        if html_content:
-            message.add_alternative(html_content, subtype="html")
-
-        for attachment in attachments or []:
-            if not attachment.content:
-                continue
-            maintype, _, subtype = str(attachment.mime_type or "application/octet-stream").partition("/")
-            if not maintype or not subtype:
-                maintype, subtype = "application", "octet-stream"
-            message.add_attachment(
-                attachment.content,
-                maintype=maintype,
-                subtype=subtype,
-                filename=str(attachment.filename or "attachment.bin"),
-            )
-
-        if config.use_ssl:
-            with smtplib.SMTP_SSL(config.host, config.port, timeout=20) as smtp:
-                if config.username:
-                    smtp.login(config.username, config.password)
-                smtp.send_message(message)
-            return
-
-        with smtplib.SMTP(config.host, config.port, timeout=20) as smtp:
-            if config.use_starttls:
-                smtp.starttls()
-            if config.username:
-                smtp.login(config.username, config.password)
-            smtp.send_message(message)
+        config = self.load_graph_config()
+        client = self._client_for_config(config)
+        client.send_mail(
+            to_email=to_email,
+            subject=subject,
+            body_text=str(text_body or "").strip(),
+            body_html=str(html_body or "").strip(),
+            attachments=list(attachments or []),
+        )
 
     @staticmethod
     def plain_text_to_html(value: str) -> str:
@@ -134,6 +110,18 @@ class MailDeliveryService:
             escaped = html.escape(paragraph).replace("\n", "<br>")
             html_parts.append(f"<p>{escaped}</p>")
         return "\n".join(html_parts)
+
+    def _client_for_config(self, config: GraphMailConfig) -> GraphMailClient:
+        key = (config.tenant_id, config.client_id, config.mailbox_user, str(config.cache_path))
+        if self._client is None or self._client_key != key:
+            self._client = GraphMailClient(
+                tenant_id=config.tenant_id,
+                client_id=config.client_id,
+                mailbox_user=config.mailbox_user or None,
+                cache_path=config.cache_path,
+            )
+            self._client_key = key
+        return self._client
 
     def _secret_or_env(self, key: str, default: str = "") -> str:
         value = ""

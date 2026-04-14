@@ -570,7 +570,7 @@ class InvoiceProcessingService:
         if not to_email:
             raise RuntimeError("Keine E-Mail-Adresse fuer Rechnungsversand")
         if self._mail_service is None or not self._mail_service.is_configured():
-            raise RuntimeError("SMTP-Konfiguration fuer Rechnungsmail fehlt")
+            raise RuntimeError("MS-Graph-Konfiguration fuer Rechnungsmail fehlt")
         subject, text_body = self._build_mail_content(summary, invoice)
         html_body = self._build_mail_html(text_body)
         attachment = self._build_invoice_attachment(summary, invoice)

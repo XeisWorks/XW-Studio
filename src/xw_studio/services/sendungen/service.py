@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -11,6 +10,7 @@ from typing import Any
 import httpx
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
+from xw_studio.services.mailing.graph_client import GraphMailClient, html_to_text
 from xw_studio.services.secrets.service import SecretService
 
 logger = logging.getLogger(__name__)
@@ -161,30 +161,42 @@ class OffeneSendungenService:
         return self._fallback_summary(case)
 
     def _fetch_graph_messages(self, *, lookback_days: int, max_items: int) -> list[dict[str, Any]]:
-        token = self._secrets.get_secret("MS_GRAPH_ACCESS_TOKEN")
-        mailbox = self._secrets.get_secret("MS_GRAPH_MAILBOX")
-        if not token or not mailbox:
+        client = self._graph_client()
+        if client is None:
             return self._load_cached_raw_messages()
-
-        since = (datetime.now(timezone.utc) - timedelta(days=max(1, lookback_days))).strftime("%Y-%m-%dT%H:%M:%SZ")
-        endpoint = f"https://graph.microsoft.com/v1.0/users/{mailbox}/messages"
-        params = {
-            "$top": str(max(1, min(max_items, 200))),
-            "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,bodyPreview,body,receivedDateTime,conversationId",
-            "$filter": f"receivedDateTime ge {since}",
-        }
-        headers = {"Authorization": f"Bearer {token}"}
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(endpoint, params=params, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        values = payload.get("value") if isinstance(payload, dict) else []
-        if not isinstance(values, list):
-            return []
-        filtered = [item for item in values if isinstance(item, dict) and self._is_sendung_candidate(item)]
+        try:
+            values = client.list_inbox_messages(days=max(1, lookback_days), top=max(1, min(max_items, 200)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MS Graph fetch failed for offene Sendungen: %s", exc)
+            return self._load_cached_raw_messages()
+        normalized = [self._normalize_graph_message(item) for item in values]
+        filtered = [item for item in normalized if self._is_sendung_candidate(item)]
         self._save_raw_messages(filtered)
         return filtered
+
+    def _graph_client(self) -> GraphMailClient | None:
+        tenant_id = self._secrets.get_secret("MS_GRAPH_TENANT_ID")
+        client_id = self._secrets.get_secret("MS_GRAPH_CLIENT_ID")
+        mailbox = self._secrets.get_secret("MS_GRAPH_MAILBOX")
+        if not tenant_id or not client_id:
+            return None
+        return GraphMailClient(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            mailbox_user=mailbox or None,
+        )
+
+    @staticmethod
+    def _normalize_graph_message(msg: dict[str, Any]) -> dict[str, Any]:
+        body_obj = msg.get("body") if isinstance(msg.get("body"), dict) else {}
+        content = str(body_obj.get("content") or "").strip()
+        content_type = str(body_obj.get("contentType") or "").strip()
+        normalized = dict(msg)
+        normalized["body"] = {
+            "content": html_to_text(content) if content and content_type.lower() == "html" else content,
+            "contentType": "text",
+        }
+        return normalized
 
     @staticmethod
     def _is_sendung_candidate(msg: dict[str, Any]) -> bool:
