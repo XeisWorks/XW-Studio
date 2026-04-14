@@ -23,6 +23,7 @@ from xw_studio.services.invoice_processing.service import InvoiceProcessingServi
 from xw_studio.services.draft_invoice.service import DraftInvoiceService
 from xw_studio.services.sendungen.service import OffeneSendungenService
 from xw_studio.services.layout.service import LayoutToolsService
+from xw_studio.services.mailing.service import MailDeliveryService
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
@@ -95,6 +96,7 @@ def register_default_services(container: Container) -> None:
             c.resolve(InvoiceClient),
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
             c.resolve(WixOrdersClient),
+            c.resolve(MailDeliveryService),
         ),
     )
     container.register(
@@ -183,6 +185,10 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
+    container.register(
+        MailDeliveryService,
+        lambda c: MailDeliveryService(secret_service=c.resolve(SecretService)),
+    )
     container.register(
         CalculationService,
         lambda c: CalculationService(

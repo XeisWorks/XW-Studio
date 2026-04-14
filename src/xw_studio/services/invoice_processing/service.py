@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import html
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 from xw_studio.core.config import AppConfig
+from xw_studio.services.mailing.service import MailAttachment, MailDeliveryService
 from xw_studio.services.printing.invoice_printer import InvoicePrinter
 from xw_studio.services.printing.label_printer import LabelPrinter
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient, InvoiceSummary
@@ -23,12 +25,30 @@ logger = logging.getLogger(__name__)
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
 _SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _FULFILLMENT_STATUS_KEY = "rechnungen.fulfillment_status"
+_FULFILLMENT_MAIL_TEMPLATE_KEY = "rechnungen.fulfillment_mail_template_html"
+_FULFILLMENT_MAIL_SUBJECT_KEY = "rechnungen.fulfillment_mail_subject"
 
 _DEFAULT_SKU_FLAGS = {
     "exact": ["XW-010", "XW-011", "XW-600.0"],
     "prefixes": ["XW-4", "XW-6", "XW-7", "XW-12"],
 }
 _SKU_TOKEN_RE = re.compile(r"\bXW-[A-Z0-9][A-Z0-9.-]*\b", re.IGNORECASE)
+_LEGACY_MAIL_SUBJECT = "Ihre Rechnung {invoice_number}"
+_LEGACY_MAIL_BODY = (
+    "Guten Tag,\n\n"
+    "wir freuen uns, Ihnen mitteilen zu können, dass Ihre Bestellung soeben versendet wurde.\n\n"
+    "Die bestellten Produkte befinden sich nun auf dem Weg zu Ihnen. Je nach Versandart und Zielort kann die Zustellung einige Werktage in Anspruch nehmen.\n\n"
+    "Die zugehörige Rechnung finden Sie im Anhang dieser E-Mail.\n\n"
+    "Sollten Sie in der Zwischenzeit Fragen zu Ihrer Bestellung oder zum Lieferstatus haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.\n\n"
+    "Vielen Dank für Ihr Vertrauen und Ihre Bestellung.\n\n"
+    "Mit freundlichen Grüßen\n"
+    "XeisWorks\n"
+    "Mag. Bernhard Holl\n"
+    "Johnsbach 92\n"
+    "8912 Admont\n"
+    "office@xeisworks.at\n"
+    "www.xeisworks.at\n"
+)
 
 
 @dataclass(frozen=True)
@@ -44,6 +64,7 @@ class FulfillmentFlags:
     payment_booked: bool = False
     last_run_iso: str = ""
     last_error: str = ""
+    last_warning: str = ""
 
     def as_row_payload(self) -> dict[str, object]:
         return {
@@ -56,6 +77,7 @@ class FulfillmentFlags:
             "payment_booked": self.payment_booked,
             "last_run_iso": self.last_run_iso,
             "last_error": self.last_error,
+            "last_warning": self.last_warning,
         }
 
     @classmethod
@@ -72,6 +94,7 @@ class FulfillmentFlags:
             payment_booked=bool(payload.get("payment_booked")),
             last_run_iso=str(payload.get("last_run_iso") or ""),
             last_error=str(payload.get("last_error") or ""),
+            last_warning=str(payload.get("last_warning") or ""),
         )
 
 
@@ -84,14 +107,18 @@ class InvoiceProcessingService:
         invoice_client: InvoiceClient,
         settings_repo: SettingKvRepository | None = None,
         wix_orders: WixOrdersClient | None = None,
+        mail_service: MailDeliveryService | None = None,
     ) -> None:
         self._invoices = invoice_client
         self._settings_repo = settings_repo
         self._wix_orders = wix_orders
         self._invoice_printer = InvoicePrinter(config.printing)
         self._label_printer = LabelPrinter(config.printing)
+        self._invoice_pdf_cache: dict[str, bytes] = {}
         self._wix_address_cache: dict[str, list[str]] = {}
         self._wix_digital_cache: dict[str, bool] = {}
+        self._wix_order_summary_cache: dict[str, dict[str, str]] = {}
+        self._mail_service = mail_service
 
     def load_invoice_table_rows(
         self,
@@ -190,6 +217,7 @@ class InvoiceProcessingService:
         *,
         full_mode: bool,
         should_abort: Callable[[], bool] | None = None,
+        mail_recipient_override: str | None = None,
     ) -> dict[str, object]:
         """Execute invoice processing flow for all open drafts (status=100)."""
         started = time.perf_counter()
@@ -211,11 +239,12 @@ class InvoiceProcessingService:
             try:
                 digital_only = full_mode and self._is_digital_only(summary)
                 flags = self._run_finalize_step(summary, flags, digital_only=digital_only)
-                if full_mode and not digital_only:
-                    flags = self._run_invoice_print_step(summary, flags)
-                    flags = self._run_label_print_step(summary, flags)
+                if full_mode:
+                    if not digital_only:
+                        flags = self._run_invoice_print_step(summary, flags)
+                        flags = self._run_label_print_step(summary, flags)
                     flags = self._run_product_step(summary, flags)
-                flags = self._run_mail_step(summary, flags)
+                flags = self._run_mail_step(summary, flags, recipient_override=mail_recipient_override)
                 successful += 1
             except Exception as exc:
                 failures += 1
@@ -290,6 +319,18 @@ class InvoiceProcessingService:
         self._wix_address_cache[ref] = list(lines)
         return list(lines)
 
+    def _get_wix_order_summary_cached(self, reference: str) -> dict[str, str]:
+        ref = str(reference or "").strip()
+        if not ref or self._wix_orders is None or not self._wix_orders.has_credentials():
+            return {}
+        cached = self._wix_order_summary_cache.get(ref)
+        if cached is not None:
+            return dict(cached)
+        summary = self._wix_orders.resolve_order_summary(ref)
+        normalized = summary if isinstance(summary, dict) else {}
+        self._wix_order_summary_cache[ref] = dict(normalized)
+        return dict(normalized)
+
     def _is_digital_only(self, summary: InvoiceSummary) -> bool:
         ref = str(summary.order_reference or "").strip()
         if not ref or self._wix_orders is None or not self._wix_orders.has_credentials():
@@ -305,7 +346,13 @@ class InvoiceProcessingService:
         self._wix_digital_cache[ref] = resolved
         return resolved
 
-    def retry_fulfillment_step(self, invoice_id: str, step: str) -> FulfillmentFlags:
+    def retry_fulfillment_step(
+        self,
+        invoice_id: str,
+        step: str,
+        *,
+        mail_recipient_override: str | None = None,
+    ) -> FulfillmentFlags:
         """Retry one fulfillment step for a single invoice and persist state."""
         summary = self._load_summary_by_id(invoice_id)
         flags = self.read_fulfillment_flags(summary.id)
@@ -316,7 +363,7 @@ class InvoiceProcessingService:
         elif step == "product_ready":
             next_flags = self._run_product_step(summary, flags)
         elif step == "mail_sent":
-            next_flags = self._run_mail_step(summary, flags)
+            next_flags = self._run_mail_step(summary, flags, recipient_override=mail_recipient_override)
         elif step == "wix_fulfilled":
             next_flags = self._run_product_step(summary, flags)
         else:
@@ -348,18 +395,7 @@ class InvoiceProcessingService:
         if not lines:
             raise RuntimeError("Keine Lieferadresse für Labeldruck")
         self._label_printer.print_address(lines)
-        stamped = self._stamp(flags)
-        next_flags = FulfillmentFlags(
-            label_printed=True,
-            invoice_printed=stamped.invoice_printed,
-            product_ready=stamped.product_ready,
-            mail_sent=stamped.mail_sent,
-            wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=stamped.payment_applicable,
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
-        )
+        next_flags = self._next_flags(flags, label_printed=True)
         self.write_fulfillment_flags(summary.id, next_flags)
         return next_flags
 
@@ -394,9 +430,27 @@ class InvoiceProcessingService:
             wix_fulfilled=flags.wix_fulfilled,
             payment_applicable=flags.payment_applicable,
             payment_booked=flags.payment_booked,
-            last_run_iso=datetime.utcnow().isoformat(timespec="seconds"),
+            last_run_iso=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             last_error=flags.last_error,
+            last_warning=flags.last_warning,
         )
+
+    def _next_flags(self, flags: FulfillmentFlags, **overrides: object) -> FulfillmentFlags:
+        stamped = self._stamp(flags)
+        data: dict[str, object] = {
+            "label_printed": stamped.label_printed,
+            "invoice_printed": stamped.invoice_printed,
+            "product_ready": stamped.product_ready,
+            "mail_sent": stamped.mail_sent,
+            "wix_fulfilled": stamped.wix_fulfilled,
+            "payment_applicable": stamped.payment_applicable,
+            "payment_booked": stamped.payment_booked,
+            "last_run_iso": stamped.last_run_iso,
+            "last_error": "",
+            "last_warning": "",
+        }
+        data.update(overrides)
+        return FulfillmentFlags(**data)
 
     def _with_error(self, flags: FulfillmentFlags, exc: Exception) -> FulfillmentFlags:
         stamped = self._stamp(flags)
@@ -410,6 +464,22 @@ class InvoiceProcessingService:
             payment_booked=stamped.payment_booked,
             last_run_iso=stamped.last_run_iso,
             last_error=str(exc),
+            last_warning=stamped.last_warning,
+        )
+
+    def _with_warning(self, flags: FulfillmentFlags, message: str) -> FulfillmentFlags:
+        stamped = self._stamp(flags)
+        return FulfillmentFlags(
+            label_printed=stamped.label_printed,
+            invoice_printed=stamped.invoice_printed,
+            product_ready=stamped.product_ready,
+            mail_sent=stamped.mail_sent,
+            wix_fulfilled=stamped.wix_fulfilled,
+            payment_applicable=stamped.payment_applicable,
+            payment_booked=stamped.payment_booked,
+            last_run_iso=stamped.last_run_iso,
+            last_error="",
+            last_warning=str(message or "").strip(),
         )
 
     def _run_finalize_step(
@@ -419,41 +489,20 @@ class InvoiceProcessingService:
         *,
         digital_only: bool = False,
     ) -> FulfillmentFlags:
-        send_type = "VM" if digital_only or not summary.order_reference.strip() else "PRN"
+        send_type = "VM" if digital_only or not summary.order_reference.strip() else "VPR"
         self._invoices.send_invoice_document(summary.id, send_type=send_type, send_draft=False)
-        stamped = self._stamp(flags)
-        return FulfillmentFlags(
-            label_printed=stamped.label_printed,
-            invoice_printed=stamped.invoice_printed,
-            product_ready=stamped.product_ready,
-            mail_sent=stamped.mail_sent or send_type == "VM",
-            wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=stamped.payment_applicable or bool(summary.order_reference.strip()),
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
+        return self._next_flags(
+            flags,
+            payment_applicable=(self._stamp(flags).payment_applicable or bool(summary.order_reference.strip())),
         )
 
     def _run_invoice_print_step(self, summary: InvoiceSummary, flags: FulfillmentFlags) -> FulfillmentFlags:
-        # Keep old app behavior: fetch invoice PDF bytes and dispatch to invoice printer.
-        self._invoices.render_invoice_pdf(summary.id)
-        pdf_bytes = self._invoices.get_invoice_pdf(summary.id)
+        pdf_bytes = self._get_invoice_pdf_bytes(summary.id)
         if not pdf_bytes:
             raise RuntimeError("PDF nicht verfügbar")
         self._invoice_printer.print_pdf_bytes(pdf_bytes)
         logger.info("Invoice %s printed", summary.invoice_number or summary.id)
-        stamped = self._stamp(flags)
-        return FulfillmentFlags(
-            label_printed=stamped.label_printed,
-            invoice_printed=True,
-            product_ready=stamped.product_ready,
-            mail_sent=stamped.mail_sent,
-            wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=stamped.payment_applicable,
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
-        )
+        return self._next_flags(flags, invoice_printed=True)
 
     def _run_label_print_step(self, summary: InvoiceSummary, flags: FulfillmentFlags) -> FulfillmentFlags:
         if not flags.invoice_printed:
@@ -464,82 +513,69 @@ class InvoiceProcessingService:
             raise RuntimeError("Keine Lieferadresse für Labeldruck")
         self._label_printer.print_address(lines)
         logger.info("Invoice %s label printed", summary.invoice_number or summary.id)
-        stamped = self._stamp(flags)
-        return FulfillmentFlags(
-            label_printed=True,
-            invoice_printed=stamped.invoice_printed,
-            product_ready=stamped.product_ready,
-            mail_sent=stamped.mail_sent,
-            wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=stamped.payment_applicable,
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
-        )
+        return self._next_flags(flags, label_printed=True)
 
     def _run_product_step(self, summary: InvoiceSummary, flags: FulfillmentFlags) -> FulfillmentFlags:
         if not summary.order_reference.strip() or self._wix_orders is None:
-            stamped = self._stamp(flags)
-            return FulfillmentFlags(
-                label_printed=stamped.label_printed,
-                invoice_printed=stamped.invoice_printed,
-                product_ready=False,
-                mail_sent=stamped.mail_sent,
-                wix_fulfilled=False,
-                payment_applicable=stamped.payment_applicable,
-                payment_booked=stamped.payment_booked,
-                last_run_iso=stamped.last_run_iso,
-                last_error="",
-            )
+            return self._next_flags(flags, product_ready=False, wix_fulfilled=False)
 
-        items = self._wix_orders.get_fulfillable_items(summary.order_reference)
+        reference = summary.order_reference.strip()
+        digital_only = self._is_digital_only(summary)
+        fulfillment_status = ""
+        if hasattr(self._wix_orders, "fulfillment_status"):
+            try:
+                fulfillment_status = str(self._wix_orders.fulfillment_status(reference) or "").strip().upper()
+            except Exception as exc:
+                logger.warning("Wix fulfillment-status resolve failed ref=%s: %s", reference, exc)
+
+        items = self._wix_orders.get_fulfillable_items(reference)
         if not items:
-            # Already fulfilled or not applicable.
-            stamped = self._stamp(flags)
-            return FulfillmentFlags(
-                label_printed=stamped.label_printed,
-                invoice_printed=stamped.invoice_printed,
-                product_ready=True,
-                mail_sent=stamped.mail_sent,
-                wix_fulfilled=True,
-                payment_applicable=stamped.payment_applicable,
-                payment_booked=stamped.payment_booked,
-                last_run_iso=stamped.last_run_iso,
-                last_error="",
+            existing_fulfillments = self._wix_orders.list_fulfillments(reference)
+            if existing_fulfillments or fulfillment_status == "FULFILLED":
+                return self._next_flags(flags, product_ready=True, wix_fulfilled=True)
+            message = (
+                f"Wix-Fulfillment nicht bestaetigt: keine fulfillable items fuer {reference}"
+                if not digital_only
+                else f"Wix-Digital-Fulfillment nicht bestaetigt fuer {reference}"
             )
+            return self._next_flags(flags, product_ready=True, wix_fulfilled=False, last_warning=message)
 
-        created = self._wix_orders.create_fulfillment(summary.order_reference, items)
+        created = self._wix_orders.create_fulfillment(reference, items)
         if not created:
-            raise RuntimeError("Wix-Fulfillment konnte nicht erstellt werden")
-        stamped = self._stamp(flags)
-        return FulfillmentFlags(
-            label_printed=stamped.label_printed,
-            invoice_printed=stamped.invoice_printed,
-            product_ready=True,
-            mail_sent=stamped.mail_sent,
-            wix_fulfilled=True,
-            payment_applicable=stamped.payment_applicable,
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
-        )
+            return self._next_flags(
+                flags,
+                product_ready=True,
+                wix_fulfilled=False,
+                last_warning=f"Wix-Fulfillment konnte nicht erstellt werden fuer {reference}",
+            )
+        return self._next_flags(flags, product_ready=True, wix_fulfilled=True)
 
-    def _run_mail_step(self, summary: InvoiceSummary, flags: FulfillmentFlags) -> FulfillmentFlags:
+    def _run_mail_step(
+        self,
+        summary: InvoiceSummary,
+        flags: FulfillmentFlags,
+        *,
+        recipient_override: str | None = None,
+    ) -> FulfillmentFlags:
         if flags.mail_sent:
             return self._stamp(flags)
-        self._invoices.send_invoice_document(summary.id, send_type="VM", send_draft=False)
-        stamped = self._stamp(flags)
-        return FulfillmentFlags(
-            label_printed=stamped.label_printed,
-            invoice_printed=stamped.invoice_printed,
-            product_ready=stamped.product_ready,
-            mail_sent=True,
-            wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=stamped.payment_applicable,
-            payment_booked=stamped.payment_booked,
-            last_run_iso=stamped.last_run_iso,
-            last_error="",
+        invoice = self._invoices.fetch_invoice_by_id(summary.id)
+        to_email = str(recipient_override or "").strip() or self._resolve_customer_email(summary, invoice)
+        if not to_email:
+            raise RuntimeError("Keine E-Mail-Adresse fuer Rechnungsversand")
+        if self._mail_service is None or not self._mail_service.is_configured():
+            raise RuntimeError("SMTP-Konfiguration fuer Rechnungsmail fehlt")
+        subject, text_body = self._build_mail_content(summary, invoice)
+        html_body = self._build_mail_html(text_body)
+        attachment = self._build_invoice_attachment(summary, invoice)
+        self._mail_service.send_mail(
+            to_email=to_email,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+            attachments=[attachment],
         )
+        return self._next_flags(flags, mail_sent=True)
 
     def _shipping_lines_from_invoice(self, invoice: dict[str, Any], summary: InvoiceSummary) -> list[str]:
         if summary.order_reference.strip():
@@ -580,6 +616,150 @@ class InvoiceProcessingService:
         city_line = " ".join(part for part in (zip_code, city) if part)
         lines = [line for line in (name, street, city_line, country) if str(line).strip()]
         return lines
+
+    @staticmethod
+    def _invoice_number(summary: InvoiceSummary, invoice: dict[str, Any]) -> str:
+        for value in (
+            summary.invoice_number,
+            invoice.get("invoiceNumber"),
+            invoice.get("number"),
+            invoice.get("header"),
+            summary.id,
+        ):
+            text = str(value or "").strip()
+            if text:
+                return text
+        return str(summary.id or "").strip()
+
+    @staticmethod
+    def _contact_email_from_invoice(invoice: dict[str, Any]) -> str:
+        candidates: list[str] = []
+        for key in ("email", "toEmail", "contactEmail"):
+            value = str(invoice.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+        contact = invoice.get("contact") if isinstance(invoice.get("contact"), dict) else {}
+        for key in ("email", "emailAddress"):
+            value = str(contact.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+        emails = contact.get("emails")
+        if isinstance(emails, list):
+            for item in emails:
+                if not isinstance(item, dict):
+                    continue
+                value = str(item.get("value") or item.get("email") or "").strip()
+                if value:
+                    candidates.append(value)
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return ""
+
+    def _resolve_customer_email(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> str:
+        if summary.order_reference.strip():
+            wix_summary = self._get_wix_order_summary_cached(summary.order_reference)
+            wix_email = str(wix_summary.get("wix_customer_email") or "").strip()
+            if wix_email:
+                return wix_email
+        return self._contact_email_from_invoice(invoice)
+
+    def _resolve_customer_name(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> str:
+        if summary.order_reference.strip():
+            wix_summary = self._get_wix_order_summary_cached(summary.order_reference)
+            wix_name = str(wix_summary.get("wix_customer_name") or "").strip()
+            if wix_name:
+                return wix_name
+        for value in (
+            invoice.get("name"),
+            (invoice.get("contact") or {}).get("name") if isinstance(invoice.get("contact"), dict) else "",
+            summary.contact_name,
+        ):
+            text = str(value or "").strip()
+            if text:
+                return text
+        return "Kunde"
+
+    @staticmethod
+    def _looks_like_html(value: str) -> bool:
+        return bool(re.search(r"<[a-zA-Z][^>]*>", str(value or "")))
+
+    @staticmethod
+    def _invoice_items_html(invoice: dict[str, Any]) -> str:
+        lines: list[str] = []
+        raw_positions = invoice.get("positions") or invoice.get("invoicePosSave") or invoice.get("invoicePos")
+        if isinstance(raw_positions, list):
+            for item in raw_positions:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("text") or item.get("partName") or "").strip()
+                quantity = str(item.get("quantity") or item.get("qty") or item.get("count") or "").strip()
+                if name and quantity:
+                    lines.append(f"{html.escape(quantity)}x {html.escape(name)}")
+                elif name:
+                    lines.append(html.escape(name))
+        return "<br>".join(lines)
+
+    def _mail_template_values(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> dict[str, str]:
+        invoice_number = self._invoice_number(summary, invoice)
+        return {
+            "{{customer_name}}": self._resolve_customer_name(summary, invoice),
+            "{{invoice_number}}": invoice_number,
+            "{{download_link}}": "",
+            "{{items_html}}": self._invoice_items_html(invoice),
+        }
+
+    def _load_mail_templates(self) -> tuple[str, str]:
+        if self._settings_repo is None:
+            return "", ""
+        subject = self._settings_repo.get_value_json(_FULFILLMENT_MAIL_SUBJECT_KEY)
+        body = self._settings_repo.get_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY)
+        return str(subject or "").strip(), str(body or "").strip()
+
+    def _build_mail_content(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> tuple[str, str]:
+        invoice_number = self._invoice_number(summary, invoice)
+        subject_template, body_template = self._load_mail_templates()
+        subject = subject_template or _LEGACY_MAIL_SUBJECT
+        body = body_template or _LEGACY_MAIL_BODY
+        for token, value in self._mail_template_values(summary, invoice).items():
+            subject = subject.replace(token, value).replace(token.replace("{{", "{").replace("}}", "}"), value)
+            body = body.replace(token, value).replace(token.replace("{{", "{").replace("}}", "}"), value)
+        subject = subject.replace("{invoice_number}", invoice_number)
+        body = body.replace("{invoice_number}", invoice_number)
+        body = body.strip() or _LEGACY_MAIL_BODY.format(invoice_number=invoice_number).strip()
+        return subject.strip() or _LEGACY_MAIL_SUBJECT.format(invoice_number=invoice_number), body
+
+    def _build_mail_html(self, body: str) -> str:
+        content = str(body or "").strip()
+        if self._looks_like_html(content):
+            inner = content
+        elif self._mail_service is not None:
+            inner = self._mail_service.plain_text_to_html(content)
+        else:
+            normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip()
+            paragraphs = [chunk.strip() for chunk in re.split(r"\n\s*\n", normalized) if chunk.strip()]
+            inner = "\n".join(f"<p>{html.escape(paragraph).replace('\n', '<br>')}</p>" for paragraph in paragraphs)
+        return (
+            "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;line-height:1.5;\">"
+            f"{inner}"
+            "</body></html>"
+        )
+
+    def _build_invoice_attachment(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> MailAttachment:
+        pdf_bytes = self._get_invoice_pdf_bytes(summary.id)
+        invoice_number = self._invoice_number(summary, invoice)
+        return MailAttachment(filename=f"{invoice_number}.pdf", content=pdf_bytes, mime_type="application/pdf")
+
+    def _get_invoice_pdf_bytes(self, invoice_id: str) -> bytes:
+        cached = self._invoice_pdf_cache.get(str(invoice_id))
+        if cached:
+            return cached
+        self._invoices.render_invoice_pdf(invoice_id)
+        pdf_bytes = self._invoices.get_invoice_pdf(invoice_id)
+        if not pdf_bytes:
+            raise RuntimeError("PDF nicht verfügbar")
+        self._invoice_pdf_cache[str(invoice_id)] = pdf_bytes
+        return pdf_bytes
 
     def _load_fulfillment_flags_map(self) -> dict[str, FulfillmentFlags]:
         if self._settings_repo is None:

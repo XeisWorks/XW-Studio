@@ -1,11 +1,9 @@
 """App-wide settings — DB status, secrets overview, printer config."""
 from __future__ import annotations
 
+import html
 import json
 import logging
-import os
-import smtplib
-from email.message import EmailMessage
 from typing import TYPE_CHECKING
 
 from PySide6.QtGui import QTextDocument
@@ -29,6 +27,7 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.repositories.settings_kv import SettingKvRepository
 from xw_studio.services.clickup.client import ClickUpClient, ClickUpTask
+from xw_studio.services.mailing.service import MailDeliveryService
 from xw_studio.services.secrets.service import SecretService
 
 if TYPE_CHECKING:
@@ -72,18 +71,22 @@ _EXTRA_SECRET_KEYS: tuple[str, ...] = (
     "FON_PIN",
 )
 
-_DEFAULT_FULFILLMENT_SUBJECT = "Deine Bestellung {{invoice_number}} ist bereit"
+_DEFAULT_FULFILLMENT_SUBJECT = "Ihre Rechnung {{invoice_number}}"
 _DEFAULT_TEST_MAIL_RECIPIENT = "bernhard.holl@gmx.at"
-
 _DEFAULT_FULFILLMENT_TEMPLATE = (
-    "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;\">"
-    "<h2 style=\"margin:0 0 10px 0;\">Deine Bestellung ist bereit</h2>"
-    "<p>Hallo {{customer_name}},</p>"
-    "<p>deine Rechnung <b>{{invoice_number}}</b> wurde verarbeitet.</p>"
-    "<p><b>Artikel:</b><br>{{items_html}}</p>"
-    "<p>Dein Download: <a href=\"{{download_link}}\">{{download_link}}</a></p>"
-    "<p>Viele Grüße<br>XeisWorks Studio</p>"
-    "</body></html>"
+    "Guten Tag,\n\n"
+    "wir freuen uns, Ihnen mitteilen zu können, dass Ihre Bestellung soeben versendet wurde.\n\n"
+    "Die bestellten Produkte befinden sich nun auf dem Weg zu Ihnen. Je nach Versandart und Zielort kann die Zustellung einige Werktage in Anspruch nehmen.\n\n"
+    "Die zugehörige Rechnung finden Sie im Anhang dieser E-Mail.\n\n"
+    "Sollten Sie in der Zwischenzeit Fragen zu Ihrer Bestellung oder zum Lieferstatus haben, stehen wir Ihnen selbstverständlich gerne zur Verfügung.\n\n"
+    "Vielen Dank für Ihr Vertrauen und Ihre Bestellung.\n\n"
+    "Mit freundlichen Grüßen\n"
+    "XeisWorks\n"
+    "Mag. Bernhard Holl\n"
+    "Johnsbach 92\n"
+    "8912 Admont\n"
+    "office@xeisworks.at\n"
+    "www.xeisworks.at\n"
 )
 
 
@@ -338,7 +341,7 @@ class SettingsView(QWidget):
         subject_row.addRow("Betreff-Vorlage:", self._mail_subject_editor)
         template_layout.addLayout(subject_row)
 
-        body_lbl = QLabel("Nachrichtentext (HTML-Vorlage):")
+        body_lbl = QLabel("Nachrichtentext:")
         template_layout.addWidget(body_lbl)
 
         self._mail_template_editor = QPlainTextEdit()
@@ -601,23 +604,29 @@ class SettingsView(QWidget):
 
     def _render_fulfillment_preview(self) -> None:
         subject_template = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
-        html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
-        preview = html
+        body_template = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        preview = body_template
         substitutions = {
             "{{customer_name}}": "Max Mustermann",
             "{{invoice_number}}": "RE-2026-0042",
             "{{download_link}}": "https://example.com/download/RE-2026-0042",
-            "{{items_html}}": "XW-7001 - 1x Brandlalm Boarischer<br>XW-600.0 - 2x Zusatzstimme",
+            "{{items_html}}": "XW-7001 - 1x Brandlalm Boarischer\nXW-600.0 - 2x Zusatzstimme",
         }
         subject_preview = subject_template
         for token, value in substitutions.items():
             preview = preview.replace(token, value)
             subject_preview = subject_preview.replace(token, value)
         self._mail_subject_preview.setText(f"Betreff: {subject_preview}")
-        self._mail_template_preview.setHtml(preview)
-        doc = QTextDocument()
-        doc.setHtml(preview)
-        self._mail_template_plain_preview.setPlainText(doc.toPlainText())
+        if "<" in preview and ">" in preview:
+            self._mail_template_preview.setHtml(preview)
+            doc = QTextDocument()
+            doc.setHtml(preview)
+            plain_preview = doc.toPlainText()
+        else:
+            html_preview = "<div style=\"white-space:pre-wrap;\">" + html.escape(preview) + "</div>"
+            self._mail_template_preview.setHtml(html_preview)
+            plain_preview = preview
+        self._mail_template_plain_preview.setPlainText(plain_preview)
         self._mail_template_status.setText("Vorschau aktualisiert")
         self._mail_template_status.setStyleSheet(_OK_STYLE)
 
@@ -626,10 +635,10 @@ class SettingsView(QWidget):
             QMessageBox.warning(self, "Fehler", "DB-Repository nicht verfuegbar.")
             return
         subject = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
-        html = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        body = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
         repo: SettingKvRepository = self._container.resolve(SettingKvRepository)
         repo.set_value_json(_FULFILLMENT_MAIL_SUBJECT_KEY, subject)
-        repo.set_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY, html)
+        repo.set_value_json(_FULFILLMENT_MAIL_TEMPLATE_KEY, body)
         self._mail_template_status.setText("Vorlage gespeichert")
         self._mail_template_status.setStyleSheet(_OK_STYLE)
         self._render_fulfillment_preview()
@@ -643,76 +652,43 @@ class SettingsView(QWidget):
             return
 
         subject_template = self._mail_subject_editor.text().strip() or _DEFAULT_FULFILLMENT_SUBJECT
-        html_template = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
+        body_template = self._mail_template_editor.toPlainText().strip() or _DEFAULT_FULFILLMENT_TEMPLATE
         substitutions = {
             "{{customer_name}}": "Bernhard Holl",
             "{{invoice_number}}": "RE-TEST-0001",
-            "{{download_link}}": "https://example.com/download/test",
+            "{{download_link}}": "",
             "{{items_html}}": "XW-TEST - 1x Testartikel",
         }
         subject = subject_template
-        html = html_template
+        body = body_template
         for token, value in substitutions.items():
             subject = subject.replace(token, value)
-            html = html.replace(token, value)
-        plain_doc = QTextDocument()
-        plain_doc.setHtml(html)
-        plain = plain_doc.toPlainText()
+            body = body.replace(token, value)
 
         self._mail_template_status.setText("Sende Test-Mail...")
         self._mail_template_status.setStyleSheet(_WARN_STYLE)
-
-        def _secret_or_env(key: str, default: str = "") -> str:
-            secrets: SecretService = self._container.resolve(SecretService)
-            value = str(secrets.get_secret(key) or "").strip()
-            if value:
-                return value
-            return str(os.getenv(key) or default).strip()
-
-        host = _secret_or_env("SMTP_HOST")
-        port_raw = _secret_or_env("SMTP_PORT", "587")
-        username = _secret_or_env("SMTP_USERNAME")
-        password = _secret_or_env("SMTP_PASSWORD")
-        sender = _secret_or_env("SMTP_FROM", username)
-        use_starttls = _secret_or_env("SMTP_STARTTLS", "1").lower() not in {"0", "false", "no"}
-        use_ssl = _secret_or_env("SMTP_SSL", "0").lower() in {"1", "true", "yes"}
-
-        missing = [name for name, value in (("SMTP_HOST", host), ("SMTP_FROM", sender)) if not value]
-        if missing:
+        mailer: MailDeliveryService = self._container.resolve(MailDeliveryService)
+        if not mailer.is_configured():
             QMessageBox.warning(
                 self,
                 "Test-Mail",
-                f"Bitte zuerst SMTP konfigurieren (fehlend: {', '.join(missing)}).",
+                "Bitte zuerst SMTP konfigurieren (fehlend: SMTP_HOST oder SMTP_FROM).",
             )
             self._mail_template_status.setText("SMTP-Konfiguration fehlt")
             self._mail_template_status.setStyleSheet(_ERR_STYLE)
             return
 
-        try:
-            port = int(port_raw)
-        except ValueError:
-            port = 587
-
         def job() -> str:
-            msg = EmailMessage()
-            msg["From"] = sender
-            msg["To"] = recipient
-            msg["Subject"] = subject
-            msg.set_content(plain)
-            msg.add_alternative(html, subtype="html")
-
-            if use_ssl:
-                with smtplib.SMTP_SSL(host, port, timeout=20) as smtp:
-                    if username:
-                        smtp.login(username, password)
-                    smtp.send_message(msg)
-            else:
-                with smtplib.SMTP(host, port, timeout=20) as smtp:
-                    if use_starttls:
-                        smtp.starttls()
-                    if username:
-                        smtp.login(username, password)
-                    smtp.send_message(msg)
+            mailer.send_mail(
+                to_email=recipient,
+                subject=subject,
+                text_body=body,
+                html_body=(
+                    "<html><body style=\"font-family:Segoe UI,Arial,sans-serif;color:#0f172a;line-height:1.5;\">"
+                    f"{mailer.plain_text_to_html(body)}"
+                    "</body></html>"
+                ),
+            )
             return recipient
 
         self._mail_test_worker = BackgroundWorker(job)

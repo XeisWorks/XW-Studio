@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -281,6 +282,285 @@ class WixOrdersClient:
             h["wix-account-id"] = acc
         return h
 
+    @staticmethod
+    def _extract_text(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in (
+                "name",
+                "displayName",
+                "value",
+                "label",
+                "shortName",
+                "country",
+                "code",
+                "translated",
+                "original",
+            ):
+                candidate = value.get(key)
+                if candidate is not None:
+                    text = str(candidate).strip()
+                    if text:
+                        return text
+            return ""
+        return str(value).strip()
+
+    @classmethod
+    def _nested_dict(cls, source: object, *path: str) -> dict[str, Any]:
+        current = source
+        for key in path:
+            if not isinstance(current, dict):
+                return {}
+            current = current.get(key)
+        return current if isinstance(current, dict) else {}
+
+    @classmethod
+    def _first_address_node(cls, order: dict[str, Any]) -> dict[str, Any]:
+        paths = (
+            ("shippingInfo", "shippingAddress"),
+            ("shippingInfo", "address"),
+            ("shippingInfo", "shippingDestination", "address"),
+            ("shippingInfo", "deliveryAddress"),
+            ("shippingInfo", "logistics", "shippingDestination", "address"),
+        )
+        for path in paths:
+            node = cls._nested_dict(order, *path)
+            if node:
+                return node
+        return {}
+
+    @classmethod
+    def _resolve_country_name(cls, value: object) -> str:
+        text = cls._extract_text(value)
+        if not text:
+            return ""
+        mapping = {
+            "AT": "Austria",
+            "AUT": "Austria",
+            "DE": "Germany",
+            "DEU": "Germany",
+            "CH": "Switzerland",
+            "CHE": "Switzerland",
+            "IT": "Italy",
+            "ITA": "Italy",
+            "FR": "France",
+            "FRA": "France",
+            "BE": "Belgium",
+            "BEL": "Belgium",
+            "NL": "Netherlands",
+            "NLD": "Netherlands",
+            "LU": "Luxembourg",
+            "LUX": "Luxembourg",
+            "DK": "Denmark",
+            "DNK": "Denmark",
+            "SE": "Sweden",
+            "SWE": "Sweden",
+            "FI": "Finland",
+            "FIN": "Finland",
+            "EE": "Estonia",
+            "EST": "Estonia",
+            "LV": "Latvia",
+            "LVA": "Latvia",
+            "LT": "Lithuania",
+            "LTU": "Lithuania",
+            "CZ": "Czech Republic",
+            "CZE": "Czech Republic",
+            "SK": "Slovakia",
+            "SVK": "Slovakia",
+            "SI": "Slovenia",
+            "SVN": "Slovenia",
+            "HR": "Croatia",
+            "HRV": "Croatia",
+        }
+        return mapping.get(text.upper(), text)
+
+    @classmethod
+    def _street_line_from_value(cls, value: object) -> str:
+        if isinstance(value, dict):
+            name = cls._extract_text(value.get("name"))
+            number = cls._extract_text(value.get("number"))
+            apt = cls._extract_text(value.get("apt"))
+            parts = [part for part in (name, number) if part]
+            line = " ".join(parts).strip()
+            if apt:
+                line = " ".join(part for part in (line, apt) if part).strip()
+            return line
+        return cls._extract_text(value)
+
+    @staticmethod
+    def _looks_like_numeric_address_addition(value: str) -> bool:
+        text = str(value or "").strip()
+        return bool(re.match(r"^\d[\w\s./-]*$", text))
+
+    @staticmethod
+    def _contains_house_number(value: str) -> bool:
+        return bool(re.search(r"\d", str(value or "")))
+
+    @classmethod
+    def _merge_street_with_addition(cls, street1: str, street2: str) -> tuple[str, str]:
+        primary = str(street1 or "").strip().rstrip(",")
+        addition = str(street2 or "").strip().rstrip(",")
+        if primary and addition and not cls._contains_house_number(primary) and cls._looks_like_numeric_address_addition(addition):
+            return " ".join(part for part in (primary, addition) if part).strip(), ""
+        return primary, addition
+
+    @classmethod
+    def _address_field(cls, *sources: object, keys: tuple[str, ...]) -> str:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                raw_value = source.get(key)
+                if key in {"addressLine1", "addressLine", "streetAddress", "street", "address"}:
+                    text = cls._street_line_from_value(raw_value)
+                else:
+                    text = cls._extract_text(raw_value)
+                if text:
+                    return text
+        return ""
+
+    @classmethod
+    def _shipping_address_parts_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(order, dict):
+            return {}
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
+        shipment_details = shipping.get("shipmentDetails") if isinstance(shipping.get("shipmentDetails"), dict) else {}
+        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+        destination_address = destination.get("address") if isinstance(destination.get("address"), dict) else {}
+        destination_contact = destination.get("contactDetails") if isinstance(destination.get("contactDetails"), dict) else {}
+        logistics_destination = cls._nested_dict(order, "shippingInfo", "logistics", "shippingDestination")
+        logistics_address = logistics_destination.get("address") if isinstance(logistics_destination.get("address"), dict) else {}
+        logistics_contact = logistics_destination.get("contactDetails") if isinstance(logistics_destination.get("contactDetails"), dict) else {}
+        address_node = cls._first_address_node(order)
+
+        first = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            buyer,
+            shipping,
+            keys=("firstName", "givenName", "firstname", "givenname", "surename", "name"),
+        )
+        last = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            buyer,
+            shipping,
+            keys=("lastName", "familyName", "familyname", "surname", "lastname"),
+        )
+        company = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            shipping,
+            keys=("company", "companyName", "businessName", "addressName"),
+        )
+        name = company or " ".join(part for part in (first, last) if part).strip()
+        if not name:
+            name = cls._norm_text(buyer.get("firstName"))
+            fallback_last = cls._norm_text(buyer.get("lastName"))
+            if fallback_last and fallback_last not in name:
+                name = " ".join(part for part in (name, fallback_last) if part).strip()
+
+        street1 = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("addressLine1", "addressLine", "streetAddress", "street", "address"),
+        )
+        house = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("houseNumber", "streetNumber", "addressNumber"),
+        )
+        if house and house not in street1:
+            street1 = " ".join(part for part in (street1, house) if part).strip()
+        street2 = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("addressLine2", "addressAddition", "addressDetail"),
+        )
+        street1, street2 = cls._merge_street_with_addition(street1, street2)
+        postal_code = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("postalCode", "zipCode", "zip"),
+        )
+        city = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("city", "town", "region", "locality"),
+        )
+        country = cls._resolve_country_name(
+            cls._address_field(
+                destination_address,
+                logistics_address,
+                address_node,
+                destination,
+                logistics_destination,
+                shipping,
+                keys=("countryFullname", "country", "countryName", "countryCode", "isoCountry", "addressCountry"),
+            )
+        )
+        return {
+            "name": name,
+            "street1": street1,
+            "street2": street2,
+            "postal_code": postal_code,
+            "city": city,
+            "country": country,
+        }
+
+    @classmethod
+    def _billing_address_parts_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(order, dict):
+            return {}
+        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
+        details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
+        address = billing.get("address") if isinstance(billing.get("address"), dict) else {}
+        first = cls._address_field(details, keys=("firstName", "givenName", "surename"))
+        last = cls._address_field(details, keys=("lastName", "familyName", "familyname"))
+        company = cls._address_field(details, billing, keys=("company", "companyName", "businessName"))
+        name = company or " ".join(part for part in (first, last) if part).strip()
+        street1 = cls._address_field(address, keys=("addressLine1", "addressLine", "streetAddress", "street", "address"))
+        street2 = cls._address_field(address, keys=("addressLine2", "addressAddition", "addressDetail"))
+        street1, street2 = cls._merge_street_with_addition(street1, street2)
+        postal_code = cls._address_field(address, keys=("postalCode", "zipCode", "zip"))
+        city = cls._address_field(address, keys=("city", "town", "region", "locality"))
+        country = cls._resolve_country_name(
+            cls._address_field(address, keys=("countryFullname", "country", "countryName", "countryCode", "isoCountry", "addressCountry"))
+        )
+        return {
+            "name": name,
+            "street1": street1,
+            "street2": street2,
+            "postal_code": postal_code,
+            "city": city,
+            "country": country,
+        }
+
     def _get_order_by_id(self, order_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=_TIMEOUT) as client:
             try:
@@ -375,6 +655,10 @@ class WixOrdersClient:
             return False
         return all(self.line_item_is_digital(item) for item in raw_items if isinstance(item, dict))
 
+    def fulfillment_status(self, reference: str) -> str:
+        order = self._resolve_order(reference)
+        return str(order.get("fulfillmentStatus") or "").strip().upper() if isinstance(order, dict) else ""
+
     def _resolve_order_id(self, reference: str) -> str:
         order = self._resolve_order(reference)
         return str(order.get("id") or "").strip()
@@ -389,43 +673,30 @@ class WixOrdersClient:
 
     @classmethod
     def shipping_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
-        if not isinstance(order, dict):
+        parts = cls._shipping_address_parts_from_order(order)
+        if not parts:
             return []
-        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
-        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
-        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
-
-        first = cls._norm_text(buyer.get("firstName"))
-        last = cls._norm_text(buyer.get("lastName"))
-        name = " ".join(part for part in (first, last) if part).strip()
-
-        street1 = cls._norm_text(destination.get("addressLine1"))
-        street2 = cls._norm_text(destination.get("addressLine2"))
-        postal_code = cls._norm_text(destination.get("postalCode"))
-        city = cls._norm_text(destination.get("city"))
-        country = cls._norm_text(destination.get("country"))
+        name = parts.get("name", "")
+        street1 = parts.get("street1", "")
+        street2 = parts.get("street2", "")
+        postal_code = parts.get("postal_code", "")
+        city = parts.get("city", "")
+        country = parts.get("country", "")
         city_line = " ".join(part for part in (postal_code, city) if part)
 
         return [line for line in (name, street1, street2, city_line, country) if line]
 
     @classmethod
     def billing_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
-        if not isinstance(order, dict):
+        parts = cls._billing_address_parts_from_order(order)
+        if not parts:
             return []
-        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
-        details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
-        address = billing.get("address") if isinstance(billing.get("address"), dict) else {}
-
-        company = cls._norm_text(details.get("company"))
-        first = cls._norm_text(details.get("firstName"))
-        last = cls._norm_text(details.get("lastName"))
-        name = company or " ".join(part for part in (first, last) if part).strip()
-
-        street = cls._norm_text(address.get("addressLine1") or address.get("street"))
-        street2 = cls._norm_text(address.get("addressLine2"))
-        postal_code = cls._norm_text(address.get("postalCode"))
-        city = cls._norm_text(address.get("city"))
-        country = cls._norm_text(address.get("country"))
+        name = parts.get("name", "")
+        street = parts.get("street1", "")
+        street2 = parts.get("street2", "")
+        postal_code = parts.get("postal_code", "")
+        city = parts.get("city", "")
+        country = parts.get("country", "")
         city_line = " ".join(part for part in (postal_code, city) if part)
 
         return [line for line in (name, street, street2, city_line, country) if line]
@@ -452,19 +723,20 @@ class WixOrdersClient:
         email = cls._norm_text(buyer.get("email"))
 
         shipping_lines = cls.best_address_lines_from_order(order)
-        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
-        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+        shipping_parts = cls._shipping_address_parts_from_order(order)
+        if not full_name:
+            full_name = shipping_parts.get("name", "")
 
         return {
             "wix_order_id": cls._norm_text(order.get("id")),
             "wix_order_number": cls._norm_text(order.get("number")),
             "wix_customer_name": full_name,
             "wix_customer_email": email,
-            "wix_shipping_street": cls._norm_text(destination.get("addressLine1")),
-            "wix_shipping_street2": cls._norm_text(destination.get("addressLine2")),
-            "wix_shipping_zip": cls._norm_text(destination.get("postalCode")),
-            "wix_shipping_city": cls._norm_text(destination.get("city")),
-            "wix_shipping_country": cls._norm_text(destination.get("country")),
+            "wix_shipping_street": shipping_parts.get("street1", ""),
+            "wix_shipping_street2": shipping_parts.get("street2", ""),
+            "wix_shipping_zip": shipping_parts.get("postal_code", ""),
+            "wix_shipping_city": shipping_parts.get("city", ""),
+            "wix_shipping_country": shipping_parts.get("country", ""),
             "wix_shipping_address": "\n".join(shipping_lines),
         }
 

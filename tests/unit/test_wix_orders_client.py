@@ -71,6 +71,7 @@ def test_best_address_lines_prefers_shipping_then_billing() -> None:
     lines = WixOrdersClient.best_address_lines_from_order(order_shipping)
     assert lines[0] == "Max Mustermann"
     assert "Musterstrasse 1" in lines
+    assert "Austria" in lines
 
     order_billing_only = {
         "billingInfo": {
@@ -86,3 +87,63 @@ def test_best_address_lines_prefers_shipping_then_billing() -> None:
     lines2 = WixOrdersClient.best_address_lines_from_order(order_billing_only)
     assert lines2[0] == "Billing GmbH"
     assert "Rechnungsweg 7" in lines2
+    assert "Austria" in lines2
+
+
+def test_best_address_lines_supports_nested_shipping_address_variants() -> None:
+    order = {
+        "shippingInfo": {
+            "shipmentDetails": {
+                "firstName": "Jakob",
+                "lastName": "Aichberger",
+            },
+            "shippingDestination": {
+                "address": {
+                    "addressLine1": "Wolfsbacher Straße 12",
+                    "postalCode": "3354",
+                    "city": "Wolfsbach",
+                    "countryCode": "AT",
+                }
+            },
+        }
+    }
+
+    lines = WixOrdersClient.best_address_lines_from_order(order)
+
+    assert lines == [
+        "Jakob Aichberger",
+        "Wolfsbacher Straße 12",
+        "3354 Wolfsbach",
+        "Austria",
+    ]
+
+
+def test_best_address_lines_merges_structured_street_address_number() -> None:
+    order = {
+        "buyerInfo": {"firstName": "Florian", "lastName": "Brandner"},
+        "shippingInfo": {
+            "shippingDestination": {
+                "streetAddress": {"name": "Auerdörfl", "number": "16", "apt": ""},
+                "postalCode": "20038",
+                "city": "Berchtesgaden",
+                "countryCode": "DE",
+            }
+        },
+        "billingInfo": {
+            "address": {
+                "streetAddress": {"name": "Auerdörfl", "number": "16"},
+                "postalCode": "20038",
+                "city": "Berchtesgaden",
+                "countryCode": "DE",
+            }
+        },
+    }
+
+    lines = WixOrdersClient.best_address_lines_from_order(order)
+
+    assert lines == [
+        "Florian Brandner",
+        "Auerdörfl 16",
+        "20038 Berchtesgaden",
+        "Germany",
+    ]

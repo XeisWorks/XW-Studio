@@ -5,8 +5,8 @@ import logging
 from typing import Sequence
 
 import fitz
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QRectF, Qt, QSizeF, QMarginsF
+from PySide6.QtGui import QImage, QPainter, QPageLayout, QPageSize
 from PySide6.QtPrintSupport import QPrinter, QPrinterInfo
 
 from xw_studio.core.config import PrintingSection
@@ -28,6 +28,7 @@ def _preferred_printer_name(printing: PrintingSection, profile_id: str, fallback
 
 def _build_printer(*, preferred_name: str) -> QPrinter:
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setOutputFormat(QPrinter.OutputFormat.NativeFormat)
     available = [p.printerName() for p in QPrinterInfo.availablePrinters()]
     if preferred_name and preferred_name in available:
         printer.setPrinterName(preferred_name)
@@ -36,6 +37,66 @@ def _build_printer(*, preferred_name: str) -> QPrinter:
     if default_name:
         printer.setPrinterName(default_name)
     return printer
+
+
+def _configure_invoice_layout(printer: QPrinter) -> None:
+    layout = QPageLayout(
+        QPageSize(QPageSize.PageSizeId.A4),
+        QPageLayout.Orientation.Portrait,
+        QMarginsF(0.0, 0.0, 0.0, 0.0),
+        QPageLayout.Unit.Millimeter,
+    )
+    printer.setPageLayout(layout)
+    printer.setFullPage(False)
+
+
+def _paint_rect(printer: QPrinter) -> QRectF:
+    layout = printer.pageLayout()
+    rect = layout.paintRectPixels(printer.resolution())
+    if rect.isValid() and rect.width() > 0 and rect.height() > 0:
+        return QRectF(rect)
+    fallback = printer.pageRect(QPrinter.Unit.DevicePixel)
+    return QRectF(fallback)
+
+
+def _aspect_fit_rect(container: QRectF, source_width: float, source_height: float) -> QRectF:
+    if container.width() <= 0 or container.height() <= 0 or source_width <= 0 or source_height <= 0:
+        return QRectF(container)
+    scale = min(container.width() / float(source_width), container.height() / float(source_height))
+    target_width = float(source_width) * scale
+    target_height = float(source_height) * scale
+    x = container.x() + (container.width() - target_width) / 2.0
+    y = container.y() + (container.height() - target_height) / 2.0
+    return QRectF(x, y, target_width, target_height)
+
+
+def _log_invoice_page_metrics(
+    *,
+    printer: QPrinter,
+    page_index: int,
+    page: fitz.Page,
+    image: QImage,
+    target_rect: QRectF,
+) -> None:
+    paint_rect = _paint_rect(printer)
+    logger.info(
+        "Invoice print layout: printer='%s' page=%s dpi=%s pdf_pt=(%.2f,%.2f) paint_px=(%.2f,%.2f,%.2f,%.2f) target_px=(%.2f,%.2f,%.2f,%.2f) image_px=(%s,%s)",
+        printer.printerName().strip(),
+        page_index + 1,
+        printer.resolution(),
+        float(page.rect.width),
+        float(page.rect.height),
+        paint_rect.x(),
+        paint_rect.y(),
+        paint_rect.width(),
+        paint_rect.height(),
+        target_rect.x(),
+        target_rect.y(),
+        target_rect.width(),
+        target_rect.height(),
+        image.width(),
+        image.height(),
+    )
 
 
 def print_pdf_bytes_silent(
@@ -58,13 +119,16 @@ def print_pdf_bytes_silent(
             raise RuntimeError("Leeres PDF")
 
         printer.setResolution(int(dpi))
+        _configure_invoice_layout(printer)
         painter = QPainter()
         if not painter.begin(printer):
             raise RuntimeError("QPainter konnte Drucker nicht starten")
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         try:
             for page_num in range(page_count):
                 if page_num > 0:
+                    _configure_invoice_layout(printer)
                     printer.newPage()
                 page = doc[page_num]
                 scale = float(dpi) / 72.0
@@ -76,7 +140,15 @@ def print_pdf_bytes_silent(
                     pix.stride,
                     QImage.Format.Format_RGB888,
                 )
-                painter.drawImage(painter.viewport(), img)
+                target_rect = _aspect_fit_rect(_paint_rect(printer), img.width(), img.height())
+                _log_invoice_page_metrics(
+                    printer=printer,
+                    page_index=page_num,
+                    page=page,
+                    image=img,
+                    target_rect=target_rect,
+                )
+                painter.drawImage(target_rect, img)
         finally:
             painter.end()
     finally:
@@ -103,12 +175,15 @@ def print_pdf_file_silent(
         if page_count <= 0:
             raise RuntimeError("Leeres PDF")
         printer.setResolution(int(dpi))
+        _configure_invoice_layout(printer)
         painter = QPainter()
         if not painter.begin(printer):
             raise RuntimeError("QPainter konnte Drucker nicht starten")
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         try:
             for page_num in range(page_count):
                 if page_num > 0:
+                    _configure_invoice_layout(printer)
                     printer.newPage()
                 page = doc[page_num]
                 scale = float(dpi) / 72.0
@@ -120,7 +195,15 @@ def print_pdf_file_silent(
                     pix.stride,
                     QImage.Format.Format_RGB888,
                 )
-                painter.drawImage(painter.viewport(), img)
+                target_rect = _aspect_fit_rect(_paint_rect(printer), img.width(), img.height())
+                _log_invoice_page_metrics(
+                    printer=printer,
+                    page_index=page_num,
+                    page=page,
+                    image=img,
+                    target_rect=target_rect,
+                )
+                painter.drawImage(target_rect, img)
         finally:
             painter.end()
     finally:

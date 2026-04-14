@@ -1,13 +1,13 @@
-"""End-to-end test for legacy printing parity: invoice + label steps in fullflow."""
+"""End-to-end test for invoice printing + mail flow parity."""
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch, call, Mock
+from unittest.mock import patch
 
 from xw_studio.core.config import AppConfig
 from xw_studio.services.invoice_processing.service import (
-    InvoiceProcessingService,
     FulfillmentFlags,
+    InvoiceProcessingService,
 )
 from xw_studio.services.sevdesk.invoice_client import InvoiceSummary
 
@@ -33,7 +33,6 @@ class _InvoiceClientE2E:
         self.render_calls.append(invoice_id)
 
     def get_invoice_pdf(self, invoice_id: str) -> bytes:
-        # Return fake PDF bytes (PDF header required by InvoicePrinter).
         return b"%PDF-1.4\ntest pdf content"
 
     def fetch_invoice_by_id(self, invoice_id: str) -> dict:
@@ -47,6 +46,7 @@ class _InvoiceClientE2E:
             "addressCountryCode": "AT",
             "contact": {
                 "name": "John Doe",
+                "emails": [{"value": "john@example.test"}],
             },
         }
 
@@ -61,8 +61,23 @@ class _WixOrdersDigitalOnlyStub:
     def resolve_order_address_lines(self, reference: str) -> list[str]:
         return []
 
+    def resolve_order_summary(self, reference: str) -> dict[str, str]:
+        return {
+            "wix_customer_email": "digital@example.test",
+            "wix_customer_name": "John Doe",
+        }
+
     def is_reference_digital_only(self, reference: str) -> bool:
         return True
+
+    def list_fulfillments(self, reference: str) -> list[dict]:
+        return []
+
+    def get_fulfillable_items(self, reference: str) -> list[dict]:
+        return []
+
+    def fulfillment_status(self, reference: str) -> str:
+        return "FULFILLED"
 
 
 class _WixOrdersPhysicalStub:
@@ -72,6 +87,12 @@ class _WixOrdersPhysicalStub:
     def resolve_order_address_lines(self, reference: str) -> list[str]:
         return ["John Doe", "Main St 1", "6020 Innsbruck", "AT"]
 
+    def resolve_order_summary(self, reference: str) -> dict[str, str]:
+        return {
+            "wix_customer_email": "john@example.test",
+            "wix_customer_name": "John Doe",
+        }
+
     def is_reference_digital_only(self, reference: str) -> bool:
         return False
 
@@ -80,6 +101,12 @@ class _WixOrdersPhysicalStub:
 
     def create_fulfillment(self, reference: str, items: list[dict]) -> dict:
         return {"id": "ful-1"}
+
+    def list_fulfillments(self, reference: str) -> list[dict]:
+        return []
+
+    def fulfillment_status(self, reference: str) -> str:
+        return "NOT_FULFILLED"
 
 
 class _SettingsRepoE2E:
@@ -93,42 +120,63 @@ class _SettingsRepoE2E:
         self.values[key] = value_json
 
 
+class _MailServiceStub:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def is_configured(self) -> bool:
+        return True
+
+    @staticmethod
+    def plain_text_to_html(value: str) -> str:
+        return "<p>" + value.replace("\n\n", "</p><p>").replace("\n", "<br>") + "</p>"
+
+    def send_mail(
+        self,
+        *,
+        to_email: str,
+        subject: str,
+        text_body: str,
+        html_body: str = "",
+        attachments: list[object] | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "to_email": to_email,
+                "subject": subject,
+                "text_body": text_body,
+                "html_body": html_body,
+                "attachments": list(attachments or []),
+            }
+        )
+
+
 def test_invoice_print_step_uses_legacy_printer() -> None:
-    """Verify that _run_invoice_print_step calls InvoicePrinter.print_pdf_bytes."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
-
-    # Patch both the actual printer dispatch AND configure a printer name.
-    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_print, \
-         patch("xw_studio.services.printing.invoice_printer.InvoicePrinter._printer_name") as mock_printer_name:
+    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_print, patch(
+        "xw_studio.services.printing.invoice_printer.InvoicePrinter._printer_name"
+    ) as mock_printer_name:
         mock_printer_name.return_value = "TestPrinter"
+        summary = InvoiceSummary(id="INV-001", invoice_number="R-001", contact_name="John Doe")
+        result = service._run_invoice_print_step(summary, FulfillmentFlags(invoice_printed=False))  # noqa: SLF001
 
-        summary = InvoiceSummary(
-            id="INV-001",
-            invoice_number="R-001",
-            contact_name="John Doe",
-        )
-        flags = FulfillmentFlags(invoice_printed=False)
-
-        result = service._run_invoice_print_step(summary, flags)
-
-        assert result.invoice_printed is True
-        assert result.last_error == ""
-        assert "INV-001" in invoice_client.render_calls
-        # Verify that silent_printer.print_pdf_file_silent was called (blueprint backend).
-        assert mock_print.called
+    assert result.invoice_printed is True
+    assert result.last_error == ""
+    assert invoice_client.render_calls == ["INV-001"]
+    assert mock_print.called
 
 
 def test_label_print_step_uses_shipping_address_fallback() -> None:
-    """Verify that label address extraction uses shipping fields first, then billing."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
-
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
     summary = InvoiceSummary(
         id="INV-001",
@@ -136,8 +184,6 @@ def test_label_print_step_uses_shipping_address_fallback() -> None:
         contact_name="John Doe",
         display_country="AT",
     )
-
-    # Full invoice with delivery fields.
     full_invoice = {
         "id": "INV-001",
         "name": "John Doe",
@@ -152,22 +198,19 @@ def test_label_print_step_uses_shipping_address_fallback() -> None:
         "deliveryAddressCountry": "AT",
     }
 
-    lines = service._shipping_lines_from_invoice(full_invoice, summary)
+    lines = service._shipping_lines_from_invoice(full_invoice, summary)  # noqa: SLF001
 
-    # Should use delivery fields, not billing.
-    assert "Jane Doe" in lines  # delivery name, not billing name
+    assert "Jane Doe" in lines
     assert "Delivery St 5" in lines
-    # Zip and city are combined into one line
-    assert any("6020" in line for line in lines)  # delivery zip should be in some line
+    assert any("6020" in line for line in lines)
 
 
 def test_label_print_step_falls_back_to_billing_when_no_delivery() -> None:
-    """Verify fallback to billing address when no delivery fields."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
-
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
     summary = InvoiceSummary(
         id="INV-002",
@@ -175,8 +218,6 @@ def test_label_print_step_falls_back_to_billing_when_no_delivery() -> None:
         contact_name="Fallback Name",
         display_country="DE",
     )
-
-    # Invoice with only billing fields (no delivery).
     full_invoice = {
         "id": "INV-002",
         "name": "John Doe",
@@ -186,46 +227,59 @@ def test_label_print_step_falls_back_to_billing_when_no_delivery() -> None:
         "addressCountryCode": "AT",
     }
 
-    lines = service._shipping_lines_from_invoice(full_invoice, summary)
+    lines = service._shipping_lines_from_invoice(full_invoice, summary)  # noqa: SLF001
 
-    # Should use billing address.
     assert "John Doe" in lines
     assert "Main St 1" in lines
-    # Zip and city are combined
     assert any("1010" in line for line in lines)
 
 
 def test_fullflow_invoice_and_label_steps() -> None:
-    """Verify that run_start_fullflow can execute both printing steps."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
+    mailer = _MailServiceStub()
+    wix_orders = _WixOrdersPhysicalStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, wix_orders, mailer)
+    invoice_client.list_invoice_summaries = lambda **_: [
+        InvoiceSummary(
+            id="INV-001",
+            invoice_number="R-001",
+            contact_name="John Doe",
+            order_reference="WIX-INV-001",
+            address_country_code="AT",
+        )
+    ]
 
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
-
-    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_inv_print, \
-         patch("xw_studio.services.printing.label_printer.LabelPrinter.print_address") as mock_label_print, \
-         patch("xw_studio.services.printing.invoice_printer.InvoicePrinter._printer_name") as mock_printer_name, \
-         patch("xw_studio.services.printing.label_printer.LabelPrinter._printer_name") as mock_label_printer_name:
-
+    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_inv_print, patch(
+        "xw_studio.services.printing.label_printer.LabelPrinter.print_address"
+    ) as mock_label_print, patch(
+        "xw_studio.services.printing.invoice_printer.InvoicePrinter._printer_name"
+    ) as mock_printer_name, patch(
+        "xw_studio.services.printing.label_printer.LabelPrinter._printer_name"
+    ) as mock_label_printer_name:
         mock_printer_name.return_value = "TestPrinter"
         mock_label_printer_name.return_value = "TestLabelPrinter"
-
         result = service.run_start_fullflow(full_mode=True)
 
-        assert result["processed"] == 1
-        assert result["failures"] == 0
-        assert mock_inv_print.called
+    assert result["processed"] == 1
+    assert result["failures"] == 0
+    assert result["successful"] == 1
+    assert mock_inv_print.called
+    assert mock_label_print.called
+    assert invoice_client.send_calls == [("INV-001", "VPR", False)]
+    assert len(mailer.calls) == 1
+    assert mailer.calls[0]["to_email"] == "john@example.test"
+    assert len(mailer.calls[0]["attachments"]) == 1
 
 
 def test_fullflow_skips_print_for_digital_only_wix_orders() -> None:
-    """Digital-only Wix orders should be mailed/finalized without print or label output."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
+    mailer = _MailServiceStub()
     wix_orders = _WixOrdersDigitalOnlyStub()
-
-    service = InvoiceProcessingService(config, invoice_client, repo, wix_orders)
+    service = InvoiceProcessingService(config, invoice_client, repo, wix_orders, mailer)
 
     invoice_client.list_invoice_summaries = lambda **_: [
         InvoiceSummary(
@@ -236,25 +290,27 @@ def test_fullflow_skips_print_for_digital_only_wix_orders() -> None:
         )
     ]
 
-    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_inv_print, \
-         patch("xw_studio.services.printing.label_printer.LabelPrinter.print_address") as mock_label_print:
+    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_inv_print, patch(
+        "xw_studio.services.printing.label_printer.LabelPrinter.print_address"
+    ) as mock_label_print:
         result = service.run_start_fullflow(full_mode=True)
 
     assert result["processed"] == 1
     assert result["failures"] == 0
     assert result["successful"] == 1
     assert invoice_client.send_calls == [("INV-DIGI-001", "VM", False)]
+    assert len(mailer.calls) == 1
+    assert mailer.calls[0]["to_email"] == "digital@example.test"
     assert not mock_inv_print.called
     assert not mock_label_print.called
 
 
 def test_start_fullflow_honors_abort_between_invoices() -> None:
-    """Abort callback should stop the batch before starting the next invoice."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
-
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
     invoice_client.list_invoice_summaries = lambda **kwargs: (
         [
@@ -278,13 +334,16 @@ def test_start_fullflow_honors_abort_between_invoices() -> None:
     assert result["failures"] == 0
     assert result["aborted"] is True
     assert invoice_client.send_calls == [("INV-001", "VM", False)]
+    assert len(mailer.calls) == 1
+    assert mailer.calls[0]["to_email"] == "john@example.test"
 
 
 def test_print_label_for_invoice_uses_override_lines_and_persists_flag() -> None:
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
     with patch("xw_studio.services.printing.label_printer.LabelPrinter.print_address") as mock_label_print:
         result = service.print_label_for_invoice(
@@ -299,12 +358,11 @@ def test_print_label_for_invoice_uses_override_lines_and_persists_flag() -> None
 
 
 def test_fulfillment_flags_persist_across_batch() -> None:
-    """Verify that fulfillment flags are persisted when fullflow runs."""
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
     repo = _SettingsRepoE2E()
-
-    service = InvoiceProcessingService(config, invoice_client, repo, None)
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
 
     flags = FulfillmentFlags(invoice_printed=True, last_run_iso="2026-04-04T09:00:00")
     service.write_fulfillment_flags("123", flags)
@@ -313,3 +371,5 @@ def test_fulfillment_flags_persist_across_batch() -> None:
 
     assert loaded.invoice_printed is True
     assert loaded.last_run_iso == "2026-04-04T09:00:00"
+    stored = json.loads(repo.values["rechnungen.fulfillment_status"])
+    assert stored["123"]["invoice_printed"] is True

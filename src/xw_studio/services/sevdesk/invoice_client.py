@@ -479,15 +479,40 @@ class InvoiceClient:
         self,
         invoice_id: str,
         *,
-        send_type: str = "PRN",
+        send_type: str = "VPR",
         send_draft: bool = False,
     ) -> dict[str, Any]:
         """Trigger sevDesk ``sendBy`` for one invoice."""
         body = {
-            "sendType": str(send_type).strip() or "PRN",
+            "sendType": str(send_type).strip() or "VPR",
             "sendDraft": bool(send_draft),
         }
         response = self._conn.put(f"/Invoice/{str(invoice_id).strip()}/sendBy", json=body)
+        return response.json() if response.content else {}
+
+    def send_invoice_via_email(
+        self,
+        invoice_id: str,
+        *,
+        to_email: str,
+        subject: str,
+        text: str,
+        copy: bool = True,
+        cc_email: str = "",
+        bcc_email: str = "",
+    ) -> dict[str, Any]:
+        """Send one invoice via sevDesk email delivery."""
+        body = {
+            "toEmail": str(to_email or "").strip(),
+            "subject": str(subject or "").strip(),
+            "text": str(text or "").strip(),
+            "copy": bool(copy),
+        }
+        if str(cc_email or "").strip():
+            body["ccEmail"] = str(cc_email).strip()
+        if str(bcc_email or "").strip():
+            body["bccEmail"] = str(bcc_email).strip()
+        response = self._conn.post(f"/Invoice/{str(invoice_id).strip()}/sendViaEmail", json=body)
         return response.json() if response.content else {}
 
     def render_invoice_pdf(self, invoice_id: str) -> dict[str, Any]:

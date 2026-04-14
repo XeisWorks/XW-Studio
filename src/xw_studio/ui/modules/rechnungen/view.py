@@ -631,7 +631,9 @@ class RechnungenView(QWidget):
         shipping_layout.addWidget(self._shipping_status)
         self._shipping_editor = QPlainTextEdit()
         self._shipping_editor.setPlaceholderText("Lieferadresse Zeile für Zeile bearbeiten")
-        self._shipping_editor.setMinimumHeight(104)
+        self._shipping_editor.setMinimumHeight(58)
+        self._shipping_editor.setMaximumHeight(122)
+        self._shipping_editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._shipping_editor.textChanged.connect(self._on_shipping_editor_changed)
         shipping_layout.addWidget(self._shipping_editor)
         self._btn_print_label = QPushButton("Label drucken")
@@ -1413,7 +1415,7 @@ class RechnungenView(QWidget):
             self._gb_note.hide()
         self._dl_order_ref.setText(s.order_reference or "")
         self._reset_wix_meta("Lade Wix-Daten…")
-        self._action_state.setText("Aktionen für die ausgewählte Rechnung verfügbar.")
+        self._update_action_state()
         self._gb_actions.show()
         self._update_plc_controls()
         if s.order_reference:
@@ -1436,9 +1438,27 @@ class RechnungenView(QWidget):
         self._dl_order_ref.setText("—")
         self._reset_wix_meta("—")
         self._action_state.setText("Keine Rechnung ausgewählt")
+        self._action_state.setStyleSheet("color: #64748b;")
         self._gb_actions.hide()
         self._update_plc_controls()
         self._reset_stuecke()
+
+    def _update_action_state(self) -> None:
+        row_data = self._table.selected_row_data() or {}
+        payload = row_data.get("__fulfillment__")
+        flags = payload if isinstance(payload, dict) else {}
+        last_error = str(flags.get("last_error") or "").strip()
+        last_warning = str(flags.get("last_warning") or "").strip()
+        if last_error:
+            self._action_state.setText(f"Letzter Fulfillment-Fehler: {last_error}")
+            self._action_state.setStyleSheet("color: #ef5350; font-weight: 600;")
+            return
+        if last_warning:
+            self._action_state.setText(f"Wix-/Fulfillment-Hinweis: {last_warning}")
+            self._action_state.setStyleSheet("color: #f59e0b; font-weight: 600;")
+            return
+        self._action_state.setText("Aktionen für die ausgewählte Rechnung verfügbar.")
+        self._action_state.setStyleSheet("color: #64748b;")
 
     def _reset_wix_meta(self, text: str) -> None:
         self._pending_wix_reference = ""
@@ -1654,13 +1674,21 @@ class RechnungenView(QWidget):
         self._shipping_editor.blockSignals(True)
         self._shipping_editor.setPlainText(content)
         self._shipping_editor.blockSignals(False)
+        self._adjust_shipping_editor_height()
         self._update_plc_controls()
 
     def _current_shipping_lines(self) -> list[str]:
         return self._normalize_shipping_lines(self._shipping_editor.toPlainText().splitlines())
 
+    def _adjust_shipping_editor_height(self) -> None:
+        lines = max(2, min(6, self._shipping_editor.blockCount()))
+        line_height = self._shipping_editor.fontMetrics().lineSpacing()
+        target = max(58, min(122, 18 + lines * line_height))
+        self._shipping_editor.setFixedHeight(target)
+
     def _on_shipping_editor_changed(self) -> None:
         summary = self._selected_summary()
+        self._adjust_shipping_editor_height()
         if summary is None:
             self._update_plc_controls()
             return
