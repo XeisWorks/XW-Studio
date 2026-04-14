@@ -90,6 +90,16 @@ def register_default_services(container: Container) -> None:
         lambda c: WixOrdersClient(secret_service=c.resolve(SecretService)),
     )
     container.register(
+        DraftInvoiceService,
+        lambda c: DraftInvoiceService(
+            c.resolve(SevdeskConnection),
+            c.resolve(WixOrdersClient),
+            c.resolve(PartClient),
+            c.resolve(ContactClient),
+            c.resolve(InvoiceClient),
+        ),
+    )
+    container.register(
         InvoiceProcessingService,
         lambda c: InvoiceProcessingService(
             c.config,
@@ -97,15 +107,7 @@ def register_default_services(container: Container) -> None:
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
             c.resolve(WixOrdersClient),
             c.resolve(MailDeliveryService),
-        ),
-    )
-    container.register(
-        DraftInvoiceService,
-        lambda c: DraftInvoiceService(
-            c.resolve(SevdeskConnection),
-            c.resolve(WixOrdersClient),
-            c.resolve(PartClient),
-            c.resolve(ContactClient),
+            c.resolve(DraftInvoiceService),
         ),
     )
     container.register(

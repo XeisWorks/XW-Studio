@@ -475,6 +475,39 @@ class InvoiceClient:
                     return item
         return {}
 
+    def fetch_invoice_positions(self, invoice_id: str) -> list[dict[str, Any]]:
+        """Return invoice positions for one invoice."""
+        params = {
+            "invoice[id]": str(invoice_id).strip(),
+            "invoice[objectName]": "Invoice",
+            "embed": "part",
+        }
+        response = self._conn.get("/InvoicePos", params=params)
+        payload = response.json()
+        objects = payload.get("objects") if isinstance(payload, dict) else []
+        if not isinstance(objects, list):
+            return []
+        return [item for item in objects if isinstance(item, dict)]
+
+    def update_invoice_draft(
+        self,
+        invoice: dict[str, Any],
+        positions: list[dict[str, Any]],
+        *,
+        take_default_address: bool = False,
+    ) -> dict[str, Any]:
+        """Persist a modified draft invoice with normalized positions."""
+        payload = {
+            "invoice": self._normalize_invoice_for_save(invoice),
+            "invoicePosSave": [self._normalize_invoice_position_for_save(position) for position in positions or []],
+            "invoicePosDelete": None,
+            "discountSave": [],
+            "discountDelete": None,
+            "takeDefaultAddress": bool(take_default_address),
+        }
+        response = self._conn.post("/Invoice/Factory/saveInvoice", json=payload)
+        return response.json() if response.content else {}
+
     def send_invoice_document(
         self,
         invoice_id: str,
@@ -543,6 +576,101 @@ class InvoiceClient:
         if decoded:
             return decoded
         raise ValueError("sevDesk PDF: kein PDF/base64 geliefert")
+
+    def _normalize_invoice_for_save(self, invoice: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(invoice, dict):
+            raise RuntimeError("Invoice-Payload fuer saveInvoice ist ungueltig")
+        payload: dict[str, Any] = {
+            "id": str(invoice.get("id") or "").strip(),
+            "objectName": "Invoice",
+            "mapAll": True,
+        }
+        for key in (
+            "invoiceDate",
+            "deliveryDate",
+            "status",
+            "invoiceType",
+            "currency",
+            "discount",
+            "address",
+            "taxRate",
+            "taxType",
+            "taxText",
+            "customerInternalNote",
+            "showNet",
+            "invoiceNumber",
+            "header",
+            "headText",
+            "footText",
+            "timeToPay",
+        ):
+            if key in invoice and invoice.get(key) not in (None, ""):
+                payload[key] = invoice.get(key)
+        for key, object_name in (
+            ("contact", "Contact"),
+            ("contactPerson", "SevUser"),
+            ("addressCountry", "StaticCountry"),
+            ("paymentMethod", "PaymentMethod"),
+            ("taxRule", "TaxRule"),
+        ):
+            ref = self._normalize_ref(invoice.get(key), object_name)
+            if ref:
+                payload[key] = ref
+        return payload
+
+    def _normalize_invoice_position_for_save(self, position: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(position, dict):
+            raise RuntimeError("InvoicePos-Payload fuer saveInvoice ist ungueltig")
+        payload: dict[str, Any] = {
+            "id": str(position.get("id") or "").strip(),
+            "objectName": "InvoicePos",
+            "mapAll": True,
+            "name": str(position.get("name") or "").strip() or "Position",
+            "text": str(position.get("text") or "").strip(),
+            "quantity": self._to_float_scalar(position.get("quantity") or 1),
+            "price": self._to_float_scalar(
+                position.get("price") if position.get("price") not in (None, "") else position.get("priceNet")
+            ),
+            "taxRate": self._to_float_scalar(position.get("taxRate")),
+            "positionNumber": self._to_int_scalar(position.get("positionNumber")),
+        }
+        unity = self._normalize_ref(position.get("unity"), "Unity")
+        if unity:
+            payload["unity"] = unity
+        part = self._normalize_ref(position.get("part"), "Part")
+        if part:
+            payload["part"] = part
+        discount = position.get("discount")
+        if discount not in (None, "", 0, 0.0):
+            payload["discount"] = self._to_float_scalar(discount)
+            payload["isPercentage"] = bool(position.get("isPercentage"))
+        return payload
+
+    @staticmethod
+    def _normalize_ref(value: Any, object_name: str) -> dict[str, str] | None:
+        if isinstance(value, dict):
+            ref_id = str(value.get("id") or "").strip()
+            if ref_id:
+                return {"id": ref_id, "objectName": object_name}
+        else:
+            ref_id = str(value or "").strip()
+            if ref_id:
+                return {"id": ref_id, "objectName": object_name}
+        return None
+
+    @staticmethod
+    def _to_float_scalar(value: Any) -> float:
+        try:
+            return float(str(value).replace(",", ".").strip())
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _to_int_scalar(value: Any) -> int:
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return 0
 
     def _extract_pdf_from_payload(self, payload: object) -> bytes | None:
         if not isinstance(payload, dict):

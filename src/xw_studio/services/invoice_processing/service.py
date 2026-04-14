@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 from xw_studio.core.config import AppConfig
+from xw_studio.services.draft_invoice.service import DraftInvoiceService
 from xw_studio.services.mailing.service import MailAttachment, MailDeliveryService
 from xw_studio.services.printing.invoice_printer import InvoicePrinter
 from xw_studio.services.printing.label_printer import LabelPrinter
@@ -108,6 +109,7 @@ class InvoiceProcessingService:
         settings_repo: SettingKvRepository | None = None,
         wix_orders: WixOrdersClient | None = None,
         mail_service: MailDeliveryService | None = None,
+        draft_invoice_service: DraftInvoiceService | None = None,
     ) -> None:
         self._invoices = invoice_client
         self._settings_repo = settings_repo
@@ -119,6 +121,7 @@ class InvoiceProcessingService:
         self._wix_digital_cache: dict[str, bool] = {}
         self._wix_order_summary_cache: dict[str, dict[str, str]] = {}
         self._mail_service = mail_service
+        self._drafts = draft_invoice_service
 
     def load_invoice_table_rows(
         self,
@@ -237,6 +240,7 @@ class InvoiceProcessingService:
             processed += 1
             flags = self.read_fulfillment_flags(summary.id)
             try:
+                self._repair_draft_products(summary)
                 digital_only = self._is_digital_only(summary) if summary.order_reference.strip() else False
                 flags = self._run_finalize_step(
                     summary,
@@ -669,6 +673,17 @@ class InvoiceProcessingService:
             if wix_email:
                 return wix_email
         return self._contact_email_from_invoice(invoice)
+
+    def _repair_draft_products(self, summary: InvoiceSummary) -> None:
+        if self._drafts is None:
+            return
+        reference = str(summary.order_reference or "").strip()
+        if not reference:
+            return
+        try:
+            self._drafts.repair_draft_product_mapping(summary.id, reference)
+        except Exception as exc:
+            raise RuntimeError(f"Produktabgleich fuer Entwurf fehlgeschlagen: {exc}") from exc
 
     def _resolve_customer_name(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> str:
         if summary.order_reference.strip():

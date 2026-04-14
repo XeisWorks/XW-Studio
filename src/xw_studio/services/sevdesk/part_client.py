@@ -111,6 +111,45 @@ class PartClient:
             logger.warning("find_part_by_sku(%r) failed: %s", sku, exc)
         return None
 
+    def get_part_by_id(self, part_id: str) -> SevdeskPart | None:
+        """Fetch one sevDesk part by id."""
+        try:
+            response = self._conn.get(f"/Part/{str(part_id).strip()}")
+            payload = response.json()
+            objects = payload.get("objects") if isinstance(payload, dict) else []
+            raw: dict[str, Any] | None = None
+            if isinstance(objects, list) and objects and isinstance(objects[0], dict):
+                raw = objects[0]
+            elif isinstance(objects, dict):
+                raw = objects
+            elif isinstance(payload, dict):
+                raw = payload
+            if isinstance(raw, dict):
+                return _parse_part(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_part_by_id(%r) failed: %s", part_id, exc)
+        return None
+
+    def create_part(self, payload: dict[str, Any]) -> SevdeskPart:
+        """Create a new sevDesk part/article."""
+        response = self._conn.post("/Part", json=payload)
+        raw_payload = response.json() if response.content else {}
+        objects = raw_payload.get("objects") if isinstance(raw_payload, dict) else []
+        raw: dict[str, Any] | None = None
+        if isinstance(objects, list) and objects and isinstance(objects[0], dict):
+            raw = objects[0]
+        elif isinstance(objects, dict):
+            raw = objects
+        elif isinstance(raw_payload, dict):
+            raw = raw_payload
+        if not isinstance(raw, dict):
+            raise RuntimeError("sevDesk-Part konnte nicht erstellt werden.")
+        created = _parse_part(raw)
+        if not created.id.strip():
+            raise RuntimeError("sevDesk-Part wurde erstellt, aber ohne ID zurueckgegeben.")
+        logger.info("PartClient: created part %s for SKU %s", created.id, created.sku)
+        return created
+
     def get_part_stock(self, part_id: str) -> int:
         """Return current stock for a single sevDesk Part.
 

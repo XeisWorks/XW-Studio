@@ -1811,6 +1811,13 @@ class RechnungenView(QWidget):
             for sku in missing:
                 lines.append(f"- {sku}")
 
+        auto_create = preview.get("auto_create_skus") if isinstance(preview.get("auto_create_skus"), list) else []
+        if auto_create:
+            lines.append("")
+            lines.append("Werden vor dem Entwurf automatisch in sevDesk angelegt:")
+            for sku in auto_create:
+                lines.append(f"- {sku}")
+
         can_create = bool(preview.get("can_create"))
         dlg.set_preview_result("\n".join(lines), ok=can_create)
 

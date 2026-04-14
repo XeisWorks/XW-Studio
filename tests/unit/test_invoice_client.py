@@ -122,6 +122,27 @@ def test_invoice_client_list_parses_objects() -> None:
     assert rows[0].status_label() == "Bezahlt"
 
 
+def test_invoice_client_fetch_invoice_positions_uses_invoice_filter_params() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/InvoicePos")
+        params = dict(request.url.params)
+        assert params["invoice[id]"] == "123"
+        assert params["invoice[objectName]"] == "Invoice"
+        assert params["embed"] == "part"
+        return httpx.Response(200, json={"objects": [{"id": "POS-1", "name": "Artikel"}]})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://example.test/api/v1")
+    cfg = AppConfig()
+    conn = SevdeskConnection(client=client, config=cfg)
+    inv = InvoiceClient(conn)
+
+    positions = inv.fetch_invoice_positions("123")
+
+    assert len(positions) == 1
+    assert positions[0]["id"] == "POS-1"
+
+
 def test_invoice_summary_coerces_null_invoice_number() -> None:
     summary = InvoiceSummary.model_validate(
         {

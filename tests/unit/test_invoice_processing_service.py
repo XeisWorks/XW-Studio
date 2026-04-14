@@ -126,6 +126,15 @@ class _MailServiceStub:
         )
 
 
+class _DraftServiceStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def repair_draft_product_mapping(self, invoice_id: str, wix_order_number: str) -> bool:
+        self.calls.append((invoice_id, wix_order_number))
+        return True
+
+
 def test_sensitive_country_override_from_settings() -> None:
     rows = [
         InvoiceSummary(
@@ -311,3 +320,26 @@ def test_product_step_returns_warning_for_unconfirmed_physical_fulfillment() -> 
     assert flags.product_ready is True
     assert flags.wix_fulfilled is False
     assert "Wix-Fulfillment nicht bestaetigt" in flags.last_warning
+
+
+def test_start_fullflow_repairs_draft_products_before_finalize() -> None:
+    summary = InvoiceSummary(id="11", invoiceNumber="RE-TEST-11", order_reference="20519")
+    client = _InvoiceClientStub([summary])
+    wix = _WixOrdersStub()
+    mailer = _MailServiceStub()
+    drafts = _DraftServiceStub()
+    svc = InvoiceProcessingService(
+        AppConfig(),
+        client,  # type: ignore[arg-type]
+        _RepoStub({}),
+        wix,  # type: ignore[arg-type]
+        mailer,  # type: ignore[arg-type]
+        drafts,  # type: ignore[arg-type]
+    )
+
+    result = svc.run_start_fullflow(full_mode=False)
+
+    assert result["successful"] == 1
+    assert drafts.calls == [("11", "20519")]
+    assert client.last_send_document["invoice_id"] == "11"
+    assert mailer.calls[0]["to_email"] == "wix@example.test"
