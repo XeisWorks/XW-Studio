@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from xw_studio.repositories.settings_kv import SettingKvRepository
 from xw_studio.core.config import AppConfig
@@ -91,6 +91,7 @@ class InvoiceProcessingService:
         self._invoice_printer = InvoicePrinter(config.printing)
         self._label_printer = LabelPrinter(config.printing)
         self._wix_address_cache: dict[str, list[str]] = {}
+        self._wix_digital_cache: dict[str, bool] = {}
 
     def load_invoice_table_rows(
         self,
@@ -184,25 +185,38 @@ class InvoiceProcessingService:
             json.dumps(payload, ensure_ascii=False),
         )
 
-    def run_start_fullflow(self, *, full_mode: bool) -> dict[str, object]:
+    def run_start_fullflow(
+        self,
+        *,
+        full_mode: bool,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> dict[str, object]:
         """Execute invoice processing flow for all open drafts (status=100)."""
         started = time.perf_counter()
         summaries = self._load_all_open_drafts(limit_per_page=100, max_pages=20)
         if full_mode:
-            self._prefetch_wix_address_lines(summaries)
+            self._prefetch_wix_order_context(summaries)
         updates: dict[str, FulfillmentFlags] = {}
         processed = 0
         failures = 0
+        successful = 0
+        aborted = False
         for summary in summaries:
+            if should_abort is not None and should_abort():
+                aborted = True
+                logger.info("START aborted before invoice %s", summary.id)
+                break
             processed += 1
             flags = self.read_fulfillment_flags(summary.id)
             try:
-                flags = self._run_finalize_step(summary, flags)
-                if full_mode:
+                digital_only = full_mode and self._is_digital_only(summary)
+                flags = self._run_finalize_step(summary, flags, digital_only=digital_only)
+                if full_mode and not digital_only:
                     flags = self._run_invoice_print_step(summary, flags)
                     flags = self._run_label_print_step(summary, flags)
                     flags = self._run_product_step(summary, flags)
                 flags = self._run_mail_step(summary, flags)
+                successful += 1
             except Exception as exc:
                 failures += 1
                 flags = self._with_error(flags, exc)
@@ -219,33 +233,41 @@ class InvoiceProcessingService:
         return {
             "processed": processed,
             "failures": failures,
+            "successful": successful,
             "full_mode": full_mode,
+            "aborted": aborted,
         }
 
-    def _prefetch_wix_address_lines(self, summaries: list[InvoiceSummary]) -> None:
+    def _prefetch_wix_order_context(self, summaries: list[InvoiceSummary]) -> None:
         if self._wix_orders is None or not self._wix_orders.has_credentials():
             return
         refs = sorted({s.order_reference.strip() for s in summaries if s.order_reference.strip()})
         if not refs:
             return
 
-        missing = [ref for ref in refs if ref not in self._wix_address_cache]
+        missing = [
+            ref
+            for ref in refs
+            if ref not in self._wix_address_cache or ref not in self._wix_digital_cache
+        ]
         if not missing:
             return
 
         started = time.perf_counter()
         workers = max(2, min(8, len(missing)))
 
-        def load_ref(ref: str) -> tuple[str, list[str]]:
+        def load_ref(ref: str) -> tuple[str, list[str], bool]:
             lines = self._wix_orders.resolve_order_address_lines(ref)
-            return ref, lines
+            digital_only = self._wix_orders.is_reference_digital_only(ref)
+            return ref, lines, bool(digital_only)
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(load_ref, ref) for ref in missing]
             for fut in as_completed(futures):
                 try:
-                    ref, lines = fut.result()
+                    ref, lines, digital_only = fut.result()
                     self._wix_address_cache[ref] = list(lines)
+                    self._wix_digital_cache[ref] = digital_only
                 except Exception as exc:
                     logger.warning("Wix prefetch failed: %s", exc)
 
@@ -268,6 +290,21 @@ class InvoiceProcessingService:
         self._wix_address_cache[ref] = list(lines)
         return list(lines)
 
+    def _is_digital_only(self, summary: InvoiceSummary) -> bool:
+        ref = str(summary.order_reference or "").strip()
+        if not ref or self._wix_orders is None or not self._wix_orders.has_credentials():
+            return False
+        cached = self._wix_digital_cache.get(ref)
+        if cached is not None:
+            return bool(cached)
+        try:
+            resolved = bool(self._wix_orders.is_reference_digital_only(ref))
+        except Exception as exc:
+            logger.warning("Wix digital-only resolve failed ref=%s: %s", ref, exc)
+            resolved = False
+        self._wix_digital_cache[ref] = resolved
+        return resolved
+
     def retry_fulfillment_step(self, invoice_id: str, step: str) -> FulfillmentFlags:
         """Retry one fulfillment step for a single invoice and persist state."""
         summary = self._load_summary_by_id(invoice_id)
@@ -284,6 +321,45 @@ class InvoiceProcessingService:
             next_flags = self._run_product_step(summary, flags)
         else:
             raise ValueError(f"Unbekannter Schritt: {step}")
+        self.write_fulfillment_flags(summary.id, next_flags)
+        return next_flags
+
+    def print_label_for_invoice(
+        self,
+        invoice_id: str,
+        *,
+        override_lines: list[str] | None = None,
+    ) -> FulfillmentFlags:
+        """Print one shipping label for *invoice_id* and persist ``label_printed``.
+
+        ``override_lines`` allows UI-edited address lines to be used instead of the
+        address resolved from Wix/sevDesk.
+        """
+        summary = self._load_summary_by_id(invoice_id)
+        flags = self.read_fulfillment_flags(summary.id)
+        lines = [
+            str(line or "").strip()
+            for line in (override_lines or [])
+            if str(line or "").strip()
+        ]
+        if not lines:
+            full = self._invoices.fetch_invoice_by_id(summary.id)
+            lines = self._shipping_lines_from_invoice(full, summary)
+        if not lines:
+            raise RuntimeError("Keine Lieferadresse für Labeldruck")
+        self._label_printer.print_address(lines)
+        stamped = self._stamp(flags)
+        next_flags = FulfillmentFlags(
+            label_printed=True,
+            invoice_printed=stamped.invoice_printed,
+            product_ready=stamped.product_ready,
+            mail_sent=stamped.mail_sent,
+            wix_fulfilled=stamped.wix_fulfilled,
+            payment_applicable=stamped.payment_applicable,
+            payment_booked=stamped.payment_booked,
+            last_run_iso=stamped.last_run_iso,
+            last_error="",
+        )
         self.write_fulfillment_flags(summary.id, next_flags)
         return next_flags
 
@@ -336,8 +412,14 @@ class InvoiceProcessingService:
             last_error=str(exc),
         )
 
-    def _run_finalize_step(self, summary: InvoiceSummary, flags: FulfillmentFlags) -> FulfillmentFlags:
-        send_type = "PRN" if summary.order_reference.strip() else "VM"
+    def _run_finalize_step(
+        self,
+        summary: InvoiceSummary,
+        flags: FulfillmentFlags,
+        *,
+        digital_only: bool = False,
+    ) -> FulfillmentFlags:
+        send_type = "VM" if digital_only or not summary.order_reference.strip() else "PRN"
         self._invoices.send_invoice_document(summary.id, send_type=send_type, send_draft=False)
         stamped = self._stamp(flags)
         return FulfillmentFlags(
@@ -346,8 +428,8 @@ class InvoiceProcessingService:
             product_ready=stamped.product_ready,
             mail_sent=stamped.mail_sent or send_type == "VM",
             wix_fulfilled=stamped.wix_fulfilled,
-            payment_applicable=False,
-            payment_booked=False,
+            payment_applicable=stamped.payment_applicable or bool(summary.order_reference.strip()),
+            payment_booked=stamped.payment_booked,
             last_run_iso=stamped.last_run_iso,
             last_error="",
         )

@@ -54,6 +54,34 @@ class _InvoiceClientE2E:
         self.send_calls.append((invoice_id, send_type, send_draft))
 
 
+class _WixOrdersDigitalOnlyStub:
+    def has_credentials(self) -> bool:
+        return True
+
+    def resolve_order_address_lines(self, reference: str) -> list[str]:
+        return []
+
+    def is_reference_digital_only(self, reference: str) -> bool:
+        return True
+
+
+class _WixOrdersPhysicalStub:
+    def has_credentials(self) -> bool:
+        return True
+
+    def resolve_order_address_lines(self, reference: str) -> list[str]:
+        return ["John Doe", "Main St 1", "6020 Innsbruck", "AT"]
+
+    def is_reference_digital_only(self, reference: str) -> bool:
+        return False
+
+    def get_fulfillable_items(self, reference: str) -> list[dict]:
+        return [{"id": "line-1"}]
+
+    def create_fulfillment(self, reference: str, items: list[dict]) -> dict:
+        return {"id": "ful-1"}
+
+
 class _SettingsRepoE2E:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -188,6 +216,86 @@ def test_fullflow_invoice_and_label_steps() -> None:
         assert result["processed"] == 1
         assert result["failures"] == 0
         assert mock_inv_print.called
+
+
+def test_fullflow_skips_print_for_digital_only_wix_orders() -> None:
+    """Digital-only Wix orders should be mailed/finalized without print or label output."""
+    config = AppConfig()
+    invoice_client = _InvoiceClientE2E()
+    repo = _SettingsRepoE2E()
+    wix_orders = _WixOrdersDigitalOnlyStub()
+
+    service = InvoiceProcessingService(config, invoice_client, repo, wix_orders)
+
+    invoice_client.list_invoice_summaries = lambda **_: [
+        InvoiceSummary(
+            id="INV-DIGI-001",
+            invoice_number="R-DIGI-001",
+            contact_name="John Doe",
+            order_reference="WIX-12345",
+        )
+    ]
+
+    with patch("xw_studio.services.printing.invoice_printer.print_pdf_file_silent") as mock_inv_print, \
+         patch("xw_studio.services.printing.label_printer.LabelPrinter.print_address") as mock_label_print:
+        result = service.run_start_fullflow(full_mode=True)
+
+    assert result["processed"] == 1
+    assert result["failures"] == 0
+    assert result["successful"] == 1
+    assert invoice_client.send_calls == [("INV-DIGI-001", "VM", False)]
+    assert not mock_inv_print.called
+    assert not mock_label_print.called
+
+
+def test_start_fullflow_honors_abort_between_invoices() -> None:
+    """Abort callback should stop the batch before starting the next invoice."""
+    config = AppConfig()
+    invoice_client = _InvoiceClientE2E()
+    repo = _SettingsRepoE2E()
+
+    service = InvoiceProcessingService(config, invoice_client, repo, None)
+
+    invoice_client.list_invoice_summaries = lambda **kwargs: (
+        [
+            InvoiceSummary(id="INV-001", invoice_number="R-001", contact_name="John Doe"),
+            InvoiceSummary(id="INV-002", invoice_number="R-002", contact_name="Jane Doe"),
+        ]
+        if kwargs.get("offset", 0) == 0 and kwargs.get("status") == 100
+        else []
+    )
+
+    state = {"checks": 0}
+
+    def should_abort() -> bool:
+        state["checks"] += 1
+        return state["checks"] > 1
+
+    result = service.run_start_fullflow(full_mode=False, should_abort=should_abort)
+
+    assert result["processed"] == 1
+    assert result["successful"] == 1
+    assert result["failures"] == 0
+    assert result["aborted"] is True
+    assert invoice_client.send_calls == [("INV-001", "VM", False)]
+
+
+def test_print_label_for_invoice_uses_override_lines_and_persists_flag() -> None:
+    config = AppConfig()
+    invoice_client = _InvoiceClientE2E()
+    repo = _SettingsRepoE2E()
+    service = InvoiceProcessingService(config, invoice_client, repo, None)
+
+    with patch("xw_studio.services.printing.label_printer.LabelPrinter.print_address") as mock_label_print:
+        result = service.print_label_for_invoice(
+            "INV-001",
+            override_lines=["John Doe", "Edited Street 9", "6020 Innsbruck", "AT"],
+        )
+
+    mock_label_print.assert_called_once_with(["John Doe", "Edited Street 9", "6020 Innsbruck", "AT"])
+    assert result.label_printed is True
+    stored = repo.get_value_json("rechnungen.fulfillment_status") or ""
+    assert "label_printed" in stored
 
 
 def test_fulfillment_flags_persist_across_batch() -> None:

@@ -5,7 +5,8 @@ from xw_studio.bootstrap import register_default_services
 from xw_studio.core.config import AppConfig
 from xw_studio.core.container import Container
 from xw_studio.core.signals import AppSignals
-from xw_studio.ui.modules.rechnungen.tagesgeschaeft_view import TagesgeschaeftView
+from xw_studio.services.inventory.service import StartMode, StartPreflight
+from xw_studio.ui.modules.rechnungen.tagesgeschaeft_view import TagesgeschaeftView, _StartDialog
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
 
 
@@ -24,6 +25,18 @@ def test_tagesgeschaeft_contains_rechnungen_view(qtbot: object) -> None:
     assert hasattr(view, "_rechnungen_view")  # noqa: SLF001
     assert view._btn_start.text() == "▶  START"  # noqa: SLF001
     assert view._btn_start.menu() is not None  # noqa: SLF001
+    assert view._btn_stop.text() == "STOP"  # noqa: SLF001
+    assert not view._btn_stop.isEnabled()  # noqa: SLF001
+
+
+def test_start_dialog_forces_invoice_mode_when_print_plan_missing(qtbot: object) -> None:
+    preflight = StartPreflight(open_invoice_count=2, decisions=[], missing_position_data=True)
+    dialog = _StartDialog(preflight, initial_mode=StartMode.INVOICES_AND_PRINT)
+    qtbot.addWidget(dialog)
+
+    assert dialog.full_mode is False
+    assert dialog.selected_mode == StartMode.INVOICES_ONLY
+    assert not dialog._mode_full.isEnabled()  # noqa: SLF001
 
 
 def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
@@ -37,6 +50,7 @@ def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
     assert view._btn_print_label.text() == "Label drucken"  # noqa: SLF001
     assert view._btn_print_plc.text() == "PLC-Label drucken"  # noqa: SLF001
     assert view._btn_print_music.text() == "Noten drucken"  # noqa: SLF001
+    assert view._shipping_editor is not None  # noqa: SLF001
     assert view._gb_actions.isHidden()  # noqa: SLF001
     assert not view._btn_print.isEnabled()  # noqa: SLF001
     assert not view._btn_print_label.isEnabled()  # noqa: SLF001

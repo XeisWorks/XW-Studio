@@ -31,6 +31,7 @@ from xw_studio.services.inventory.service import (
     InventoryService,
     ReprintExecutionReport,
     ReprintPreflight,
+    StartExecutionReport,
     StartMode,
     StartPreflight,
 )
@@ -161,7 +162,12 @@ class _QueueTabView(QWidget):
 class _StartDialog(QDialog):
     """Pre-flight dialog for the ▶ START workflow."""
 
-    def __init__(self, preflight: StartPreflight, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        preflight: StartPreflight,
+        initial_mode: StartMode = StartMode.INVOICES_AND_PRINT,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._preflight = preflight
         self.setWindowTitle("Tagesgeschäft starten")
@@ -181,11 +187,14 @@ class _StartDialog(QDialog):
         gb_lay = QVBoxLayout(gb)
         self._mode_invoices = QPushButton("📄  Nur Rechnungen")
         self._mode_invoices.setCheckable(True)
-        self._mode_invoices.setChecked(True)
         self._mode_invoices.setMinimumHeight(40)
         self._mode_full = QPushButton("📄 + 🖨  Rechnungen + Druck (Noten & Labels vorbereiten)")
         self._mode_full.setCheckable(True)
         self._mode_full.setMinimumHeight(40)
+        full_allowed = not preflight.missing_position_data
+        self._mode_full.setEnabled(full_allowed)
+        self._mode_invoices.setChecked(initial_mode != StartMode.INVOICES_AND_PRINT or not full_allowed)
+        self._mode_full.setChecked(initial_mode == StartMode.INVOICES_AND_PRINT and full_allowed)
         gb_lay.addWidget(self._mode_invoices)
         gb_lay.addWidget(self._mode_full)
         layout.addWidget(gb)
@@ -213,6 +222,10 @@ class _StartDialog(QDialog):
     @property
     def full_mode(self) -> bool:
         return bool(self._mode_full.isChecked())
+
+    @property
+    def selected_mode(self) -> StartMode:
+        return StartMode.INVOICES_AND_PRINT if self.full_mode else StartMode.INVOICES_ONLY
 
     def _format_preflight(self) -> str:
         lines: list[str] = [
@@ -257,6 +270,7 @@ class TagesgeschaeftView(QWidget):
         self._reprint_worker: BackgroundWorker | None = None
         self._reprint_exec_worker: BackgroundWorker | None = None
         self._start_requested_mode: StartMode = StartMode.INVOICES_AND_PRINT
+        self._start_abort_requested = False
         self._badge_timer = QTimer(self)
         self._badge_timer.setInterval(60000)
         self._badge_timer.timeout.connect(self._refresh_badges)
@@ -322,6 +336,21 @@ class TagesgeschaeftView(QWidget):
         self._btn_start.setMenu(menu)
         self._btn_start.clicked.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
         bar_lay.addWidget(self._btn_start)
+
+        self._btn_stop = QPushButton("STOP")
+        self._btn_stop.setToolTip("Laufenden START nach der aktuellen Rechnung anhalten")
+        self._btn_stop.setFixedHeight(34)
+        self._btn_stop.setFixedWidth(100)
+        self._btn_stop.setEnabled(False)
+        self._btn_stop.setStyleSheet(
+            "QPushButton { background-color: #ef6c00; color: white; border-radius: 6px;"
+            " font-weight: bold; font-size: 13px; }"
+            " QPushButton:hover { background-color: #e65100; }"
+            " QPushButton:pressed { background-color: #bf360c; }"
+            " QPushButton:disabled { background-color: #cfd8dc; color: #607d8b; }"
+        )
+        self._btn_stop.clicked.connect(self._on_start_stop_clicked)
+        bar_lay.addWidget(self._btn_stop)
 
         btn_beenden = QPushButton("■  Beenden")
         btn_beenden.setToolTip("App beenden (laufende Hintergrundaufgaben werden abgewartet)")
@@ -393,56 +422,104 @@ class TagesgeschaeftView(QWidget):
     def _on_start_preflight_ready(self, result: object) -> None:
         if not isinstance(result, StartPreflight):
             return
-        mode = self._start_requested_mode
-
-        if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
-            QMessageBox.information(
-                self,
-                "Hinweis",
-                "Für den Druckplan fehlen noch Positionsdaten. "
-                "Der START läuft daher im Modus 'Nur Rechnungen'.",
-            )
-            mode = StartMode.INVOICES_ONLY
+        dlg = _StartDialog(result, initial_mode=self._start_requested_mode, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            signals: AppSignals = self._container.resolve(AppSignals)
+            signals.status_message.emit("START abgebrochen", 2500)
+            return
+        mode = dlg.selected_mode
 
         logger.info("Tagesgeschäft START: mode=%s", mode.value)
 
         if self._start_exec_worker is not None and self._start_exec_worker.isRunning():
             return
 
+        self._start_abort_requested = False
+        self._set_start_running(True)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("START wird ausgefuehrt…", 2500)
 
         def job() -> dict[str, object]:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-            return invoice_service.run_start_fullflow(full_mode=(mode == StartMode.INVOICES_AND_PRINT))
+            batch_result = invoice_service.run_start_fullflow(
+                full_mode=(mode == StartMode.INVOICES_AND_PRINT),
+                should_abort=lambda: self._start_abort_requested,
+            )
+            inventory_report: StartExecutionReport | None = None
+            inventory_warning = ""
+            if mode == StartMode.INVOICES_AND_PRINT:
+                if result.missing_position_data:
+                    inventory_warning = (
+                        "Inventar wurde nicht aktualisiert, weil kein Druckplan vorlag."
+                    )
+                elif bool(batch_result.get("failures")) or bool(batch_result.get("aborted")):
+                    inventory_warning = (
+                        "Inventar wurde nicht aktualisiert, weil der Lauf Fehler hatte "
+                        "oder manuell gestoppt wurde."
+                    )
+                else:
+                    inventory_service: InventoryService = self._container.resolve(InventoryService)
+                    inventory_report = inventory_service.execute_start_workflow(result, mode)
+            return {
+                "batch": batch_result,
+                "inventory_report": inventory_report,
+                "inventory_warning": inventory_warning,
+            }
 
         self._start_exec_worker = BackgroundWorker(job)
         self._start_exec_worker.signals.result.connect(self._on_start_executed)
         self._start_exec_worker.signals.error.connect(self._on_start_preflight_error)
+        self._start_exec_worker.signals.finished.connect(lambda: self._set_start_running(False))
         self._start_exec_worker.start()
 
     def _on_start_executed(self, result: object) -> None:
         if not isinstance(result, dict):
             return
-        processed = int(result.get("processed") or 0)
-        failures = int(result.get("failures") or 0)
-        full_mode = bool(result.get("full_mode"))
+        batch = result.get("batch") if isinstance(result.get("batch"), dict) else result
+        inventory_report = result.get("inventory_report")
+        inventory_warning = str(result.get("inventory_warning") or "")
+
+        processed = int(batch.get("processed") or 0)
+        failures = int(batch.get("failures") or 0)
+        successful = int(batch.get("successful") or max(0, processed - failures))
+        full_mode = bool(batch.get("full_mode"))
+        aborted = bool(batch.get("aborted"))
         mode_label = StartMode.INVOICES_AND_PRINT.value if full_mode else StartMode.INVOICES_ONLY.value
 
         signals: AppSignals = self._container.resolve(AppSignals)
-        signals.status_message.emit(
-            f"START ausgefuehrt: {processed} Rechnungen ({mode_label}), Fehler: {failures}",
-            5000,
-        )
+        if aborted:
+            signals.status_message.emit(
+                f"START gestoppt: {successful}/{processed} Rechnungen verarbeitet, Fehler: {failures}",
+                5000,
+            )
+        else:
+            signals.status_message.emit(
+                f"START ausgefuehrt: {processed} Rechnungen ({mode_label}), Fehler: {failures}",
+                5000,
+            )
+
+        lines = [
+            f"Modus: {mode_label}",
+            f"Verarbeitete Rechnungen: {processed}",
+            f"Erfolgreich: {successful}",
+            f"Fehler: {failures}",
+        ]
+        if aborted:
+            lines.append("Laufstatus: manuell gestoppt")
+        if isinstance(inventory_report, StartExecutionReport):
+            lines.append(
+                f"Inventar aktualisiert: {'ja' if inventory_report.stock_updated else 'nein'}"
+            )
+            lines.append(
+                f"Inventar-Druckjobs: {len(inventory_report.printed_skus)}"
+            )
+        elif inventory_warning:
+            lines.append(inventory_warning)
 
         QMessageBox.information(
             self,
             "START abgeschlossen",
-            (
-                f"Modus: {mode_label}\n"
-                f"Verarbeitete Rechnungen: {processed}\n"
-                f"Fehler: {failures}"
-            ),
+            "\n".join(lines),
         )
 
         self._tabs.setCurrentIndex(0)
@@ -450,12 +527,25 @@ class TagesgeschaeftView(QWidget):
         self._refresh_badges()
 
     def _on_start_preflight_error(self, exc: Exception) -> None:
+        self._set_start_running(False)
         logger.error("Preflight failed: %s", exc)
         QMessageBox.warning(
             self,
             "Fehler",
             f"Pre-Flight konnte nicht erstellt werden:\n\n{exc}",
         )
+
+    def _set_start_running(self, running: bool) -> None:
+        self._btn_start.setEnabled(not running)
+        self._btn_stop.setEnabled(running)
+
+    def _on_start_stop_clicked(self) -> None:
+        if self._start_exec_worker is None or not self._start_exec_worker.isRunning():
+            return
+        self._start_abort_requested = True
+        self._btn_stop.setEnabled(False)
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("STOP angefordert – aktueller Datensatz wird noch beendet…", 4000)
 
     def _on_reprints_clicked(self) -> None:
         """Trigger reprint preflight job for stock-up workflow."""
@@ -466,9 +556,8 @@ class TagesgeschaeftView(QWidget):
         signals.status_message.emit("Nachdrucke Pre-Flight wird erstellt…", 2500)
 
         def job() -> ReprintPreflight:
-            service: DailyBusinessService = self._container.resolve(DailyBusinessService)
-            requirements = service.load_requirements()
             inventory_service: InventoryService = self._container.resolve(InventoryService)
+            requirements = inventory_service.load_pending_requirements()
             return inventory_service.build_reprint_preflight(requirements)
 
         self._reprint_worker = BackgroundWorker(job)

@@ -427,6 +427,8 @@ class RechnungenView(QWidget):
         self._pending_wix_reference = ""
         self._pending_stuecke_reference = ""
         self._wix_context_cache: dict[str, dict[str, object]] = {}
+        self._shipping_address_overrides: dict[str, list[str]] = {}
+        self._shipping_source_lines: list[str] = []
         self._wix_context_seq = 0
         self._open_overview_seq = 0
         self._mollie_timer = QTimer(self)
@@ -590,9 +592,6 @@ class RechnungenView(QWidget):
         self._wix_order_no = QLabel("—")
         self._wix_customer = QLabel("—")
         self._wix_customer_email = QLabel("—")
-        self._wix_shipping = QLabel("—")
-        self._wix_shipping.setWordWrap(True)
-        self._wix_shipping.setMinimumHeight(38)
         info_labels = (
             self._dl_number,
             self._dl_date,
@@ -605,7 +604,6 @@ class RechnungenView(QWidget):
             self._wix_order_no,
             self._wix_customer,
             self._wix_customer_email,
-            self._wix_shipping,
         )
         for lbl in info_labels:
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -621,9 +619,27 @@ class RechnungenView(QWidget):
         right_form.addRow("Land:", self._dl_country)
         right_form.addRow("Order-Ref:", self._dl_order_ref)
         right_form.addRow("Wix-Kunde:", self._wix_customer)
-        right_form.addRow("Lieferadresse:", self._wix_shipping)
         self._gb_info.hide()
         detail_main.addWidget(self._gb_info)
+
+        self._gb_shipping = QGroupBox("VERSANDADRESSE")
+        shipping_layout = QVBoxLayout(self._gb_shipping)
+        shipping_layout.setSpacing(6)
+        self._shipping_status = QLabel("—")
+        self._shipping_status.setWordWrap(True)
+        self._shipping_status.setStyleSheet("color: #64748b;")
+        shipping_layout.addWidget(self._shipping_status)
+        self._shipping_editor = QPlainTextEdit()
+        self._shipping_editor.setPlaceholderText("Lieferadresse Zeile für Zeile bearbeiten")
+        self._shipping_editor.setMinimumHeight(104)
+        self._shipping_editor.textChanged.connect(self._on_shipping_editor_changed)
+        shipping_layout.addWidget(self._shipping_editor)
+        self._btn_print_label = QPushButton("Label drucken")
+        self._btn_print_label.clicked.connect(self._on_print_label_clicked)
+        self._btn_print_label.setEnabled(False)
+        shipping_layout.addWidget(self._btn_print_label, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._gb_shipping.hide()
+        detail_main.addWidget(self._gb_shipping)
 
         self._gb_note = QGroupBox("Käufernotiz")
         note_layout = QVBoxLayout(self._gb_note)
@@ -652,20 +668,15 @@ class RechnungenView(QWidget):
         self._btn_print.setEnabled(False)
         actions_layout.addWidget(self._btn_print, 2, 0)
 
-        self._btn_print_label = QPushButton("Label drucken")
-        self._btn_print_label.clicked.connect(self._on_print_label_clicked)
-        self._btn_print_label.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_label, 2, 1)
-
         self._btn_print_plc = QPushButton("PLC-Label drucken")
         self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
         self._btn_print_plc.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_plc, 3, 0)
+        actions_layout.addWidget(self._btn_print_plc, 2, 1)
 
         self._btn_print_music = QPushButton("Noten drucken")
         self._btn_print_music.clicked.connect(self._on_print_music_clicked)
         self._btn_print_music.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_music, 3, 1)
+        actions_layout.addWidget(self._btn_print_music, 3, 0, 1, 2)
         self._gb_actions.hide()
         detail_main.addWidget(self._gb_actions)
 
@@ -1071,11 +1082,37 @@ class RechnungenView(QWidget):
     def _on_print_label_clicked(self) -> None:
         if not self._print_allowed:
             return
-        if self._require_selected_invoice() is None:
+        summary = self._require_selected_invoice()
+        if summary is None:
             return
-        from xw_studio.ui.modules.rechnungen.print_dialog import run_label_pdf_print
+        shipping_lines = self._current_shipping_lines()
+        if len(shipping_lines) < 2:
+            QMessageBox.information(
+                self,
+                "Labeldruck",
+                "Bitte zuerst eine vollständige Lieferadresse mit mindestens zwei Zeilen eingeben.",
+            )
+            return
+        if self._fulfillment_step_worker is not None and self._fulfillment_step_worker.isRunning():
+            return
 
-        run_label_pdf_print(self, self._container)
+        self._overlay.show_with_message("Labeldruck läuft…")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        def job() -> dict[str, object]:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            flags = service.print_label_for_invoice(summary.id, override_lines=shipping_lines)
+            return {
+                "invoice": summary.invoice_number or summary.id,
+                "flags": flags.as_row_payload(),
+            }
+
+        self._fulfillment_step_worker = BackgroundWorker(job)
+        self._fulfillment_step_worker.signals.result.connect(self._on_direct_label_print_result)
+        self._fulfillment_step_worker.signals.error.connect(self._on_direct_label_print_error)
+        self._fulfillment_step_worker.signals.finished.connect(self._on_fulfillment_step_finished)
+        self._fulfillment_step_worker.start()
 
     def _on_print_plc_selected(self) -> None:
         if not self._print_allowed:
@@ -1359,6 +1396,7 @@ class RechnungenView(QWidget):
             return
         self._gb_open.hide()
         self._gb_info.show()
+        self._gb_shipping.show()
         s = self._summaries[row]
         self._dl_number.setText(s.invoice_number or "")
         self._dl_date.setText(s.formatted_date)
@@ -1387,6 +1425,7 @@ class RechnungenView(QWidget):
     def _reset_detail(self) -> None:
         self._gb_open.show()
         self._gb_info.hide()
+        self._gb_shipping.hide()
         for lbl in (
             self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
             self._dl_contact, self._dl_country, self._dl_id,
@@ -1406,8 +1445,9 @@ class RechnungenView(QWidget):
         self._wix_order_no.setText(text)
         self._wix_customer.setText("—")
         self._wix_customer_email.setText("—")
-        self._wix_shipping.setText("—")
-        self._adjust_shipping_label_height("—")
+        self._shipping_source_lines = []
+        self._shipping_status.setText(text)
+        self._set_shipping_editor_lines([])
 
     def _load_wix_context(self, order_reference: str) -> None:
         ref = order_reference.strip()
@@ -1554,18 +1594,6 @@ class RechnungenView(QWidget):
             "items": list(items),
         }
 
-    def _adjust_shipping_label_height(self, text: str) -> None:
-        content = str(text or "").strip()
-        if not content or content == "—":
-            self._wix_shipping.setMinimumHeight(38)
-            return
-        fm = self._wix_shipping.fontMetrics()
-        explicit_lines = max(1, content.count("\n") + 1)
-        approx_wrap_lines = max(1, len(content) // 38)
-        lines = max(explicit_lines, approx_wrap_lines)
-        target_height = max(38, min(160, lines * fm.lineSpacing() + 10))
-        self._wix_shipping.setMinimumHeight(target_height)
-
     def _load_wix_meta(self, order_reference: str) -> None:
         self._load_wix_context(order_reference)
 
@@ -1585,13 +1613,22 @@ class RechnungenView(QWidget):
         self._wix_order_no.setText(data.get("wix_order_number") or data.get("wix_order_id") or "—")
         self._wix_customer.setText(data.get("wix_customer_name") or "—")
         self._wix_customer_email.setText(data.get("wix_customer_email") or "—")
-        shipping = (data.get("wix_shipping_address") or "").strip()
-        if not shipping:
+        shipping_lines = self._normalize_shipping_lines(
+            str(data.get("wix_shipping_address") or "").splitlines()
+        )
+        if not shipping_lines:
             city = data.get("wix_shipping_city") or ""
             country = data.get("wix_shipping_country") or ""
-            shipping = " / ".join(part for part in (city, country) if part)
-        self._wix_shipping.setText(shipping or "—")
-        self._adjust_shipping_label_height(shipping or "—")
+            shipping_lines = self._normalize_shipping_lines(
+                [" ".join(part for part in (city, country) if part)]
+            )
+        self._shipping_source_lines = shipping_lines
+        self._shipping_status.setText("Adresse aus Wix")
+        selected = self._selected_summary()
+        override_lines: list[str] = []
+        if selected is not None:
+            override_lines = list(self._shipping_address_overrides.get(selected.id, []))
+        self._set_shipping_editor_lines(override_lines or shipping_lines)
 
     def _on_wix_meta_error(self, exc: Exception) -> None:
         self._reset_wix_meta(f"Wix-Fehler: {exc}")
@@ -1599,9 +1636,61 @@ class RechnungenView(QWidget):
     def _update_plc_controls(self) -> None:
         enabled = self._print_allowed and (self._selected_summary() is not None)
         self._btn_print.setEnabled(enabled)
-        self._btn_print_label.setEnabled(enabled)
         self._btn_print_plc.setEnabled(enabled)
         self._btn_print_music.setEnabled(enabled)
+        self._btn_print_label.setEnabled(enabled and len(self._current_shipping_lines()) >= 2)
+
+    @staticmethod
+    def _normalize_shipping_lines(lines: list[str] | None) -> list[str]:
+        normalized: list[str] = []
+        for line in lines or []:
+            text = str(line or "").strip()
+            if text and text != "—":
+                normalized.append(text)
+        return normalized
+
+    def _set_shipping_editor_lines(self, lines: list[str] | None) -> None:
+        content = "\n".join(self._normalize_shipping_lines(lines))
+        self._shipping_editor.blockSignals(True)
+        self._shipping_editor.setPlainText(content)
+        self._shipping_editor.blockSignals(False)
+        self._update_plc_controls()
+
+    def _current_shipping_lines(self) -> list[str]:
+        return self._normalize_shipping_lines(self._shipping_editor.toPlainText().splitlines())
+
+    def _on_shipping_editor_changed(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            self._update_plc_controls()
+            return
+        edited = self._current_shipping_lines()
+        original = self._normalize_shipping_lines(self._shipping_source_lines)
+        if edited and edited != original:
+            self._shipping_address_overrides[summary.id] = edited
+            self._shipping_status.setText("Adresse manuell angepasst")
+        else:
+            self._shipping_address_overrides.pop(summary.id, None)
+            if original:
+                self._shipping_status.setText("Adresse aus Wix")
+        self._update_plc_controls()
+
+    def _on_direct_label_print_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        invoice = str(data.get("invoice") or "—")
+        QMessageBox.information(
+            self,
+            "Labeldruck",
+            f"Label für Rechnung {invoice} wurde an den Drucker gesendet.",
+        )
+        self._reload_first_page()
+
+    def _on_direct_label_print_error(self, exc: Exception) -> None:
+        QMessageBox.warning(
+            self,
+            "Labeldruck",
+            f"Label konnte nicht gedruckt werden:\n\n{exc}",
+        )
 
     def _on_create_draft_clicked(self) -> None:
         if self._draft_worker is not None and self._draft_worker.isRunning():
