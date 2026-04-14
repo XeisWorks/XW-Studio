@@ -724,6 +724,8 @@ class WixOrdersClient:
 
         shipping_lines = cls.best_address_lines_from_order(order)
         shipping_parts = cls._shipping_address_parts_from_order(order)
+        billing_lines = cls.billing_address_lines_from_order(order)
+        billing_parts = cls._billing_address_parts_from_order(order)
         if not full_name:
             full_name = shipping_parts.get("name", "")
 
@@ -738,6 +740,12 @@ class WixOrdersClient:
             "wix_shipping_city": shipping_parts.get("city", ""),
             "wix_shipping_country": shipping_parts.get("country", ""),
             "wix_shipping_address": "\n".join(shipping_lines),
+            "wix_billing_street": billing_parts.get("street1", ""),
+            "wix_billing_street2": billing_parts.get("street2", ""),
+            "wix_billing_zip": billing_parts.get("postal_code", ""),
+            "wix_billing_city": billing_parts.get("city", ""),
+            "wix_billing_country": billing_parts.get("country", ""),
+            "wix_billing_address": "\n".join(billing_lines),
         }
 
     def resolve_order_summary(self, reference: str) -> dict[str, str]:
@@ -831,7 +839,14 @@ class WixOrdersClient:
                     return [item for item in payload if isinstance(item, dict)]
                 return []
             except httpx.HTTPError as exc:
-                logger.warning("WixOrdersClient get fulfillable items failed: %s", exc)
+                response = getattr(exc, "response", None)
+                if getattr(response, "status_code", None) == 404:
+                    logger.info(
+                        "WixOrdersClient fulfillable items unavailable ref=%s status=404",
+                        str(reference or "").strip(),
+                    )
+                else:
+                    logger.warning("WixOrdersClient get fulfillable items failed: %s", exc)
                 return []
 
     def create_fulfillment(

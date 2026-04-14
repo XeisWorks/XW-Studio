@@ -147,3 +147,10 @@ def test_best_address_lines_merges_structured_street_address_number() -> None:
         "20038 Berchtesgaden",
         "Germany",
     ]
+
+    summary = WixOrdersClient._summary_from_order(order)  # noqa: SLF001
+
+    assert summary["wix_shipping_street"] == "Auerdörfl 16"
+    assert summary["wix_billing_street"] == "Auerdörfl 16"
+    assert summary["wix_billing_city"] == "Berchtesgaden"
+    assert summary["wix_billing_country"] == "Germany"
