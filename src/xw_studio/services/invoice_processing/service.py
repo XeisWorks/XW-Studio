@@ -237,8 +237,13 @@ class InvoiceProcessingService:
             processed += 1
             flags = self.read_fulfillment_flags(summary.id)
             try:
-                digital_only = full_mode and self._is_digital_only(summary)
-                flags = self._run_finalize_step(summary, flags, digital_only=digital_only)
+                digital_only = self._is_digital_only(summary) if summary.order_reference.strip() else False
+                flags = self._run_finalize_step(
+                    summary,
+                    flags,
+                    digital_only=digital_only,
+                    printed_copy=(full_mode and not digital_only),
+                )
                 if full_mode:
                     if not digital_only:
                         flags = self._run_invoice_print_step(summary, flags)
@@ -488,8 +493,9 @@ class InvoiceProcessingService:
         flags: FulfillmentFlags,
         *,
         digital_only: bool = False,
+        printed_copy: bool = False,
     ) -> FulfillmentFlags:
-        send_type = "VM" if digital_only or not summary.order_reference.strip() else "VPR"
+        send_type = "VPR" if printed_copy else "VM"
         self._invoices.send_invoice_document(summary.id, send_type=send_type, send_draft=False)
         return self._next_flags(
             flags,

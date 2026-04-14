@@ -47,15 +47,15 @@ def _configure_invoice_layout(printer: QPrinter) -> None:
         QPageLayout.Unit.Millimeter,
     )
     printer.setPageLayout(layout)
-    printer.setFullPage(False)
+    printer.setFullPage(True)
 
 
-def _paint_rect(printer: QPrinter) -> QRectF:
+def _full_rect(printer: QPrinter) -> QRectF:
     layout = printer.pageLayout()
-    rect = layout.paintRectPixels(printer.resolution())
+    rect = layout.fullRectPixels(printer.resolution())
     if rect.isValid() and rect.width() > 0 and rect.height() > 0:
         return QRectF(rect)
-    fallback = printer.pageRect(QPrinter.Unit.DevicePixel)
+    fallback = printer.paperRect(QPrinter.Unit.DevicePixel)
     return QRectF(fallback)
 
 
@@ -70,6 +70,16 @@ def _aspect_fit_rect(container: QRectF, source_width: float, source_height: floa
     return QRectF(x, y, target_width, target_height)
 
 
+def _actual_size_rect(container: QRectF, source_width: float, source_height: float) -> QRectF:
+    if container.width() <= 0 or container.height() <= 0 or source_width <= 0 or source_height <= 0:
+        return QRectF(container)
+    if source_width <= container.width() and source_height <= container.height():
+        x = container.x() + (container.width() - float(source_width)) / 2.0
+        y = container.y() + (container.height() - float(source_height)) / 2.0
+        return QRectF(x, y, float(source_width), float(source_height))
+    return _aspect_fit_rect(container, source_width, source_height)
+
+
 def _log_invoice_page_metrics(
     *,
     printer: QPrinter,
@@ -78,18 +88,18 @@ def _log_invoice_page_metrics(
     image: QImage,
     target_rect: QRectF,
 ) -> None:
-    paint_rect = _paint_rect(printer)
+    full_rect = _full_rect(printer)
     logger.info(
-        "Invoice print layout: printer='%s' page=%s dpi=%s pdf_pt=(%.2f,%.2f) paint_px=(%.2f,%.2f,%.2f,%.2f) target_px=(%.2f,%.2f,%.2f,%.2f) image_px=(%s,%s)",
+        "Invoice print layout: printer='%s' page=%s dpi=%s pdf_pt=(%.2f,%.2f) full_px=(%.2f,%.2f,%.2f,%.2f) target_px=(%.2f,%.2f,%.2f,%.2f) image_px=(%s,%s)",
         printer.printerName().strip(),
         page_index + 1,
         printer.resolution(),
         float(page.rect.width),
         float(page.rect.height),
-        paint_rect.x(),
-        paint_rect.y(),
-        paint_rect.width(),
-        paint_rect.height(),
+        full_rect.x(),
+        full_rect.y(),
+        full_rect.width(),
+        full_rect.height(),
         target_rect.x(),
         target_rect.y(),
         target_rect.width(),
@@ -140,7 +150,7 @@ def print_pdf_bytes_silent(
                     pix.stride,
                     QImage.Format.Format_RGB888,
                 )
-                target_rect = _aspect_fit_rect(_paint_rect(printer), img.width(), img.height())
+                target_rect = _actual_size_rect(_full_rect(printer), img.width(), img.height())
                 _log_invoice_page_metrics(
                     printer=printer,
                     page_index=page_num,
@@ -195,7 +205,7 @@ def print_pdf_file_silent(
                     pix.stride,
                     QImage.Format.Format_RGB888,
                 )
-                target_rect = _aspect_fit_rect(_paint_rect(printer), img.width(), img.height())
+                target_rect = _actual_size_rect(_full_rect(printer), img.width(), img.height())
                 _log_invoice_page_metrics(
                     printer=printer,
                     page_index=page_num,

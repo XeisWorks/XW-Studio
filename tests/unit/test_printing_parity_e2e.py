@@ -338,6 +338,30 @@ def test_start_fullflow_honors_abort_between_invoices() -> None:
     assert mailer.calls[0]["to_email"] == "john@example.test"
 
 
+def test_mail_only_fullflow_marks_physical_order_as_vm_when_no_print_copy_exists() -> None:
+    config = AppConfig()
+    invoice_client = _InvoiceClientE2E()
+    repo = _SettingsRepoE2E()
+    mailer = _MailServiceStub()
+    service = InvoiceProcessingService(config, invoice_client, repo, None, mailer)
+
+    invoice_client.list_invoice_summaries = lambda **_: [
+        InvoiceSummary(
+            id="INV-ORDER-001",
+            invoice_number="R-ORDER-001",
+            contact_name="John Doe",
+            order_reference="20519",
+        )
+    ]
+
+    result = service.run_start_fullflow(full_mode=False)
+
+    assert result["processed"] == 1
+    assert result["failures"] == 0
+    assert invoice_client.send_calls == [("INV-ORDER-001", "VM", False)]
+    assert len(mailer.calls) == 1
+
+
 def test_print_label_for_invoice_uses_override_lines_and_persists_flag() -> None:
     config = AppConfig()
     invoice_client = _InvoiceClientE2E()
