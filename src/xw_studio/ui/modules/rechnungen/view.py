@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QHideEvent,
+    QIcon,
     QImage,
     QMouseEvent,
     QPainter,
@@ -732,7 +733,6 @@ class RechnungenView(QWidget):
         self._dl_contact = QLabel("—")
         self._dl_contact.setWordWrap(True)
         self._dl_country = QLabel("—")
-        self._dl_id = QLabel("—")
         self._dl_order_ref = QLabel("—")
         self._wix_order_no = QLabel("—")
         self._wix_customer = QLabel("—")
@@ -744,7 +744,6 @@ class RechnungenView(QWidget):
             self._dl_brutto,
             self._dl_contact,
             self._dl_country,
-            self._dl_id,
             self._dl_order_ref,
             self._wix_order_no,
             self._wix_customer,
@@ -756,14 +755,10 @@ class RechnungenView(QWidget):
         left_form.addRow("Rechnung:", self._dl_number)
         left_form.addRow("Status:", self._dl_status)
         left_form.addRow("Kunde:", self._dl_contact)
-        left_form.addRow("ID:", self._dl_id)
-        left_form.addRow("Wix-Order:", self._wix_order_no)
-        left_form.addRow("Wix-E-Mail:", self._wix_customer_email)
         right_form.addRow("Datum:", self._dl_date)
         right_form.addRow("Brutto:", self._dl_brutto)
         right_form.addRow("Land:", self._dl_country)
         right_form.addRow("Order-Ref:", self._dl_order_ref)
-        right_form.addRow("Wix-Kunde:", self._wix_customer)
         self._gb_info.hide()
         detail_main.addWidget(self._gb_info)
 
@@ -774,17 +769,27 @@ class RechnungenView(QWidget):
         self._shipping_status.setWordWrap(True)
         self._shipping_status.setStyleSheet("color: #64748b;")
         shipping_layout.addWidget(self._shipping_status)
+        shipping_row = QHBoxLayout()
+        shipping_row.setSpacing(8)
         self._shipping_editor = QPlainTextEdit()
         self._shipping_editor.setPlaceholderText("Lieferadresse Zeile für Zeile bearbeiten")
         self._shipping_editor.setMinimumHeight(58)
         self._shipping_editor.setMaximumHeight(122)
+        self._shipping_editor.setMaximumWidth(320)
         self._shipping_editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._shipping_editor.textChanged.connect(self._on_shipping_editor_changed)
-        shipping_layout.addWidget(self._shipping_editor)
-        self._btn_print_label = QPushButton("Label drucken")
+        shipping_row.addWidget(self._shipping_editor, stretch=0)
+        self._btn_print_label = QPushButton("")
+        label_icon = Path(__file__).resolve().parents[5] / "icons" / "labelprint.png"
+        if label_icon.exists():
+            self._btn_print_label.setIcon(QIcon(str(label_icon)))
+        self._btn_print_label.setToolTip("Label drucken")
+        self._btn_print_label.setFixedWidth(36)
         self._btn_print_label.clicked.connect(self._on_print_label_clicked)
         self._btn_print_label.setEnabled(False)
-        shipping_layout.addWidget(self._btn_print_label, alignment=Qt.AlignmentFlag.AlignLeft)
+        shipping_row.addWidget(self._btn_print_label, alignment=Qt.AlignmentFlag.AlignTop)
+        shipping_row.addStretch()
+        shipping_layout.addLayout(shipping_row)
         self._gb_shipping.hide()
         detail_main.addWidget(self._gb_shipping)
 
@@ -809,26 +814,28 @@ class RechnungenView(QWidget):
         self._plc_last = QLabel("Letzter PLC-Druck: —")
         self._plc_last.setStyleSheet("color: #64748b; font-size: 11px;")
         actions_layout.addWidget(self._plc_last, 1, 0, 1, 2)
+        self._action_state.hide()
+        self._plc_last.hide()
 
         self._btn_print = QPushButton("Rechnung drucken")
         self._btn_print.clicked.connect(self._on_print_clicked)
         self._btn_print.setEnabled(False)
-        actions_layout.addWidget(self._btn_print, 2, 0)
+        actions_layout.addWidget(self._btn_print, 0, 0)
 
         self._btn_print_plc = QPushButton("PLC-Label drucken")
         self._btn_print_plc.clicked.connect(self._on_print_plc_selected)
         self._btn_print_plc.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_plc, 2, 1)
+        actions_layout.addWidget(self._btn_print_plc, 0, 1)
 
         self._btn_print_music = QPushButton("Noten drucken")
         self._btn_print_music.clicked.connect(self._on_print_music_clicked)
         self._btn_print_music.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_music, 3, 0)
+        actions_layout.addWidget(self._btn_print_music, 1, 0)
 
         self._btn_send_invoice = QPushButton("Rechnung senden")
         self._btn_send_invoice.clicked.connect(self._on_send_invoice_clicked)
         self._btn_send_invoice.setEnabled(False)
-        actions_layout.addWidget(self._btn_send_invoice, 3, 1)
+        actions_layout.addWidget(self._btn_send_invoice, 1, 1)
         self._gb_actions.hide()
         detail_main.addWidget(self._gb_actions)
 
@@ -1794,7 +1801,6 @@ class RechnungenView(QWidget):
         self._dl_brutto.setText(summary.formatted_brutto)
         self._dl_contact.setText(summary.contact_name or "")
         self._dl_country.setText(summary.display_country or "")
-        self._dl_id.setText(summary.id)
         if summary.buyer_note.strip():
             self._dl_note.setText(summary.buyer_note)
             self._gb_note.show()
@@ -1819,7 +1825,7 @@ class RechnungenView(QWidget):
         self._gb_shipping.hide()
         for lbl in (
             self._dl_number, self._dl_date, self._dl_status, self._dl_brutto,
-            self._dl_contact, self._dl_country, self._dl_id,
+            self._dl_contact, self._dl_country,
         ):
             lbl.setText("—")
         self._dl_note.setText("")
@@ -1877,6 +1883,8 @@ class RechnungenView(QWidget):
         shipping_lines = self._normalize_shipping_lines(context.get("shipping_lines"))  # type: ignore[arg-type]
         self._wix_customer.setText(customer_name)
         self._wix_customer_email.setText(customer_email)
+        if shipping_lines and not str(self._dl_country.text() or "").strip():
+            self._dl_country.setText(shipping_lines[-1])
         self._shipping_source_lines = shipping_lines
         override_lines = list(self._shipping_address_overrides.get(summary.id, []))
         if shipping_lines:
@@ -2345,25 +2353,46 @@ class RechnungenView(QWidget):
         if requested_ref and requested_ref != current_ref:
             return
 
+        while self._stuecke_layout.count() > 1:
+            item = self._stuecke_layout.takeAt(1)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._piece_print_buttons = []
         self._stuecke_hint.hide()
         if not isinstance(payload_items, list) or not payload_items:
             self._stuecke_hint.setText("Keine Positionen gefunden.")
             self._stuecke_hint.show()
             return
-        self._current_piece_blocks = [item for item in payload_items if isinstance(item, PieceBlock)]
+        deduped: list[PieceBlock] = []
+        seen: set[tuple[str, str, int, str]] = set()
+        for piece in payload_items:
+            if not isinstance(piece, PieceBlock):
+                continue
+            key = (
+                str(piece.sku or "").strip().upper(),
+                str(piece.name or "").strip(),
+                int(piece.qty_needed or 0),
+                str(piece.note or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(piece)
+        self._current_piece_blocks = deduped
         invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
         for item in self._current_piece_blocks:
             # Header line: "×2  [XW-001]  Produktname ★"
             flagged_for_print = bool(item.is_unreleased or invoice_service.is_flagged_sku(item.sku))
-            unreleased_marker = " \u2605" if flagged_for_print else ""
-            line = f"\u00d7{item.qty_needed}  [{item.sku}]  {item.name}{unreleased_marker}"
             row_widget = QWidget()
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(8)
-            lbl = QLabel(line)
+            row_layout = QVBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 6)
+            row_layout.setSpacing(2)
+            header_row = QHBoxLayout()
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(8)
+            lbl = QLabel(self._piece_header_text(item, flagged_for_print))
             lbl.setWordWrap(True)
-            row_layout.addWidget(lbl, stretch=1)
+            header_row.addWidget(lbl, stretch=1)
 
             if flagged_for_print:
                 print_btn = QPushButton("Drucken")
@@ -2376,18 +2405,24 @@ class RechnungenView(QWidget):
                 else:
                     print_btn.setToolTip("Kein PDF-Pfad im neuen Repo hinterlegt")
                 print_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_print_clicked(block))
-                row_layout.addWidget(print_btn)
+                header_row.addWidget(print_btn)
                 self._piece_print_buttons.append(print_btn)
 
                 manage_btn = QPushButton("Produkte")
                 manage_btn.setFixedHeight(24)
                 manage_btn.setToolTip("Produkt-Pipeline oeffnen, um PDF-Pfad oder Druckplan zu pflegen")
                 manage_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_manage_clicked(block))
-                row_layout.addWidget(manage_btn)
+                header_row.addWidget(manage_btn)
 
-            self._stuecke_layout.addWidget(row_widget)
-            # Stock status line
-            stock_lbl = QLabel(f"  {item.stock_label}")
+            row_layout.addLayout(header_row)
+
+            for detail_line in self._piece_detail_lines(item):
+                detail_lbl = QLabel(detail_line)
+                detail_lbl.setWordWrap(True)
+                detail_lbl.setStyleSheet("color: #64748b; font-size: 11px; padding-left: 8px;")
+                row_layout.addWidget(detail_lbl)
+
+            stock_lbl = QLabel(self._piece_stock_text(item))
             stock_lbl.setWordWrap(True)
             # Colour: red for print-needed, orange for low, green for OK, grey for digital
             if item.product is None:
@@ -2401,18 +2436,8 @@ class RechnungenView(QWidget):
             else:
                 color = "#16a34a"
             stock_lbl.setStyleSheet(f"color: {color}; font-size: 11px; padding-left: 8px;")
-            self._stuecke_layout.addWidget(stock_lbl)
-            if flagged_for_print:
-                print_meta = self._describe_piece_print_config(item)
-                meta_lbl = QLabel(f"  Druck: {print_meta}")
-                meta_lbl.setWordWrap(True)
-                meta_lbl.setStyleSheet("color: #64748b; font-size: 11px; padding-left: 8px;")
-                self._stuecke_layout.addWidget(meta_lbl)
-            if item.note:
-                note_lbl = QLabel(f"  ↳ {item.note}")
-                note_lbl.setWordWrap(True)
-                note_lbl.setStyleSheet("color: #64748b; font-size: 11px;")
-                self._stuecke_layout.addWidget(note_lbl)
+            row_layout.addWidget(stock_lbl)
+            self._stuecke_layout.addWidget(row_widget)
 
     def _on_product_print_clicked(self, block: PieceBlock) -> None:
         if not self._print_allowed:
@@ -2438,6 +2463,42 @@ class RechnungenView(QWidget):
             5000,
         )
         signals.navigate_to_module.emit(ModuleKey.PRODUCTS.value)
+
+    @staticmethod
+    def _piece_header_text(block: PieceBlock, flagged_for_print: bool) -> str:
+        marker = " ★" if flagged_for_print else ""
+        return f"×{block.qty_needed}  [{block.sku}]  {block.name}{marker}"
+
+    @staticmethod
+    def _piece_detail_lines(block: PieceBlock) -> list[str]:
+        note = str(block.note or "").strip()
+        if not note:
+            return []
+        parts = [part.strip() for part in note.split(" | ") if part.strip()]
+        sku = str(block.sku or "").strip().upper()
+        if sku in {"XW-010", "XW-011"}:
+            return [f"Stücke: {block.name}", *parts]
+        return parts
+
+    @staticmethod
+    def _piece_stock_text(block: PieceBlock) -> str:
+        if block.product is None:
+            return "Produkt im neuen Repo noch nicht gepflegt"
+        if block.product.is_digital:
+            return "Digital"
+        if block.stock_status is None:
+            qty = max(1, int(block.print_qty or block.qty_needed or 1))
+            return f"Bestand unbekannt – {qty}x drucken"
+        on_hand = int(block.stock_status.on_hand)
+        if on_hand <= 0:
+            qty = max(1, int(block.print_qty or block.qty_needed or 1))
+            return f"Leer – {qty}x drucken"
+        if block.needs_print:
+            qty = max(1, int(block.print_qty or block.qty_needed or 1))
+            return f"Zu wenig ({on_hand} Stk) – {qty}x drucken"
+        if block.stock_status.needs_reprint:
+            return f"Niedriger Bestand ({on_hand} Stk)"
+        return f"Im Lager ({on_hand} Stk)"
 
     @staticmethod
     def _describe_piece_print_config(block: PieceBlock) -> str:
