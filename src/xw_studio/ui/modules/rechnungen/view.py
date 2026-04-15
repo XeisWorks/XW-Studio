@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -719,21 +720,18 @@ class RechnungenView(QWidget):
         detail_main.addWidget(self._gb_open)
 
         self._gb_info = QGroupBox("INFO")
-        info_layout = QHBoxLayout(self._gb_info)
-        left_form = QFormLayout()
-        right_form = QFormLayout()
-        for form in (left_form, right_form):
-            form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
-        info_layout.addLayout(left_form, stretch=1)
-        info_layout.addLayout(right_form, stretch=1)
+        info_layout = QGridLayout(self._gb_info)
+        info_layout.setHorizontalSpacing(18)
+        info_layout.setVerticalSpacing(8)
+        info_layout.setColumnStretch(1, 1)
+        info_layout.setColumnStretch(3, 1)
         self._dl_number = QLabel("—")
         self._dl_date = QLabel("—")
         self._dl_status = QLabel("—")
         self._dl_brutto = QLabel("—")
         self._dl_contact = QLabel("—")
         self._dl_contact.setWordWrap(True)
+        self._dl_contact.setMaximumWidth(220)
         self._dl_country = QLabel("—")
         self._dl_order_ref = QLabel("—")
         self._wix_order_no = QLabel("—")
@@ -754,30 +752,44 @@ class RechnungenView(QWidget):
         for lbl in info_labels:
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        left_form.addRow("Rechnung:", self._dl_number)
-        left_form.addRow("Status:", self._dl_status)
-        left_form.addRow("Kunde:", self._dl_contact)
-        right_form.addRow("Datum:", self._dl_date)
-        right_form.addRow("Brutto:", self._dl_brutto)
-        right_form.addRow("Land:", self._dl_country)
-        right_form.addRow("Order-Ref:", self._dl_order_ref)
+        info_fields = (
+            ("Rechnung:", self._dl_number, 0, 0),
+            ("Datum:", self._dl_date, 0, 2),
+            ("Status:", self._dl_status, 1, 0),
+            ("Brutto:", self._dl_brutto, 1, 2),
+            ("Kunde:", self._dl_contact, 2, 0),
+            ("Land:", self._dl_country, 2, 2),
+            ("Order-Ref:", self._dl_order_ref, 3, 2),
+        )
+        for text, value_widget, row, col in info_fields:
+            label = QLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            info_layout.addWidget(label, row, col, alignment=Qt.AlignmentFlag.AlignTop)
+            info_layout.addWidget(value_widget, row, col + 1, alignment=Qt.AlignmentFlag.AlignTop)
         self._gb_info.hide()
         detail_main.addWidget(self._gb_info)
 
         self._gb_shipping = QGroupBox("VERSANDADRESSE")
         shipping_layout = QVBoxLayout(self._gb_shipping)
+        shipping_layout.setContentsMargins(12, 10, 12, 12)
         shipping_layout.setSpacing(6)
+        shipping_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._shipping_status = QLabel("—")
         self._shipping_status.setWordWrap(True)
         self._shipping_status.setStyleSheet("color: #64748b;")
+        self._shipping_status.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         shipping_layout.addWidget(self._shipping_status)
-        shipping_row = QHBoxLayout()
+        shipping_row_wrap = QWidget(self._gb_shipping)
+        shipping_row = QHBoxLayout(shipping_row_wrap)
+        shipping_row.setContentsMargins(0, 0, 0, 0)
         shipping_row.setSpacing(8)
         self._shipping_editor = QPlainTextEdit()
         self._shipping_editor.setPlaceholderText("Lieferadresse Zeile für Zeile bearbeiten")
         self._shipping_editor.setMinimumHeight(58)
         self._shipping_editor.setMaximumHeight(122)
         self._shipping_editor.setMaximumWidth(320)
+        self._shipping_editor.setMinimumWidth(320)
+        self._shipping_editor.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self._shipping_editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._shipping_editor.textChanged.connect(self._on_shipping_editor_changed)
         shipping_row.addWidget(self._shipping_editor, stretch=0)
@@ -786,12 +798,13 @@ class RechnungenView(QWidget):
         if label_icon.exists():
             self._btn_print_label.setIcon(QIcon(str(label_icon)))
         self._btn_print_label.setToolTip("Label drucken")
-        self._btn_print_label.setFixedWidth(36)
+        self._btn_print_label.setFixedSize(36, 36)
         self._btn_print_label.clicked.connect(self._on_print_label_clicked)
         self._btn_print_label.setEnabled(False)
         shipping_row.addWidget(self._btn_print_label, alignment=Qt.AlignmentFlag.AlignTop)
         shipping_row.addStretch()
-        shipping_layout.addLayout(shipping_row)
+        shipping_row_wrap.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        shipping_layout.addWidget(shipping_row_wrap, alignment=Qt.AlignmentFlag.AlignTop)
         self._gb_shipping.hide()
         detail_main.addWidget(self._gb_shipping)
 
@@ -1224,7 +1237,6 @@ class RechnungenView(QWidget):
         if len(summaries) == 1:
             self._table.select_source_row(0)
             self._populate_detail_for_summary(summaries[0])
-            self._prefill_detail_from_invoice(summaries[0])
         else:
             self._refresh_detail_for_selection()
         self._restart_hint_prefetch()
@@ -1892,8 +1904,6 @@ class RechnungenView(QWidget):
         shipping_lines = self._normalize_shipping_lines(context.get("shipping_lines"))  # type: ignore[arg-type]
         self._wix_customer.setText(customer_name)
         self._wix_customer_email.setText(customer_email)
-        if shipping_lines and not str(self._dl_country.text() or "").strip():
-            self._dl_country.setText(shipping_lines[-1])
         self._shipping_source_lines = shipping_lines
         override_lines = list(self._shipping_address_overrides.get(summary.id, []))
         if shipping_lines:
@@ -2073,6 +2083,9 @@ class RechnungenView(QWidget):
         self._wix_order_no.setText(data.get("wix_order_number") or data.get("wix_order_id") or "—")
         self._wix_customer.setText(data.get("wix_customer_name") or "—")
         self._wix_customer_email.setText(data.get("wix_customer_email") or "—")
+        shipping_country = str(data.get("wix_shipping_country") or "").strip()
+        if shipping_country:
+            self._dl_country.setText(shipping_country)
         shipping_lines = self._normalize_shipping_lines(
             str(data.get("wix_shipping_address") or "").splitlines()
         )
