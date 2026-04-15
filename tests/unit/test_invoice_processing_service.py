@@ -62,6 +62,7 @@ class _WixOrdersStub:
         self._fulfillment_status = "NOT_FULFILLED"
         self._fulfillable_items: list[dict[str, str]] = []
         self._fulfillments: list[dict[str, str]] = []
+        self.orders: dict[str, dict[str, object]] = {}
 
     def has_credentials(self) -> bool:
         return True
@@ -80,6 +81,19 @@ class _WixOrdersStub:
             "wix_customer_email": "wix@example.test",
             "wix_customer_name": "Wix Name",
         }
+
+    def resolve_order(self, reference: str) -> dict[str, object]:
+        return dict(self.orders.get(reference, {}))
+
+    @staticmethod
+    def shipping_address_lines_from_order(order: dict[str, object]) -> list[str]:
+        value = order.get("shipping_lines")
+        return list(value) if isinstance(value, list) else []
+
+    @staticmethod
+    def billing_address_lines_from_order(order: dict[str, object]) -> list[str]:
+        value = order.get("billing_lines")
+        return list(value) if isinstance(value, list) else []
 
     def is_reference_digital_only(self, reference: str) -> bool:
         return self._digital_only
@@ -320,6 +334,40 @@ def test_product_step_returns_warning_for_unconfirmed_physical_fulfillment() -> 
     assert flags.product_ready is True
     assert flags.wix_fulfilled is False
     assert "Wix-Fulfillment nicht bestaetigt" in flags.last_warning
+
+
+def test_invoice_list_hints_follow_legacy_alarm_rules() -> None:
+    wix = _WixOrdersStub()
+    wix.orders["20519"] = {
+        "buyerNote": "Bitte rasch liefern",
+        "shipping_lines": ["Max Muster", "Via Roma 1", "00100 Rom", "Italy"],
+        "billing_lines": ["Max Muster", "Hauptplatz 1", "8010 Graz", "Austria"],
+        "lineItems": [
+            {"physicalProperties": {"sku": "XW-700.1"}},
+            {"physicalProperties": {"sku": "XW-100"}},
+        ],
+    }
+    repo = _RepoStub(
+        {
+            "rechnungen.allowed_country_codes": json.dumps(["Austria", "Germany"]),
+            "rechnungen.sku_flags": json.dumps({"exact": ["XW-010"], "prefixes": ["XW-7"]}),
+        }
+    )
+    svc = InvoiceProcessingService(
+        AppConfig(),
+        _InvoiceClientStub([]),  # type: ignore[arg-type]
+        repo,
+        wix,  # type: ignore[arg-type]
+    )
+
+    hints = svc.resolve_invoice_list_hints("20519")
+
+    assert hints.buyer_note == "Bitte rasch liefern"
+    assert hints.address_mismatch is True
+    assert hints.unreleased_sku is True
+    assert hints.country_invalid is True
+    assert hints.icon_keys() == ["print", "printondemand", "alternateshippingaddress", "country"]
+    assert "Lieferland außerhalb Freigabe" in hints.tooltip()
 
 
 def test_start_fullflow_repairs_draft_products_before_finalize() -> None:

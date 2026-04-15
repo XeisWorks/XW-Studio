@@ -415,6 +415,7 @@ class RechnungenView(QWidget):
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
         self._wix_context_worker: BackgroundWorker | None = None
+        self._hint_worker: BackgroundWorker | None = None
         self._fulfillment_step_worker: BackgroundWorker | None = None
         self._open_overview_worker: BackgroundWorker | None = None
         self._did_initial_load = False
@@ -431,6 +432,10 @@ class RechnungenView(QWidget):
         self._shipping_source_lines: list[str] = []
         self._wix_context_seq = 0
         self._open_overview_seq = 0
+        self._hint_seq = 0
+        self._hint_draft_queue: list[str] = []
+        self._hint_rest_queue: list[str] = []
+        self._hint_inflight_ref = ""
         self._mollie_timer = QTimer(self)
         self._mollie_timer.setInterval(60000)
         self._mollie_timer.timeout.connect(self._refresh_mollie_alert_count)
@@ -797,6 +802,27 @@ class RechnungenView(QWidget):
         self._worker.signals.finished.connect(self._on_load_finished)
         self._worker.start()
 
+    @staticmethod
+    def _blank_hint_patch() -> dict[str, object]:
+        return {
+            "Hinweise": "",
+            "__icons__Hinweise": [],
+            "__tooltip__Hinweise": "",
+            "__fg__Hinweise": "",
+        }
+
+    def _prepare_rows_for_hint_prefetch(
+        self,
+        rows: list[dict[str, Any]],
+        summaries: list[InvoiceSummary],
+    ) -> None:
+        service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+        for row, summary in zip(rows, summaries):
+            row.update(self._blank_hint_patch())
+            cached = service.get_cached_invoice_list_hints(summary.order_reference)
+            if cached is not None:
+                row.update(cached.as_row_patch())
+
     def _current_sevdesk_token(self) -> str:
         service: SecretService = self._container.resolve(SecretService)
         return service.get_secret("SEVDESK_API_TOKEN").strip()
@@ -814,6 +840,7 @@ class RechnungenView(QWidget):
         rows: list[dict[str, Any]] = [r for r in rows_obj if isinstance(r, dict)]
         summaries: list[InvoiceSummary] = [s for s in sums_obj if isinstance(s, InvoiceSummary)]
         has_more = bool(has_more_obj)
+        self._prepare_rows_for_hint_prefetch(rows, summaries)
 
         if self._append_mode:
             self._table.append_rows(rows)
@@ -840,6 +867,7 @@ class RechnungenView(QWidget):
         )
         self._append_mode = False
         self._refresh_detail_for_selection()
+        self._restart_hint_prefetch()
 
     def _apply_table_column_layout(self) -> None:
         header = self._table.horizontalHeader()
@@ -1071,6 +1099,97 @@ class RechnungenView(QWidget):
         self._open_overview_cached_digital = max(0, total - with_ref)
         self._open_physical.setText(str(self._open_overview_cached_physical))
         self._open_digital.setText(str(self._open_overview_cached_digital))
+
+    def _restart_hint_prefetch(self) -> None:
+        self._hint_seq += 1
+        service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+        draft_refs: list[str] = []
+        rest_refs: list[str] = []
+        seen: set[str] = set()
+        for summary in self._summaries:
+            ref = str(summary.order_reference or "").strip()
+            if not ref or ref in seen:
+                continue
+            seen.add(ref)
+            if service.get_cached_invoice_list_hints(ref) is not None:
+                continue
+            if summary.status_code == 100:
+                draft_refs.append(ref)
+            else:
+                rest_refs.append(ref)
+        self._hint_draft_queue = draft_refs
+        self._hint_rest_queue = rest_refs
+        self._hint_inflight_ref = ""
+        self._start_next_hint_prefetch()
+
+    def _prioritize_hint_prefetch_for_summary(self, summary: InvoiceSummary) -> None:
+        ref = str(summary.order_reference or "").strip()
+        if not ref or summary.status_code == 100 or self._hint_draft_queue:
+            return
+        service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+        if service.get_cached_invoice_list_hints(ref) is not None or ref == self._hint_inflight_ref:
+            return
+        if ref in self._hint_rest_queue:
+            self._hint_rest_queue.remove(ref)
+        self._hint_rest_queue.insert(0, ref)
+        self._start_next_hint_prefetch()
+
+    def _start_next_hint_prefetch(self) -> None:
+        if self._hint_worker is not None and self._hint_worker.isRunning():
+            return
+        ref = ""
+        if self._hint_draft_queue:
+            ref = self._hint_draft_queue.pop(0)
+        elif self._hint_rest_queue:
+            ref = self._hint_rest_queue.pop(0)
+        if not ref:
+            self._hint_inflight_ref = ""
+            return
+        seq = self._hint_seq
+        self._hint_inflight_ref = ref
+
+        def job() -> dict[str, object]:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            hints = service.resolve_invoice_list_hints(ref)
+            return {
+                "seq": seq,
+                "reference": ref,
+                "patch": hints.as_row_patch(),
+            }
+
+        self._hint_worker = BackgroundWorker(job)
+        self._hint_worker.signals.result.connect(self._on_hint_prefetch_result)
+        self._hint_worker.signals.error.connect(self._on_hint_prefetch_error)
+        self._hint_worker.signals.finished.connect(self._on_hint_prefetch_finished)
+        self._hint_worker.start()
+
+    def _on_hint_prefetch_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        seq = int(data.get("seq") or 0)
+        if seq != self._hint_seq:
+            return
+        ref = str(data.get("reference") or "").strip()
+        patch = data.get("patch") if isinstance(data.get("patch"), dict) else self._blank_hint_patch()
+        self._apply_hint_patch_to_visible_rows(ref, patch)
+
+    def _on_hint_prefetch_error(self, exc: Exception) -> None:
+        logger.warning("Invoice hint prefetch failed: %s", exc)
+
+    def _on_hint_prefetch_finished(self) -> None:
+        self._hint_worker = None
+        self._hint_inflight_ref = ""
+        self._start_next_hint_prefetch()
+
+    def _apply_hint_patch_to_visible_rows(self, reference: str, patch: dict[str, object]) -> None:
+        ref = str(reference or "").strip()
+        if not ref:
+            return
+        normalized_patch = dict(self._blank_hint_patch())
+        normalized_patch.update(patch or {})
+        for row_index, summary in enumerate(self._summaries):
+            if str(summary.order_reference or "").strip() != ref:
+                continue
+            self._table.update_source_row_data(row_index, normalized_patch)
 
     def _on_print_clicked(self) -> None:
         if not self._print_allowed:
@@ -1418,6 +1537,7 @@ class RechnungenView(QWidget):
         self._update_action_state()
         self._gb_actions.show()
         self._update_plc_controls()
+        self._prioritize_hint_prefetch_for_summary(s)
         if s.order_reference:
             self._load_wix_context(s.order_reference)
         else:

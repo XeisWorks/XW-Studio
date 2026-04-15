@@ -46,6 +46,7 @@ _QUEUE_GUTSCHEINE_KEY = "daily_business.queue.gutscheine"
 _QUEUE_DOWNLOADS_KEY = "daily_business.queue.downloads"
 _QUEUE_REFUNDS_KEY = "daily_business.queue.refunds"
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
+_ALLOWED_COUNTRIES_KEY = "rechnungen.allowed_country_codes"
 _SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _URGENCY_RULES_KEY = "daily_business.urgency_rules"
 _FULFILLMENT_MAIL_TEMPLATE_KEY = "rechnungen.fulfillment_mail_template_html"
@@ -81,6 +82,47 @@ _DEFAULT_FULFILLMENT_TEMPLATE = (
     "8912 Admont\n"
     "office@xeisworks.at\n"
     "www.xeisworks.at\n"
+)
+_DEFAULT_ALLOWED_COUNTRIES = json.dumps(
+    [
+        "Austria",
+        "Germany",
+        "Belgium",
+        "Estonia",
+        "Finland",
+        "Denmark",
+        "Slovenia",
+        "Czech Republic",
+        "Netherlands",
+        "Sweden",
+        "Lithuania",
+        "Luxembourg",
+        "France",
+        "Italy",
+        "Switzerland",
+        "Norway",
+        "Oesterreich",
+        "Deutschland",
+        "Schweiz",
+        "Norwegen",
+        "AT",
+        "BE",
+        "EE",
+        "FI",
+        "DK",
+        "SI",
+        "CZ",
+        "NL",
+        "SE",
+        "LT",
+        "LU",
+        "FR",
+        "DE",
+        "IT",
+        "CH",
+        "NO",
+    ],
+    ensure_ascii=False,
 )
 
 
@@ -276,6 +318,11 @@ class SettingsView(QWidget):
             '["RU", "IR", "SY"]',
             70,
         )
+        allowed_countries_box, self._allowed_countries_json = self._json_box(
+            _ALLOWED_COUNTRIES_KEY,
+            _DEFAULT_ALLOWED_COUNTRIES,
+            110,
+        )
         sku_flags_box, self._sku_flags_json = self._json_box(
             _SKU_FLAGS_KEY,
             '{"exact": ["XW-010", "XW-011"], "prefixes": ["XW-4", "XW-6", "XW-7"]}',
@@ -296,7 +343,8 @@ class SettingsView(QWidget):
         grid.addWidget(refunds_box, 4, 0)
         grid.addWidget(countries_box, 4, 1)
         grid.addWidget(sku_flags_box, 5, 0)
-        grid.addWidget(urgency_box, 5, 1)
+        grid.addWidget(allowed_countries_box, 5, 1)
+        grid.addWidget(urgency_box, 6, 0, 1, 2)
 
         footer = QHBoxLayout()
         self._queue_status = QLabel("—")
@@ -307,11 +355,11 @@ class SettingsView(QWidget):
         save_queue.clicked.connect(self._save_queue_settings)
         save_queue.setEnabled(self._has_settings_repo())
         footer.addWidget(save_queue)
-        grid.addLayout(footer, 6, 0, 1, 2)
+        grid.addLayout(footer, 7, 0, 1, 2)
 
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        grid.setRowStretch(7, 1)
+        grid.setRowStretch(8, 1)
         return panel
 
     def _build_mail_templates_tab(self) -> QWidget:
@@ -461,6 +509,7 @@ class SettingsView(QWidget):
         queue_downloads = repo.get_value_json(_QUEUE_DOWNLOADS_KEY) or "[]"
         queue_refunds = repo.get_value_json(_QUEUE_REFUNDS_KEY) or "[]"
         sensitive_countries = repo.get_value_json(_SENSITIVE_COUNTRIES_KEY) or '["AF", "BY", "IQ", "IR", "KP", "RU", "SY"]'
+        allowed_countries = repo.get_value_json(_ALLOWED_COUNTRIES_KEY) or _DEFAULT_ALLOWED_COUNTRIES
         sku_flags = repo.get_value_json(_SKU_FLAGS_KEY) or '{"exact": ["XW-010", "XW-011", "XW-600.0"], "prefixes": ["XW-4", "XW-6", "XW-7", "XW-12"]}'
         urgency_rules = repo.get_value_json(_URGENCY_RULES_KEY) or (
             '{"generic": ["offen", "fehl", "pending", "ueberweis", "überweis"], '
@@ -477,6 +526,7 @@ class SettingsView(QWidget):
         self._queue_downloads_json.setPlainText(queue_downloads)
         self._queue_refunds_json.setPlainText(queue_refunds)
         self._sensitive_countries_json.setPlainText(sensitive_countries)
+        self._allowed_countries_json.setPlainText(allowed_countries)
         self._sku_flags_json.setPlainText(sku_flags)
         self._urgency_rules_json.setPlainText(urgency_rules)
         self._queue_status.setText("Aktueller Stand aus DB geladen.")
@@ -494,6 +544,7 @@ class SettingsView(QWidget):
         queue_downloads_raw = self._queue_downloads_json.toPlainText().strip() or "[]"
         queue_refunds_raw = self._queue_refunds_json.toPlainText().strip() or "[]"
         sensitive_countries_raw = self._sensitive_countries_json.toPlainText().strip() or "[]"
+        allowed_countries_raw = self._allowed_countries_json.toPlainText().strip() or "[]"
         sku_flags_raw = self._sku_flags_json.toPlainText().strip() or "{}"
         urgency_rules_raw = self._urgency_rules_json.toPlainText().strip() or "{}"
         try:
@@ -505,6 +556,7 @@ class SettingsView(QWidget):
             queue_downloads_obj = json.loads(queue_downloads_raw)
             queue_refunds_obj = json.loads(queue_refunds_raw)
             sensitive_countries_obj = json.loads(sensitive_countries_raw)
+            allowed_countries_obj = json.loads(allowed_countries_raw)
             sku_flags_obj = json.loads(sku_flags_raw)
             urgency_rules_obj = json.loads(urgency_rules_raw)
         except json.JSONDecodeError as exc:
@@ -519,13 +571,14 @@ class SettingsView(QWidget):
             or not isinstance(queue_downloads_obj, list)
             or not isinstance(queue_refunds_obj, list)
             or not isinstance(sensitive_countries_obj, list)
+            or not isinstance(allowed_countries_obj, list)
             or not isinstance(sku_flags_obj, dict)
             or not isinstance(urgency_rules_obj, dict)
         ):
             QMessageBox.warning(
                 self,
                 "Formatfehler",
-                "Stock/Pending/Counts muessen Objekte sein; Queue/Sensitive-Countries muessen Listen sein; SKU-Flags/Urgency-Rules muessen Objekte sein.",
+                "Stock/Pending/Counts muessen Objekte sein; Queue/Country-Listen muessen Listen sein; SKU-Flags/Urgency-Rules muessen Objekte sein.",
             )
             return
 
@@ -542,6 +595,11 @@ class SettingsView(QWidget):
         normalized_sensitive = [
             str(code).strip().upper()
             for code in sensitive_countries_obj
+            if str(code).strip()
+        ]
+        normalized_allowed_countries = [
+            str(code).strip()
+            for code in allowed_countries_obj
             if str(code).strip()
         ]
         normalized_sku_flags = {
@@ -575,6 +633,7 @@ class SettingsView(QWidget):
         repo.set_value_json(_QUEUE_DOWNLOADS_KEY, json.dumps(queue_downloads_obj))
         repo.set_value_json(_QUEUE_REFUNDS_KEY, json.dumps(queue_refunds_obj))
         repo.set_value_json(_SENSITIVE_COUNTRIES_KEY, json.dumps(normalized_sensitive))
+        repo.set_value_json(_ALLOWED_COUNTRIES_KEY, json.dumps(normalized_allowed_countries, ensure_ascii=False))
         repo.set_value_json(_SKU_FLAGS_KEY, json.dumps(normalized_sku_flags))
         repo.set_value_json(_URGENCY_RULES_KEY, json.dumps(normalized_rules))
         self._queue_status.setText("Queue-Daten gespeichert.")

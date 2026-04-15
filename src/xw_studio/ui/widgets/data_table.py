@@ -80,6 +80,14 @@ class SimpleTableModel(QAbstractTableModel):
             return self._rows[row]
         return {}
 
+    def update_row_data(self, row: int, patch: dict[str, Any]) -> None:
+        if not (0 <= row < len(self._rows)) or not isinstance(patch, dict) or not patch:
+            return
+        self._rows[row].update(patch)
+        left = self.index(row, 0)
+        right = self.index(row, max(0, len(self._columns) - 1))
+        self.dataChanged.emit(left, right)
+
 
 class DataTable(QTableView):
     """Pre-configured QTableView with sorting, alternating rows, and selection."""
@@ -126,3 +134,6 @@ class DataTable(QTableView):
         if not indexes:
             return None
         return int(self._proxy.mapToSource(indexes[0]).row())
+
+    def update_source_row_data(self, row: int, patch: dict[str, Any]) -> None:
+        self._model.update_row_data(row, patch)

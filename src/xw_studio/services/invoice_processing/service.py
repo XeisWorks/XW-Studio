@@ -24,6 +24,7 @@ from xw_studio.services.wix.client import WixOrdersClient
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_COUNTRIES_KEY = "rechnungen.sensitive_country_codes"
+_ALLOWED_COUNTRIES_KEY = "rechnungen.allowed_country_codes"
 _SKU_FLAGS_KEY = "rechnungen.sku_flags"
 _FULFILLMENT_STATUS_KEY = "rechnungen.fulfillment_status"
 _FULFILLMENT_MAIL_TEMPLATE_KEY = "rechnungen.fulfillment_mail_template_html"
@@ -33,6 +34,44 @@ _DEFAULT_SKU_FLAGS = {
     "exact": ["XW-010", "XW-011", "XW-600.0"],
     "prefixes": ["XW-4", "XW-6", "XW-7", "XW-12"],
 }
+_DEFAULT_ALLOWED_COUNTRIES = [
+    "Austria",
+    "Germany",
+    "Belgium",
+    "Estonia",
+    "Finland",
+    "Denmark",
+    "Slovenia",
+    "Czech Republic",
+    "Netherlands",
+    "Sweden",
+    "Lithuania",
+    "Luxembourg",
+    "France",
+    "Italy",
+    "Switzerland",
+    "Norway",
+    "Oesterreich",
+    "Deutschland",
+    "Schweiz",
+    "Norwegen",
+    "AT",
+    "BE",
+    "EE",
+    "FI",
+    "DK",
+    "SI",
+    "CZ",
+    "NL",
+    "SE",
+    "LT",
+    "LU",
+    "FR",
+    "DE",
+    "IT",
+    "CH",
+    "NO",
+]
 _SKU_TOKEN_RE = re.compile(r"\bXW-[A-Z0-9][A-Z0-9.-]*\b", re.IGNORECASE)
 _LEGACY_MAIL_SUBJECT = "Ihre Rechnung {invoice_number}"
 _LEGACY_MAIL_BODY = (
@@ -99,6 +138,55 @@ class FulfillmentFlags:
         )
 
 
+@dataclass(frozen=True)
+class InvoiceListHintFlags:
+    """Legacy-style hint flags for the invoice list."""
+
+    buyer_note: str = ""
+    address_mismatch: bool = False
+    unreleased_sku: bool = False
+    country_invalid: bool = False
+    country_label: str = ""
+    billing_lines: tuple[str, ...] = ()
+    shipping_lines: tuple[str, ...] = ()
+
+    def icon_keys(self) -> list[str]:
+        keys: list[str] = []
+        if self.unreleased_sku:
+            keys.append("print")
+        if self.buyer_note.strip():
+            keys.append("printondemand")
+        if self.address_mismatch:
+            keys.append("alternateshippingaddress")
+        if self.country_invalid:
+            keys.append("country")
+        return keys
+
+    def tooltip(self) -> str:
+        lines: list[str] = []
+        if self.unreleased_sku:
+            lines.append("Druck-/SKU-Alarm aktiv (RECHNUNGEN_SKU-FLAGS)")
+        if self.buyer_note.strip():
+            lines.append("Käufernotiz vorhanden:")
+            lines.append(self.buyer_note.strip())
+        if self.address_mismatch:
+            lines.append("Abweichende Lieferanschrift:")
+            lines.append(f"Rechnung: {' | '.join(self.billing_lines) or '-'}")
+            lines.append(f"Lieferung: {' | '.join(self.shipping_lines) or '-'}")
+        if self.country_invalid:
+            lines.append(f"Lieferland außerhalb Freigabe: {self.country_label or '-'}")
+        return "\n".join(line for line in lines if str(line).strip())
+
+    def as_row_patch(self) -> dict[str, object]:
+        tooltip = self.tooltip()
+        return {
+            "Hinweise": "",
+            "__icons__Hinweise": self.icon_keys(),
+            "__tooltip__Hinweise": tooltip,
+            "__fg__Hinweise": "#ef4444" if tooltip else "",
+        }
+
+
 class InvoiceProcessingService:
     """Facade over sevDesk invoice clients for the Rechnungen module."""
 
@@ -120,6 +208,7 @@ class InvoiceProcessingService:
         self._wix_address_cache: dict[str, list[str]] = {}
         self._wix_digital_cache: dict[str, bool] = {}
         self._wix_order_summary_cache: dict[str, dict[str, str]] = {}
+        self._wix_hint_cache: dict[str, InvoiceListHintFlags] = {}
         self._mail_service = mail_service
         self._drafts = draft_invoice_service
 
@@ -821,6 +910,37 @@ class InvoiceProcessingService:
             row["__align__FULFILLMENT"] = "center"
         return row_list
 
+    def get_cached_invoice_list_hints(self, reference: str) -> InvoiceListHintFlags | None:
+        ref = str(reference or "").strip()
+        if not ref:
+            return None
+        return self._wix_hint_cache.get(ref)
+
+    def resolve_invoice_list_hints(self, reference: str) -> InvoiceListHintFlags:
+        ref = str(reference or "").strip()
+        if not ref:
+            return InvoiceListHintFlags()
+        cached = self._wix_hint_cache.get(ref)
+        if cached is not None:
+            return cached
+        empty = InvoiceListHintFlags()
+        if self._wix_orders is None or not self._wix_orders.has_credentials():
+            self._wix_hint_cache[ref] = empty
+            return empty
+        try:
+            order = self._wix_orders.resolve_order(ref)
+        except Exception as exc:
+            logger.warning("Invoice hints: Wix resolve failed ref=%s: %s", ref, exc)
+            self._wix_hint_cache[ref] = empty
+            return empty
+        if not order:
+            logger.info("Invoice hints: no Wix order found for ref=%s", ref)
+            self._wix_hint_cache[ref] = empty
+            return empty
+        flags = self._build_invoice_list_hints_from_order(order)
+        self._wix_hint_cache[ref] = flags
+        return flags
+
     def count_invoices(self, *, status: int | None = None, batch_size: int = 200) -> int:
         """Count invoices by paging through API results to avoid hard caps in UI badges."""
         safe_batch = max(10, int(batch_size))
@@ -838,6 +958,111 @@ class InvoiceProcessingService:
                 break
             offset += safe_batch
         return total
+
+    @staticmethod
+    def _normalize_country_key(value: object) -> str:
+        text = str(value or "").strip().lower()
+        replacements = {
+            "ä": "ae",
+            "ö": "oe",
+            "ü": "ue",
+            "ß": "ss",
+        }
+        for src, dest in replacements.items():
+            text = text.replace(src, dest)
+        return " ".join(text.split())
+
+    @classmethod
+    def _normalize_address_line(cls, value: object) -> str:
+        text = cls._normalize_country_key(value)
+        text = re.sub(r"[|,;]", " ", text)
+        return " ".join(text.split())
+
+    def _load_allowed_country_keys(self) -> set[str]:
+        defaults = {
+            self._normalize_country_key(item)
+            for item in _DEFAULT_ALLOWED_COUNTRIES
+            if str(item).strip()
+        }
+        if self._settings_repo is None:
+            return defaults
+        raw = self._settings_repo.get_value_json(_ALLOWED_COUNTRIES_KEY)
+        if not raw:
+            return defaults
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return defaults
+        if not isinstance(data, list):
+            return defaults
+        parsed = {
+            self._normalize_country_key(item)
+            for item in data
+            if str(item).strip()
+        }
+        return parsed or defaults
+
+    def _build_invoice_list_hints_from_order(self, order: dict[str, Any]) -> InvoiceListHintFlags:
+        note = str(order.get("buyerNote") or order.get("buyerNotes") or "").strip()
+        billing_lines = tuple(self._wix_orders.billing_address_lines_from_order(order)) if self._wix_orders else ()
+        shipping_lines = tuple(self._wix_orders.shipping_address_lines_from_order(order)) if self._wix_orders else ()
+        address_mismatch = bool(billing_lines and shipping_lines and self._addresses_differ(billing_lines, shipping_lines))
+        shipping_country = shipping_lines[-1] if shipping_lines else ""
+        country_invalid = bool(shipping_country) and not self._country_allowed(shipping_country)
+        unreleased_sku = self._order_has_flagged_sku(order)
+        return InvoiceListHintFlags(
+            buyer_note=note,
+            address_mismatch=address_mismatch,
+            unreleased_sku=unreleased_sku,
+            country_invalid=country_invalid,
+            country_label=shipping_country,
+            billing_lines=billing_lines,
+            shipping_lines=shipping_lines,
+        )
+
+    def _country_allowed(self, country_label: str) -> bool:
+        normalized = self._normalize_country_key(country_label)
+        if not normalized:
+            return True
+        return normalized in self._load_allowed_country_keys()
+
+    def _addresses_differ(self, left: tuple[str, ...] | list[str], right: tuple[str, ...] | list[str]) -> bool:
+        def normalize(lines: tuple[str, ...] | list[str]) -> list[str]:
+            normalized: list[str] = []
+            for line in lines:
+                text = self._normalize_address_line(line)
+                if text:
+                    normalized.append(text)
+            return normalized
+
+        left_norm = normalize(left)
+        right_norm = normalize(right)
+        if not left_norm and not right_norm:
+            return False
+        if left_norm == right_norm:
+            return False
+        return " ".join(left_norm) != " ".join(right_norm)
+
+    def _order_has_flagged_sku(self, order: dict[str, Any]) -> bool:
+        exact, prefixes = self._load_sku_flags()
+        raw_items = order.get("lineItems") if isinstance(order.get("lineItems"), list) else []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            sku = self._line_item_sku(raw_item)
+            if sku in exact or any(sku.startswith(prefix) for prefix in prefixes):
+                return True
+        return False
+
+    @staticmethod
+    def _line_item_sku(raw_item: dict[str, Any]) -> str:
+        physical = raw_item.get("physicalProperties") if isinstance(raw_item.get("physicalProperties"), dict) else {}
+        sku = str(physical.get("sku") or "").strip().upper()
+        if sku:
+            return sku
+        catalog = raw_item.get("catalogReference") if isinstance(raw_item.get("catalogReference"), dict) else {}
+        options = catalog.get("catalogItemOptions") if isinstance(catalog.get("catalogItemOptions"), dict) else {}
+        return str(options.get("sku") or "").strip().upper()
 
     def _load_sensitive_country_codes(self) -> set[str]:
         if self._settings_repo is None:
