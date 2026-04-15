@@ -6,6 +6,7 @@ from typing import Any, Sequence
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtWidgets import QHeaderView, QTableView, QWidget
+from PySide6.QtCore import QItemSelectionModel
 
 
 class SimpleTableModel(QAbstractTableModel):
@@ -137,3 +138,21 @@ class DataTable(QTableView):
 
     def update_source_row_data(self, row: int, patch: dict[str, Any]) -> None:
         self._model.update_row_data(row, patch)
+
+    def select_source_row(self, row: int) -> None:
+        """Select one source-model row, respecting proxy sorting/filtering."""
+        if row < 0 or row >= self._model.rowCount():
+            return
+        source_index = self._model.index(row, 0)
+        proxy_index = self._proxy.mapFromSource(source_index)
+        if not proxy_index.isValid():
+            return
+        selection_model = self.selectionModel()
+        if selection_model is None:
+            return
+        selection_model.select(
+            proxy_index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.setCurrentIndex(proxy_index)
+        self.scrollTo(proxy_index)

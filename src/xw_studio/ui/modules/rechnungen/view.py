@@ -1199,6 +1199,8 @@ class RechnungenView(QWidget):
         self._btn_more.setEnabled(False)
         self._search.refresh_suggestions()
         self._rebuild_search_index()
+        if len(summaries) == 1:
+            self._table.select_source_row(0)
         self._refresh_detail_for_selection()
         self._restart_hint_prefetch()
         signals: AppSignals = self._container.resolve(AppSignals)
