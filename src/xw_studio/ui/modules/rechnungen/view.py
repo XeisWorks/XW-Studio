@@ -1310,14 +1310,15 @@ class RechnungenView(QWidget):
         self._fulfillment_step_worker.start()
 
     def _on_custom_label_clicked(self) -> None:
-        if not self._print_allowed:
-            return
         initial_lines = self._current_shipping_lines()
         if not initial_lines:
             selected = self._selected_summary()
             if selected is not None:
                 initial_lines = list(self._shipping_address_overrides.get(selected.id, []))
-        _CustomLabelDialog(self._container, initial_lines=initial_lines, parent=self).exec()
+        dlg = _CustomLabelDialog(self._container, initial_lines=initial_lines, parent=self)
+        if not self._print_allowed:
+            dlg._status.setText("Druckerstatus ist derzeit nicht bestaetigt. Druckversuch ist trotzdem moeglich.")  # noqa: SLF001
+        dlg.exec()
 
     def _on_print_plc_selected(self) -> None:
         if not self._print_allowed:

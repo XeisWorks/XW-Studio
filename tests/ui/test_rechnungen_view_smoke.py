@@ -69,3 +69,22 @@ def test_rechnungen_mollie_alert_button_visibility(qtbot: object) -> None:
 
     view.update_mollie_alert_count(3)  # noqa: SLF001
     assert view._mollie_alert_count == 3  # noqa: SLF001
+
+
+def test_custom_label_dialog_opens_even_when_print_status_is_unknown(qtbot: object, monkeypatch) -> None:
+    container = _build_container()
+    view = RechnungenView(container)
+    qtbot.addWidget(view)
+
+    called = {"count": 0}
+
+    def fake_exec(self) -> int:
+        called["count"] += 1
+        return 0
+
+    monkeypatch.setattr("xw_studio.ui.modules.rechnungen.view._CustomLabelDialog.exec", fake_exec)
+
+    view._print_allowed = False  # noqa: SLF001
+    view._on_custom_label_clicked()  # noqa: SLF001
+
+    assert called["count"] == 1
