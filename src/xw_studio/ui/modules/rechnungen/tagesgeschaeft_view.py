@@ -27,6 +27,13 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
+from xw_studio.services.draft_invoice.service import (
+    DraftInvoiceService,
+    ProductIssueDecision,
+    ProductIssueTarget,
+    ProductPreflightApplyResult,
+    ProductPreflightPlan,
+)
 from xw_studio.services.inventory.service import (
     InventoryService,
     ReprintExecutionReport,
@@ -36,6 +43,7 @@ from xw_studio.services.inventory.service import (
     StartPreflight,
 )
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.ui.modules.rechnungen.product_preflight_dialog import ProductPreflightDialog
 from xw_studio.ui.modules.rechnungen.reprint_dialog import ReprintPreviewDialog
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
 from xw_studio.ui.widgets.data_table import DataTable
@@ -266,10 +274,13 @@ class TagesgeschaeftView(QWidget):
         self._container = container
         self._badge_worker: BackgroundWorker | None = None
         self._start_worker: BackgroundWorker | None = None
+        self._start_product_worker: BackgroundWorker | None = None
         self._start_exec_worker: BackgroundWorker | None = None
         self._reprint_worker: BackgroundWorker | None = None
         self._reprint_exec_worker: BackgroundWorker | None = None
         self._start_requested_mode: StartMode = StartMode.INVOICES_AND_PRINT
+        self._start_selected_mode: StartMode = StartMode.INVOICES_AND_PRINT
+        self._pending_start_preflight: StartPreflight | None = None
         self._start_abort_requested = False
         self._badge_timer = QTimer(self)
         self._badge_timer.setInterval(60000)
@@ -296,6 +307,7 @@ class TagesgeschaeftView(QWidget):
             worker is not None and worker.isRunning()
             for worker in (
                 self._start_worker,
+                self._start_product_worker,
                 self._start_exec_worker,
                 self._reprint_worker,
                 self._reprint_exec_worker,
@@ -307,7 +319,7 @@ class TagesgeschaeftView(QWidget):
         self._wait_for_workers()
 
     def _wait_for_workers(self) -> None:
-        for worker in (self._badge_worker, self._start_worker, self._start_exec_worker, 
+        for worker in (self._badge_worker, self._start_worker, self._start_product_worker, self._start_exec_worker,
                        self._reprint_worker, self._reprint_exec_worker):
             if worker is not None and worker.isRunning():
                 worker.wait(3000)
@@ -442,10 +454,54 @@ class TagesgeschaeftView(QWidget):
             signals: AppSignals = self._container.resolve(AppSignals)
             signals.status_message.emit("START abgebrochen", 2500)
             return
-        mode = dlg.selected_mode
+        self._start_selected_mode = dlg.selected_mode
+        self._pending_start_preflight = result
 
-        logger.info("Tagesgeschäft START: mode=%s", mode.value)
+        logger.info("Tagesgeschäft START: mode=%s", self._start_selected_mode.value)
 
+        if (
+            (self._start_product_worker is not None and self._start_product_worker.isRunning())
+            or (self._start_exec_worker is not None and self._start_exec_worker.isRunning())
+        ):
+            return
+
+        signals.status_message.emit("Produktprüfung wird vorbereitet…", 2500)
+
+        def job() -> ProductPreflightPlan:
+            invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            draft_service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            summaries = invoice_service.load_invoice_summaries(status=100, limit=1000, offset=0)
+            targets_by_reference: dict[str, list[ProductIssueTarget]] = {}
+            refs: list[str] = []
+            for summary in summaries:
+                reference = str(summary.order_reference or "").strip()
+                if not reference:
+                    continue
+                refs.append(reference)
+                targets_by_reference.setdefault(reference, []).append(
+                    ProductIssueTarget(
+                        invoice_id=str(summary.id or "").strip(),
+                        invoice_number=str(summary.invoice_number or "").strip(),
+                        wix_order_number=reference,
+                        customer_name=str(summary.contact_name or "").strip(),
+                    )
+                )
+            return draft_service.build_missing_product_plan(refs, targets_by_reference=targets_by_reference)
+
+        self._start_product_worker = BackgroundWorker(job)
+        self._start_product_worker.signals.result.connect(self._on_start_product_preflight_ready)
+        self._start_product_worker.signals.error.connect(self._on_start_preflight_error)
+        self._start_product_worker.signals.finished.connect(lambda: setattr(self, "_start_product_worker", None))
+        self._start_product_worker.start()
+
+    def _on_start_product_preflight_ready(self, result: object) -> None:
+        plan = result if isinstance(result, ProductPreflightPlan) else ProductPreflightPlan(issues=[], part_categories=[])
+        decisions = self._run_product_preflight_dialogs(plan)
+        preflight = self._pending_start_preflight
+        mode = self._start_selected_mode
+        if preflight is None:
+            QMessageBox.warning(self, "START", "START-Preflight ist nicht mehr verfuegbar.")
+            return
         if self._start_exec_worker is not None and self._start_exec_worker.isRunning():
             return
 
@@ -455,6 +511,12 @@ class TagesgeschaeftView(QWidget):
         signals.status_message.emit("START wird ausgefuehrt…", 2500)
 
         def job() -> dict[str, object]:
+            draft_service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            apply_result = (
+                draft_service.apply_missing_product_plan(plan, decisions)
+                if plan.issues
+                else ProductPreflightApplyResult()
+            )
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
             batch_result = invoice_service.run_start_fullflow(
                 full_mode=(mode == StartMode.INVOICES_AND_PRINT),
@@ -463,7 +525,7 @@ class TagesgeschaeftView(QWidget):
             inventory_report: StartExecutionReport | None = None
             inventory_warning = ""
             if mode == StartMode.INVOICES_AND_PRINT:
-                if result.missing_position_data:
+                if preflight.missing_position_data:
                     inventory_warning = (
                         "Inventar wurde nicht aktualisiert, weil kein Druckplan vorlag."
                     )
@@ -474,11 +536,12 @@ class TagesgeschaeftView(QWidget):
                     )
                 else:
                     inventory_service: InventoryService = self._container.resolve(InventoryService)
-                    inventory_report = inventory_service.execute_start_workflow(result, mode)
+                    inventory_report = inventory_service.execute_start_workflow(preflight, mode)
             return {
                 "batch": batch_result,
                 "inventory_report": inventory_report,
                 "inventory_warning": inventory_warning,
+                "product_apply": apply_result,
             }
 
         self._start_exec_worker = BackgroundWorker(job)
@@ -487,12 +550,24 @@ class TagesgeschaeftView(QWidget):
         self._start_exec_worker.signals.finished.connect(lambda: self._set_start_running(False))
         self._start_exec_worker.start()
 
+    def _run_product_preflight_dialogs(self, plan: ProductPreflightPlan) -> dict[str, ProductIssueDecision]:
+        decisions: dict[str, ProductIssueDecision] = {}
+        for issue in plan.issues:
+            dialog = ProductPreflightDialog(issue, part_categories=plan.part_categories, parent=self)
+            decision = dialog.show_dialog()
+            if decision is None:
+                decision = ProductIssueDecision(action="skip", draft=issue.draft)
+            decisions[issue.sku] = decision
+        return decisions
+
     def _on_start_executed(self, result: object) -> None:
         if not isinstance(result, dict):
             return
+        self._pending_start_preflight = None
         batch = result.get("batch") if isinstance(result.get("batch"), dict) else result
         inventory_report = result.get("inventory_report")
         inventory_warning = str(result.get("inventory_warning") or "")
+        product_apply = result.get("product_apply")
 
         processed = int(batch.get("processed") or 0)
         failures = int(batch.get("failures") or 0)
@@ -530,6 +605,12 @@ class TagesgeschaeftView(QWidget):
             )
         elif inventory_warning:
             lines.append(inventory_warning)
+        if isinstance(product_apply, ProductPreflightApplyResult):
+            if product_apply.created_skus:
+                lines.append(f"Neue sevDesk-Produkte: {', '.join(product_apply.created_skus)}")
+            if product_apply.warnings:
+                lines.append("Produkt-Hinweise:")
+                lines.extend(f"- {warning}" for warning in product_apply.warnings)
 
         QMessageBox.information(
             self,
@@ -537,13 +618,13 @@ class TagesgeschaeftView(QWidget):
             "\n".join(lines),
         )
 
-        self._tabs.setCurrentIndex(0)
         self._rechnungen_view._reload_first_page()  # noqa: SLF001
         self._refresh_badges()
 
     def _on_start_preflight_error(self, exc: Exception) -> None:
         self._set_start_running(False)
         logger.error("Preflight failed: %s", exc)
+        self._pending_start_preflight = None
         QMessageBox.warning(
             self,
             "Fehler",

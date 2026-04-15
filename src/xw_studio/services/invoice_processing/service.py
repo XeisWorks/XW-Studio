@@ -770,9 +770,9 @@ class InvoiceProcessingService:
         if not reference:
             return
         try:
-            self._drafts.repair_draft_product_mapping(summary.id, reference)
+            self._drafts.repair_draft_product_mapping(summary.id, reference, create_missing_products=False)
         except Exception as exc:
-            raise RuntimeError(f"Produktabgleich fuer Entwurf fehlgeschlagen: {exc}") from exc
+            logger.warning("Produktabgleich fuer Entwurf %s fehlgeschlagen: %s", summary.id, exc)
 
     def _resolve_customer_name(self, summary: InvoiceSummary, invoice: dict[str, Any]) -> str:
         if summary.order_reference.strip():

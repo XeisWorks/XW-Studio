@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from xw_studio.services.draft_invoice.service import DraftInvoiceService
+from xw_studio.services.draft_invoice.service import DraftInvoiceService, ProductIssueDecision, ProductIssueTarget
 from xw_studio.services.sevdesk.part_client import SevdeskPart
 
 
@@ -76,6 +76,16 @@ class _PartClientStub:
 
     def find_part_by_sku(self, sku: str) -> SevdeskPart | None:
         return self.parts.get(str(sku).strip().upper())
+
+    def list_parts(self, *, max_pages: int = 20) -> list[SevdeskPart]:
+        return list(self.parts.values())
+
+    @staticmethod
+    def list_part_categories() -> list[dict[str, str]]:
+        return [
+            {"id": "CAT-1", "name": "Noten"},
+            {"id": "CAT-2", "name": "Digital"},
+        ]
 
     def create_part(self, payload: dict) -> SevdeskPart:
         self.created_payloads.append(dict(payload))
@@ -157,7 +167,7 @@ def _service() -> tuple[DraftInvoiceService, _ConnectionStub, _PartClientStub, _
     return service, connection, parts, invoices
 
 
-def test_preview_marks_missing_part_as_auto_create() -> None:
+def test_preview_marks_missing_part_as_dialog_candidate() -> None:
     service, _connection, _parts, _invoices = _service()
 
     preview = service.preview_wix_order_number("20519")
@@ -165,29 +175,60 @@ def test_preview_marks_missing_part_as_auto_create() -> None:
     assert preview["can_create"] is True
     assert preview["missing_skus"] == []
     assert preview["auto_create_skus"] == ["XW-100"]
+    assert preview["items"][0]["status"] == "Produktdialog vor Erstellung"
 
 
-def test_create_draft_auto_creates_missing_part_before_save_invoice() -> None:
+def test_create_draft_keeps_unmapped_position_when_part_missing() -> None:
     service, connection, parts, _invoices = _service()
 
     result = service.create_draft_from_wix_order_number("20519")
 
     assert result["invoice_id"] == "INV-NEW-1"
-    assert len(parts.created_payloads) == 1
-    assert parts.created_payloads[0]["partNumber"] == "XW-100"
+    assert parts.created_payloads == []
     save_invoice = next(payload for path, payload in connection.posts if path == "/Invoice/Factory/saveInvoice")
     first_pos = save_invoice["invoicePosSave"][0]
-    assert first_pos["part"] == {"id": "P-1", "objectName": "Part"}
+    assert "part" not in first_pos
+    assert first_pos["name"] == "Produkt Eins"
     assert first_pos["price"] == 12.5
 
 
-def test_repair_draft_product_mapping_updates_existing_positions() -> None:
+def test_apply_missing_product_plan_creates_part_and_patches_existing_draft() -> None:
     service, _connection, parts, invoices = _service()
+
+    plan = service.build_missing_product_plan(
+        ["20519"],
+        targets_by_reference={
+            "20519": [
+                ProductIssueTarget(
+                    invoice_id="INV-1",
+                    invoice_number="RE-TEST-1",
+                    wix_order_number="20519",
+                    customer_name="Max Mustermann",
+                ),
+            ]
+        },
+    )
+    issue = plan.issues[0]
+    result = service.apply_missing_product_plan(
+        plan,
+        {issue.sku: ProductIssueDecision(action="create_part", draft=issue.draft)},
+    )
+
+    assert result.created_skus == ("XW-100",)
+    assert len(parts.created_payloads) == 1
+    assert invoices.updated_positions is not None
+    assert invoices.updated_positions[0]["part"] == {"id": "P-1", "objectName": "Part"}
+    assert invoices.updated_positions[0]["name"] == "Produkt Eins"
+
+
+def test_repair_draft_product_mapping_updates_existing_positions_without_auto_create() -> None:
+    service, _connection, parts, invoices = _service()
+    parts.parts["XW-100"] = SevdeskPart(id="P-1", sku="XW-100", name="Produkt Eins")
 
     repaired = service.repair_draft_product_mapping("INV-1", "20519")
 
     assert repaired is True
-    assert len(parts.created_payloads) == 1
+    assert len(parts.created_payloads) == 0
     assert invoices.updated_positions is not None
     assert invoices.updated_positions[0]["part"] == {"id": "P-1", "objectName": "Part"}
     assert invoices.updated_positions[0]["name"] == "Produkt Eins"

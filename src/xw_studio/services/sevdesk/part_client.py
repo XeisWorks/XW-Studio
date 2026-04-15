@@ -25,6 +25,12 @@ class SevdeskPart(BaseModel):
     stock_qty: int = 0
     # False => digital product (stockEnabled:false in sevDesk) — show ∞ in UI
     stock_enabled: bool = True
+    text: str = ""
+    tax_rate: float | None = None
+    category_id: str = ""
+    category_name: str = ""
+    unity: dict[str, Any] = {}
+    internal_comment: str = ""
 
 
 def _to_int(value: Any) -> int:
@@ -61,9 +67,27 @@ def _parse_part(raw: dict[str, Any]) -> SevdeskPart:
         stock_enabled = stock_enabled_raw.strip() not in ("0", "false", "")
     else:
         stock_enabled = True  # default: assume physical
+    category = raw.get("category") if isinstance(raw.get("category"), dict) else {}
+    unity = raw.get("unity") if isinstance(raw.get("unity"), dict) else {}
+    tax_rate_raw = raw.get("taxRate")
+    try:
+        tax_rate = float(tax_rate_raw) if tax_rate_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        tax_rate = None
     return SevdeskPart(
         id=pid, sku=sku, name=name, price_eur=price,
         stock_qty=max(0, stock), stock_enabled=stock_enabled,
+        text=str(raw.get("text") or raw.get("description") or ""),
+        tax_rate=tax_rate,
+        category_id=str(category.get("id") or ""),
+        category_name=str(category.get("name") or category.get("displayName") or ""),
+        unity=dict(unity) if unity else {},
+        internal_comment=str(
+            raw.get("internalComment")
+            or raw.get("internalNote")
+            or raw.get("internal_comment")
+            or ""
+        ),
     )
 
 
@@ -77,7 +101,7 @@ class PartClient:
         rows: list[SevdeskPart] = []
         offset = 0
         for _ in range(max_pages):
-            params = {"limit": _PAGE_SIZE, "offset": offset}
+            params = {"limit": _PAGE_SIZE, "offset": offset, "embed": "category,unity"}
             try:
                 response = self._conn.get("/Part", params=params)
             except Exception as exc:  # noqa: BLE001
@@ -99,7 +123,7 @@ class PartClient:
     def find_part_by_sku(self, sku: str) -> SevdeskPart | None:
         """Look up a single Part by its partNumber/SKU via GET /Part?partNumber=…."""
         try:
-            response = self._conn.get("/Part", params={"partNumber": sku})
+            response = self._conn.get("/Part", params={"partNumber": sku, "embed": "category,unity"})
             payload = response.json()
             objects = payload.get("objects") if isinstance(payload, dict) else []
             if not isinstance(objects, list) or not objects:
@@ -114,7 +138,7 @@ class PartClient:
     def get_part_by_id(self, part_id: str) -> SevdeskPart | None:
         """Fetch one sevDesk part by id."""
         try:
-            response = self._conn.get(f"/Part/{str(part_id).strip()}")
+            response = self._conn.get(f"/Part/{str(part_id).strip()}", params={"embed": "category,unity"})
             payload = response.json()
             objects = payload.get("objects") if isinstance(payload, dict) else []
             raw: dict[str, Any] | None = None
@@ -149,6 +173,29 @@ class PartClient:
             raise RuntimeError("sevDesk-Part wurde erstellt, aber ohne ID zurueckgegeben.")
         logger.info("PartClient: created part %s for SKU %s", created.id, created.sku)
         return created
+
+    def list_part_categories(self) -> list[dict[str, str]]:
+        """Return sevDesk part categories for ``/Category?objectType=Part``."""
+        try:
+            response = self._conn.get("/Category", params={"objectType": "Part", "limit": 1000, "offset": 0})
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("PartClient.list_part_categories failed: %s", exc)
+            return []
+
+        objects = payload.get("objects") if isinstance(payload, dict) else []
+        if not isinstance(objects, list):
+            return []
+
+        categories: list[dict[str, str]] = []
+        for raw in objects:
+            if not isinstance(raw, dict):
+                continue
+            cat_id = str(raw.get("id") or "").strip()
+            name = str(raw.get("name") or raw.get("displayName") or raw.get("categoryName") or "").strip()
+            if cat_id and name:
+                categories.append({"id": cat_id, "name": name})
+        return categories
 
     def get_part_stock(self, part_id: str) -> int:
         """Return current stock for a single sevDesk Part.

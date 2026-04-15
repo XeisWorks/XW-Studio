@@ -1,6 +1,7 @@
-"""Create and repair sevDesk invoice drafts from Wix order numbers."""
+"""Create, preflight and repair sevDesk invoice drafts from Wix order numbers."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date
 import logging
 from typing import Any
@@ -8,15 +9,67 @@ from typing import Any
 from xw_studio.services.http_client import SevdeskConnection
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
-from xw_studio.services.sevdesk.part_client import PartClient
+from xw_studio.services.sevdesk.part_client import PartClient, SevdeskPart
 from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.services.wix.client import _parse_order_line_item
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ProductDraft:
+    name: str
+    sku: str
+    text: str
+    internal_comment: str
+    price_gross: float | None
+    tax_rate: float | None
+    unity: dict[str, Any]
+    category_id: str = ""
+    category_name: str = ""
+
+
+@dataclass(frozen=True)
+class ProductIssueTarget:
+    invoice_id: str
+    invoice_number: str
+    wix_order_number: str
+    customer_name: str
+
+
+@dataclass
+class ProductIssue:
+    sku: str
+    wix_name: str
+    wix_order_number: str
+    wix_description: str
+    wix_price_gross: float | None
+    is_digital: bool
+    draft: ProductDraft
+    targets: list[ProductIssueTarget] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProductIssueDecision:
+    action: str
+    draft: ProductDraft
+
+
+@dataclass(frozen=True)
+class ProductPreflightPlan:
+    issues: list[ProductIssue]
+    part_categories: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class ProductPreflightApplyResult:
+    created_skus: tuple[str, ...] = ()
+    skipped_skus: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 class DraftInvoiceService:
-    """Build and repair sevDesk invoice drafts from Wix order data."""
+    """Build, preflight and repair sevDesk invoice drafts from Wix order data."""
 
     def __init__(
         self,
@@ -42,7 +95,6 @@ class DraftInvoiceService:
 
         order = self._resolve_order_required(reference)
         order_number = str(order.get("number") or reference).strip()
-        self.ensure_products_for_wix_order_number(order_number)
 
         contact_id = self._resolve_or_create_contact(order)
         sev_user_id = self._resolve_default_sev_user_id()
@@ -112,10 +164,10 @@ class DraftInvoiceService:
             raise ValueError("Wix-Order enthaelt keine Positionen.")
 
         missing_skus: list[str] = []
-        auto_create_skus: list[str] = []
+        create_dialog_skus: list[str] = []
         preview_items: list[dict[str, str]] = []
         for item in items:
-            sku = str(item.sku or "").strip()
+            sku = str(item.sku or "").strip().upper()
             if not sku:
                 missing_skus.append(f"(ohne SKU) {item.name}")
                 preview_items.append(
@@ -129,13 +181,13 @@ class DraftInvoiceService:
                 continue
             part = self._parts.find_part_by_sku(sku)
             if part is None or not str(part.id).strip():
-                auto_create_skus.append(sku)
+                create_dialog_skus.append(sku)
                 preview_items.append(
                     {
                         "sku": sku,
                         "name": str(item.name or "").strip() or sku,
                         "qty": str(max(1, int(item.qty or 1))),
-                        "status": "Auto-Anlage in sevDesk",
+                        "status": "Produktdialog vor Erstellung",
                     }
                 )
                 continue
@@ -160,9 +212,138 @@ class DraftInvoiceService:
             "email": str(buyer.get("email") or "").strip() or "-",
             "items": preview_items,
             "missing_skus": sorted(set(missing_skus)),
-            "auto_create_skus": sorted(set(auto_create_skus)),
+            "auto_create_skus": sorted(set(create_dialog_skus)),
             "can_create": not bool(missing_skus),
         }
+
+    def build_missing_product_plan(
+        self,
+        references: list[str],
+        *,
+        targets_by_reference: dict[str, list[ProductIssueTarget]] | None = None,
+    ) -> ProductPreflightPlan:
+        """Collect missing sevDesk parts for Wix orders, grouped by SKU."""
+        normalized_refs = [str(ref or "").strip() for ref in references if str(ref or "").strip()]
+        if not normalized_refs:
+            return ProductPreflightPlan(issues=[], part_categories=self._parts.list_part_categories())
+
+        issues_by_sku: dict[str, ProductIssue] = {}
+        part_categories = self._parts.list_part_categories()
+        existing_parts = self._parts_by_sku()
+
+        for reference in normalized_refs:
+            order = self._resolve_order_required(reference)
+            order_number = str(order.get("number") or reference).strip()
+            raw_items = self._order_line_items(order)
+            if not raw_items:
+                continue
+            targets = list((targets_by_reference or {}).get(order_number) or [])
+            if not targets:
+                targets = [self._fallback_target_for_order(order_number, order)]
+            for raw_item in raw_items:
+                item = _parse_order_line_item(raw_item)
+                sku = str(item.sku or "").strip().upper()
+                if not sku:
+                    continue
+                if sku in existing_parts:
+                    continue
+                issue = issues_by_sku.get(sku)
+                if issue is None:
+                    draft = self._build_product_draft(
+                        raw_item=raw_item,
+                        categories=part_categories,
+                        existing_parts=existing_parts,
+                    )
+                    issue = ProductIssue(
+                        sku=sku,
+                        wix_name=str(item.name or sku).strip(),
+                        wix_order_number=order_number,
+                        wix_description=str(item.note or "").strip(),
+                        wix_price_gross=round(self._line_item_unit_price(raw_item), 2),
+                        is_digital=self._wix_orders.line_item_is_digital(raw_item),
+                        draft=draft,
+                    )
+                    issues_by_sku[sku] = issue
+                self._merge_targets(issue.targets, targets)
+
+        issues = sorted(issues_by_sku.values(), key=lambda issue: issue.sku)
+        return ProductPreflightPlan(issues=issues, part_categories=part_categories)
+
+    def apply_missing_product_plan(
+        self,
+        plan: ProductPreflightPlan,
+        decisions: dict[str, ProductIssueDecision],
+    ) -> ProductPreflightApplyResult:
+        """Create chosen sevDesk products and patch affected drafts where possible."""
+        created_skus: list[str] = []
+        skipped_skus: list[str] = []
+        warnings: list[str] = []
+
+        for issue in plan.issues:
+            decision = decisions.get(issue.sku)
+            if decision is None or decision.action == "skip":
+                skipped_skus.append(issue.sku)
+                continue
+            if decision.action != "create_part":
+                warnings.append(f"SKU {issue.sku}: unbekannte Entscheidung {decision.action}")
+                continue
+            try:
+                created = self._parts.find_part_by_sku(issue.sku)
+                if created is None or not created.id.strip():
+                    payload = self._draft_to_part_payload(decision.draft, issue)
+                    created = self._parts.create_part(payload)
+                if created.id.strip():
+                    created_skus.append(issue.sku)
+                    for target in issue.targets:
+                        if not target.invoice_id.strip():
+                            continue
+                        try:
+                            self.repair_draft_product_mapping(
+                                target.invoice_id,
+                                target.wix_order_number,
+                                create_missing_products=False,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            warnings.append(
+                                f"Rechnung {target.invoice_number or target.invoice_id}: Produktabgleich fehlgeschlagen ({exc})"
+                            )
+                else:
+                    warnings.append(f"SKU {issue.sku}: sevDesk-Produkt wurde ohne ID erstellt")
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"SKU {issue.sku}: Produkt konnte nicht angelegt werden ({exc})")
+
+        if created_skus:
+            logger.info(
+                "DraftInvoiceService: created sevDesk parts from dialog for %s",
+                ", ".join(sorted(set(created_skus))),
+            )
+        return ProductPreflightApplyResult(
+            created_skus=tuple(sorted(set(created_skus))),
+            skipped_skus=tuple(sorted(set(skipped_skus))),
+            warnings=tuple(warnings),
+        )
+
+    def repair_draft_product_mapping(
+        self,
+        invoice_id: str,
+        wix_order_number: str,
+        *,
+        create_missing_products: bool = False,
+    ) -> bool:
+        """Patch an existing draft so invoice positions point to real sevDesk parts."""
+        order = self._resolve_order_required(wix_order_number)
+        if create_missing_products:
+            self.ensure_products_for_wix_order_number(wix_order_number)
+        invoice = self._invoices.fetch_invoice_by_id(invoice_id)
+        positions = self._invoices.fetch_invoice_positions(invoice_id)
+        if not invoice or not positions:
+            return False
+        patched_positions = self._patched_positions_for_order(order, positions)
+        if patched_positions == positions:
+            return False
+        self._invoices.update_invoice_draft(invoice, patched_positions)
+        logger.info("DraftInvoiceService: repaired draft %s for Wix order %s", invoice_id, wix_order_number)
+        return True
 
     def ensure_products_for_wix_order_number(self, wix_order_number: str) -> list[str]:
         """Create missing sevDesk parts for one Wix order before draft creation."""
@@ -183,21 +364,6 @@ class DraftInvoiceService:
             logger.info("DraftInvoiceService: auto-created sevDesk parts for %s", ", ".join(sorted(set(created))))
         return created
 
-    def repair_draft_product_mapping(self, invoice_id: str, wix_order_number: str) -> bool:
-        """Patch an existing draft so invoice positions point to real sevDesk parts."""
-        order = self._resolve_order_required(wix_order_number)
-        self.ensure_products_for_wix_order_number(wix_order_number)
-        invoice = self._invoices.fetch_invoice_by_id(invoice_id)
-        positions = self._invoices.fetch_invoice_positions(invoice_id)
-        if not invoice or not positions:
-            return False
-        patched_positions = self._patched_positions_for_order(order, positions)
-        if patched_positions == positions:
-            return False
-        self._invoices.update_invoice_draft(invoice, patched_positions)
-        logger.info("DraftInvoiceService: repaired draft %s for Wix order %s", invoice_id, wix_order_number)
-        return True
-
     def _build_positions(self, order: dict[str, Any]) -> list[dict[str, Any]]:
         raw_items = self._order_line_items(order)
         if not raw_items:
@@ -212,27 +378,27 @@ class DraftInvoiceService:
                 missing_skus.append(f"(ohne SKU) {item.name}")
                 continue
             part = self._parts.find_part_by_sku(sku)
-            if part is None or not str(part.id).strip():
-                missing_skus.append(sku)
-                continue
             qty = max(1, int(item.qty or 1))
-            price = self._to_float(part.price_eur)
+            price = self._to_float(part.price_eur) if part is not None else 0.0
             if price <= 0:
                 price = self._line_item_unit_price(raw_item)
-            positions.append(
-                {
-                    "objectName": "InvoicePos",
-                    "mapAll": True,
-                    "unity": {"id": 1, "objectName": "Unity"},
-                    "taxRate": 19,
-                    "quantity": float(qty),
-                    "price": price,
-                    "name": str(item.name or part.name or sku).strip(),
-                    "text": str(item.note or "").strip(),
-                    "positionNumber": index,
-                    "part": {"id": str(part.id), "objectName": "Part"},
-                }
-            )
+            position: dict[str, Any] = {
+                "objectName": "InvoicePos",
+                "mapAll": True,
+                "unity": {"id": 1, "objectName": "Unity"},
+                "taxRate": float(part.tax_rate) if part is not None and part.tax_rate is not None else 19.0,
+                "quantity": float(qty),
+                "price": price,
+                "name": str(item.name or (part.name if part is not None else "") or sku).strip(),
+                "text": str(item.note or (part.text if part is not None else "") or "").strip(),
+                "positionNumber": index,
+            }
+            if part is not None and str(part.id).strip():
+                position["part"] = {"id": str(part.id), "objectName": "Part"}
+                unity = part.unity if isinstance(part.unity, dict) else {}
+                if unity.get("id"):
+                    position["unity"] = dict(unity)
+            positions.append(position)
 
         if missing_skus:
             joined = ", ".join(sorted(set(missing_skus)))
@@ -266,7 +432,11 @@ class DraftInvoiceService:
             updated = dict(patched[index])
             updated["part"] = {"id": str(part.id), "objectName": "Part"}
             updated["name"] = str(item.name or part.name or sku).strip()
-            updated["text"] = str(item.note or updated.get("text") or "").strip()
+            updated["text"] = str(item.note or part.text or updated.get("text") or "").strip()
+            if part.unity and isinstance(part.unity, dict) and part.unity.get("id"):
+                updated["unity"] = dict(part.unity)
+            if part.tax_rate is not None:
+                updated["taxRate"] = float(part.tax_rate)
             patched[index] = updated
         return patched
 
@@ -277,21 +447,136 @@ class DraftInvoiceService:
             return []
         return [item for item in raw_items if isinstance(item, dict)]
 
+    def _draft_to_part_payload(self, draft: ProductDraft, issue: ProductIssue) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "name": str(draft.name or "").strip() or issue.sku,
+            "partNumber": str(draft.sku or issue.sku).strip().upper(),
+            "text": str(draft.text or "").strip(),
+            "internalComment": str(draft.internal_comment or "").strip(),
+            "priceGross": round(float(draft.price_gross or issue.wix_price_gross or 0.0), 2),
+            "taxRate": float(draft.tax_rate if draft.tax_rate is not None else 19.0),
+            "unity": dict(draft.unity or {"id": 1, "objectName": "Unity"}),
+            "stockEnabled": not issue.is_digital,
+            "stock": 0,
+            "status": 100,
+        }
+        if draft.category_id:
+            payload["category"] = {"id": draft.category_id, "objectName": "Category"}
+        return payload
+
     def _build_part_payload(self, raw_item: dict[str, Any]) -> dict[str, Any]:
         item = _parse_order_line_item(raw_item)
         sku = str(item.sku or "").strip().upper()
         name = str(item.name or sku).strip() or sku
+        unity = {"id": 1, "objectName": "Unity"}
         return {
             "name": name,
             "partNumber": sku,
             "text": str(item.note or "").strip(),
             "priceGross": round(self._line_item_unit_price(raw_item), 2),
             "taxRate": 19.0,
-            "unity": {"id": 1, "objectName": "Unity"},
+            "unity": unity,
             "stockEnabled": not self._wix_orders.line_item_is_digital(raw_item),
             "stock": 0,
             "status": 100,
         }
+
+    def _build_product_draft(
+        self,
+        *,
+        raw_item: dict[str, Any],
+        categories: list[dict[str, str]],
+        existing_parts: dict[str, SevdeskPart],
+    ) -> ProductDraft:
+        item = _parse_order_line_item(raw_item)
+        sku = str(item.sku or "").strip().upper()
+        category = self._infer_part_category(
+            sku=sku,
+            is_digital=self._wix_orders.line_item_is_digital(raw_item),
+            categories=categories,
+            existing_parts=existing_parts,
+        )
+        return ProductDraft(
+            name=str(item.name or sku).strip() or sku,
+            sku=sku,
+            text=str(item.note or "").strip(),
+            internal_comment=str(
+                raw_item.get("productId")
+                or raw_item.get("catalogItemId")
+                or ((raw_item.get("catalogReference") or {}).get("catalogItemId") if isinstance(raw_item.get("catalogReference"), dict) else "")
+                or ""
+            ).strip(),
+            price_gross=round(self._line_item_unit_price(raw_item), 2),
+            tax_rate=19.0,
+            unity={"id": 1, "objectName": "Unity"},
+            category_id=str(category.get("id") or "").strip(),
+            category_name=str(category.get("name") or "").strip(),
+        )
+
+    def _infer_part_category(
+        self,
+        *,
+        sku: str,
+        is_digital: bool,
+        categories: list[dict[str, str]],
+        existing_parts: dict[str, SevdeskPart],
+    ) -> dict[str, str]:
+        if not categories:
+            return {"id": "", "name": ""}
+
+        prefix = sku[:4].upper()
+        by_id: dict[str, dict[str, str]] = {str(entry.get("id") or ""): dict(entry) for entry in categories}
+        counts: dict[str, int] = {}
+        for part in existing_parts.values():
+            if not part.category_id or not part.sku.upper().startswith(prefix):
+                continue
+            counts[part.category_id] = counts.get(part.category_id, 0) + 1
+        if counts:
+            category_id = max(counts.items(), key=lambda item: item[1])[0]
+            chosen = by_id.get(category_id)
+            if chosen:
+                return chosen
+
+        for entry in categories:
+            name = str(entry.get("name") or "").casefold()
+            if is_digital and "digital" in name:
+                return dict(entry)
+            if (not is_digital) and "digital" not in name:
+                return dict(entry)
+        return dict(categories[0])
+
+    def _parts_by_sku(self) -> dict[str, SevdeskPart]:
+        mapping: dict[str, SevdeskPart] = {}
+        for part in self._parts.list_parts(max_pages=40):
+            sku = str(part.sku or "").strip().upper()
+            if sku and sku not in mapping:
+                mapping[sku] = part
+        return mapping
+
+    @staticmethod
+    def _merge_targets(existing: list[ProductIssueTarget], new_targets: list[ProductIssueTarget]) -> None:
+        seen = {(target.invoice_id, target.wix_order_number) for target in existing}
+        for target in new_targets:
+            key = (target.invoice_id, target.wix_order_number)
+            if key in seen:
+                continue
+            seen.add(key)
+            existing.append(target)
+
+    @staticmethod
+    def _fallback_target_for_order(order_number: str, order: dict[str, Any]) -> ProductIssueTarget:
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        customer_name = " ".join(
+            part
+            for part in (str(buyer.get("firstName") or "").strip(), str(buyer.get("lastName") or "").strip())
+            if part
+        ).strip()
+        return ProductIssueTarget(
+            invoice_id="",
+            invoice_number="(neu)",
+            wix_order_number=order_number,
+            customer_name=customer_name or "-",
+        )
 
     def _resolve_order_required(self, reference: str) -> dict[str, Any]:
         order = self._wix_orders.resolve_order(str(reference or "").strip())

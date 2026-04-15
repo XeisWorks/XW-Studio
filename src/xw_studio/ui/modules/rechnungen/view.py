@@ -44,7 +44,13 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
-from xw_studio.services.draft_invoice.service import DraftInvoiceService
+from xw_studio.services.draft_invoice.service import (
+    DraftInvoiceService,
+    ProductIssueDecision,
+    ProductIssueTarget,
+    ProductPreflightApplyResult,
+    ProductPreflightPlan,
+)
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
 from xw_studio.services.products.print_decision import PieceBlock, PrintDecisionEngine
 from xw_studio.services.secrets.service import SecretService
@@ -54,6 +60,7 @@ from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.ui.modules.rechnungen.offene_sendungen_dialog import OffeneSendungenDialog
 from xw_studio.ui.modules.rechnungen.plc_label_dialog import PlcLabelPrintDialog
+from xw_studio.ui.modules.rechnungen.product_preflight_dialog import ProductPreflightDialog
 from xw_studio.ui.modules.rechnungen.refund_dialog import RefundDialog
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.progress_overlay import ProgressOverlay
@@ -500,6 +507,7 @@ class RechnungenView(QWidget):
         self._worker: BackgroundWorker | None = None
         self._refund_worker: BackgroundWorker | None = None
         self._draft_worker: BackgroundWorker | None = None
+        self._draft_product_worker: BackgroundWorker | None = None
         self._mollie_badge_worker: BackgroundWorker | None = None
         self._stuecke_worker: BackgroundWorker | None = None
         self._wix_meta_worker: BackgroundWorker | None = None
@@ -510,6 +518,7 @@ class RechnungenView(QWidget):
         self._did_initial_load = False
         self._print_allowed = False
         self._open_draft_after_create = False
+        self._pending_draft_order_number = ""
         self._mollie_alert_count = 0
         self._sendungen_alert_count = 0
         self._search_index: list[dict[str, str]] = []
@@ -1947,7 +1956,10 @@ class RechnungenView(QWidget):
         )
 
     def _on_create_draft_clicked(self) -> None:
-        if self._draft_worker is not None and self._draft_worker.isRunning():
+        if (
+            (self._draft_worker is not None and self._draft_worker.isRunning())
+            or (self._draft_product_worker is not None and self._draft_product_worker.isRunning())
+        ):
             return
         dlg = _DraftInvoiceDialog(self)
         dlg.on_preview_requested(lambda: self._run_draft_preview(dlg))
@@ -1956,35 +1968,50 @@ class RechnungenView(QWidget):
 
         order_number = dlg.wix_order_number
         self._open_draft_after_create = dlg.open_in_sevdesk
-        self._overlay.show_with_message("Rechnungsentwurf wird erstellt…")
+        self._pending_draft_order_number = order_number
+        self._overlay.show_with_message("Produktprüfung wird vorbereitet…")
         self._overlay.setGeometry(self.rect())
         self._overlay.raise_()
 
-        def job() -> dict[str, str]:
+        def job() -> ProductPreflightPlan:
             service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
-            return service.create_draft_from_wix_order_number(order_number)
+            return service.build_missing_product_plan([order_number])
 
-        self._draft_worker = BackgroundWorker(job)
-        self._draft_worker.signals.result.connect(self._on_create_draft_result)
-        self._draft_worker.signals.error.connect(self._on_create_draft_error)
-        self._draft_worker.signals.finished.connect(self._on_create_draft_finished)
-        self._draft_worker.start()
+        self._draft_product_worker = BackgroundWorker(job)
+        self._draft_product_worker.signals.result.connect(self._on_draft_product_plan_ready)
+        self._draft_product_worker.signals.error.connect(self._on_create_draft_error)
+        self._draft_product_worker.signals.finished.connect(self._on_draft_product_plan_finished)
+        self._draft_product_worker.start()
 
     def _on_create_draft_result(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
-        invoice_id = str(data.get("invoice_id") or "").strip()
-        invoice_number = str(data.get("invoice_number") or "").strip()
-        wix_order_number = str(data.get("wix_order_number") or "").strip()
-        positions = str(data.get("positions") or "0")
+        draft_payload = data.get("draft") if isinstance(data.get("draft"), dict) else data
+        apply_result = data.get("apply")
+        invoice_id = str(draft_payload.get("invoice_id") or "").strip()
+        invoice_number = str(draft_payload.get("invoice_number") or "").strip()
+        wix_order_number = str(draft_payload.get("wix_order_number") or "").strip()
+        positions = str(draft_payload.get("positions") or "0")
+        message_lines = [
+            f"Wix-Order-Nr: {wix_order_number}",
+            f"Rechnung: {invoice_number}",
+            f"sevDesk-ID: {invoice_id}",
+            f"Positionen: {positions}",
+        ]
+        if isinstance(apply_result, ProductPreflightApplyResult):
+            if apply_result.created_skus:
+                message_lines.append("")
+                message_lines.append("Neu in sevDesk angelegt:")
+                for sku in apply_result.created_skus:
+                    message_lines.append(f"- {sku}")
+            if apply_result.warnings:
+                message_lines.append("")
+                message_lines.append("Hinweise:")
+                for warning in apply_result.warnings:
+                    message_lines.append(f"- {warning}")
         QMessageBox.information(
             self,
             "Rechnungs-Entwurf erstellt",
-            (
-                f"Wix-Order-Nr: {wix_order_number}\n"
-                f"Rechnung: {invoice_number}\n"
-                f"sevDesk-ID: {invoice_id}\n"
-                f"Positionen: {positions}"
-            ),
+            "\n".join(message_lines),
         )
         if self._open_draft_after_create and invoice_id:
             base = str(self._container.config.sevdesk.base_url or "https://my.sevdesk.de/api/v1").strip().rstrip("/")
@@ -1995,6 +2022,7 @@ class RechnungenView(QWidget):
         self._reload_first_page()
 
     def _on_create_draft_error(self, exc: Exception) -> None:
+        self._overlay.hide()
         QMessageBox.warning(
             self,
             "Rechnungs-Entwurf fehlgeschlagen",
@@ -2003,6 +2031,38 @@ class RechnungenView(QWidget):
 
     def _on_create_draft_finished(self) -> None:
         self._overlay.hide()
+
+    def _on_draft_product_plan_ready(self, result: object) -> None:
+        plan = result if isinstance(result, ProductPreflightPlan) else ProductPreflightPlan(issues=[], part_categories=[])
+        decisions = self._run_product_preflight_dialogs(plan)
+        self._overlay.show_with_message("Rechnungsentwurf wird erstellt…")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        def job() -> dict[str, object]:
+            service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            apply_result = service.apply_missing_product_plan(plan, decisions) if plan.issues else ProductPreflightApplyResult()
+            draft_result = service.create_draft_from_wix_order_number(self._pending_draft_order_number)
+            return {"draft": draft_result, "apply": apply_result}
+
+        self._draft_worker = BackgroundWorker(job)
+        self._draft_worker.signals.result.connect(self._on_create_draft_result)
+        self._draft_worker.signals.error.connect(self._on_create_draft_error)
+        self._draft_worker.signals.finished.connect(self._on_create_draft_finished)
+        self._draft_worker.start()
+
+    def _on_draft_product_plan_finished(self) -> None:
+        self._draft_product_worker = None
+
+    def _run_product_preflight_dialogs(self, plan: ProductPreflightPlan) -> dict[str, ProductIssueDecision]:
+        decisions: dict[str, ProductIssueDecision] = {}
+        for issue in plan.issues:
+            dialog = ProductPreflightDialog(issue, part_categories=plan.part_categories, parent=self)
+            decision = dialog.show_dialog()
+            if decision is None:
+                decision = ProductIssueDecision(action="skip", draft=issue.draft)
+            decisions[issue.sku] = decision
+        return decisions
 
     def _run_draft_preview(self, dlg: _DraftInvoiceDialog) -> None:
         reference = dlg.wix_order_number
@@ -2040,7 +2100,7 @@ class RechnungenView(QWidget):
         auto_create = preview.get("auto_create_skus") if isinstance(preview.get("auto_create_skus"), list) else []
         if auto_create:
             lines.append("")
-            lines.append("Werden vor dem Entwurf automatisch in sevDesk angelegt:")
+            lines.append("Öffnen vor dem Entwurf den Produktdialog:")
             for sku in auto_create:
                 lines.append(f"- {sku}")
 

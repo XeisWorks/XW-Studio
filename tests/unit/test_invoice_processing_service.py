@@ -144,7 +144,13 @@ class _DraftServiceStub:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def repair_draft_product_mapping(self, invoice_id: str, wix_order_number: str) -> bool:
+    def repair_draft_product_mapping(
+        self,
+        invoice_id: str,
+        wix_order_number: str,
+        *,
+        create_missing_products: bool = False,
+    ) -> bool:
         self.calls.append((invoice_id, wix_order_number))
         return True
 
