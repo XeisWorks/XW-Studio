@@ -575,8 +575,13 @@ class WixOrdersClient:
                 logger.warning("WixOrdersClient GET order/%s failed: %s", order_id, exc)
                 return {}
 
-    def _search_order_by_number(self, number: str) -> dict[str, Any]:
-        body = {"filter": {"number": {"$eq": number}}, "paging": {"limit": 25}}
+    def _search_order_by_field(self, field: str, value: str) -> dict[str, Any]:
+        body = {
+            "search": {
+                "filter": {str(field): {"$eq": str(value)}},
+                "cursorPaging": {"limit": 25},
+            }
+        }
         with httpx.Client(timeout=_TIMEOUT) as client:
             try:
                 resp = client.post(
@@ -587,9 +592,9 @@ class WixOrdersClient:
                 resp.raise_for_status()
                 payload = resp.json()
                 orders = payload.get("orders") or []
-                return self._pick_exact_order_match(str(number), orders)
+                return self._pick_exact_order_match(str(value), orders)
             except httpx.HTTPError as exc:
-                logger.warning("WixOrdersClient search number=%s failed: %s", number, exc)
+                logger.warning("WixOrdersClient search %s=%s failed: %s", field, value, exc)
                 return {}
 
     @staticmethod
@@ -621,11 +626,15 @@ class WixOrdersClient:
             order_by_id = self._get_order_by_id(ref)
             if order_by_id:
                 return order_by_id
-        order = self._search_order_by_number(ref)
+        order = self._search_order_by_field("number", ref)
+        if not order:
+            order = self._search_order_by_field("orderNumber", ref)
         if not order and not ref.startswith("00"):
             digits = "".join(c for c in ref if c.isdigit())
             if digits and digits != ref:
-                order = self._search_order_by_number(digits)
+                order = self._search_order_by_field("number", digits)
+                if not order:
+                    order = self._search_order_by_field("orderNumber", digits)
         return order
 
     @staticmethod

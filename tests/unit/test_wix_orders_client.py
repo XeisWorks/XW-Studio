@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import httpx
 
 from xw_studio.services.wix.client import WixOrdersClient
 
@@ -154,3 +155,53 @@ def test_best_address_lines_merges_structured_street_address_number() -> None:
     assert summary["wix_billing_street"] == "Auerdörfl 16"
     assert summary["wix_billing_city"] == "Berchtesgaden"
     assert summary["wix_billing_country"] == "Germany"
+
+
+def test_resolve_order_falls_back_to_order_number_search() -> None:
+    responses = {
+        "number": {"orders": []},
+        "orderNumber": {
+            "orders": [
+                {
+                    "id": "ord-1",
+                    "number": "20348",
+                    "orderNumber": "20348",
+                    "buyerInfo": {"email": "info@example.test", "firstName": "Karl", "lastName": "Bogner"},
+                }
+            ]
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = request.read().decode("utf-8")
+        if '"number"' in payload and '"orderNumber"' not in payload:
+            return httpx.Response(200, json=responses["number"])
+        if '"orderNumber"' in payload:
+            return httpx.Response(200, json=responses["orderNumber"])
+        raise AssertionError(payload)
+
+    class _SecretService:
+        def get_secret(self, name: str) -> str:
+            values = {
+                "WIX_API_KEY": "key",
+                "WIX_SITE_ID": "site",
+                "WIX_ACCOUNT_ID": "",
+            }
+            return values.get(name, "")
+
+    client = WixOrdersClient(secret_service=_SecretService())  # type: ignore[arg-type]
+    original_client = httpx.Client
+
+    class _Client(httpx.Client):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    httpx.Client = _Client  # type: ignore[assignment]
+    try:
+        summary = client.resolve_order_summary("20348")
+    finally:
+        httpx.Client = original_client  # type: ignore[assignment]
+
+    assert summary["wix_order_number"] == "20348"
+    assert summary["wix_customer_email"] == "info@example.test"
