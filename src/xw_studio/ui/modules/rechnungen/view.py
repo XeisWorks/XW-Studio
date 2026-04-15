@@ -2073,6 +2073,12 @@ class RechnungenView(QWidget):
             shipping_lines = self._normalize_shipping_lines(
                 [" ".join(part for part in (city, country) if part)]
             )
+        shipping_country = str(data.get("wix_shipping_country") or "").strip()
+        if not str(self._dl_country.text() or "").strip():
+            if shipping_country:
+                self._dl_country.setText(shipping_country)
+            elif shipping_lines:
+                self._dl_country.setText(str(shipping_lines[-1] or "").strip())
         self._shipping_source_lines = shipping_lines
         self._shipping_status.setText("Adresse aus Wix")
         selected = self._selected_summary()
