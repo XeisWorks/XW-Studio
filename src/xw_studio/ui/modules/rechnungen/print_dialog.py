@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 from xw_studio.core.printer_detect import discover_printers, evaluate_printer_status
 from xw_studio.core.types import PrinterStatus
 from xw_studio.services.products.print_decision import PieceBlock
+from xw_studio.services.printing.planned_pdf_printer import print_pdf_by_plan
 from xw_studio.services.printing.pdf_renderer import (
     INVOICE_DPI,
     MUSIC_DPI,
@@ -163,6 +164,35 @@ def run_piece_pdf_print(parent: QWidget, container: Container, *, piece: PieceBl
         )
         return False
     path = str(path_obj)
+    doc = None
+    try:
+        doc = fitz.open(path)
+        page_count = len(doc)
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            pass
+
+    if piece.has_direct_print_config:
+        try:
+            print_pdf_by_plan(
+                path,
+                container.config.printing,
+                print_plan=piece.print_plan,
+                profile_id=piece.print_profile_id,
+                copies=max(1, int(piece.print_qty or piece.qty_needed or 1)),
+                page_count=page_count,
+            )
+            return True
+        except Exception as exc:
+            logger.exception("Direct product print failed: %s", exc)
+            QMessageBox.warning(
+                parent,
+                "Produktdruck",
+                f"Direkter Produktdruck fehlgeschlagen:\n\n{exc}\n\nEs wird der manuelle Druckdialog geoeffnet.",
+            )
 
     printer = QPrinter(QPrinter.PrinterMode.HighResolution)
     default_name = QPrinterInfo.defaultPrinter().printerName()
@@ -174,12 +204,6 @@ def run_piece_pdf_print(parent: QWidget, container: Container, *, piece: PieceBl
 
     if not _check_printer_runtime(parent, container, printer):
         return False
-
-    doc = fitz.open(path)
-    try:
-        page_count = len(doc)
-    finally:
-        doc.close()
 
     indices = page_indices_from_qprinter(printer, page_count)
     dpi = int(container.config.printing.music_dpi or MUSIC_DPI)

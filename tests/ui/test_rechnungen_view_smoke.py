@@ -46,6 +46,7 @@ def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
 
     assert view._btn_more.text() == "Weitere laden"  # noqa: SLF001
     assert view._btn_draft.text() == "Rechnungs-Entwurf"  # noqa: SLF001
+    assert view._btn_custom_label.text() == "CUSTOM-LABEL"  # noqa: SLF001
     assert view._btn_print.text() == "Rechnung drucken"  # noqa: SLF001
     assert view._btn_print_label.text() == "Label drucken"  # noqa: SLF001
     assert view._btn_print_plc.text() == "PLC-Label drucken"  # noqa: SLF001

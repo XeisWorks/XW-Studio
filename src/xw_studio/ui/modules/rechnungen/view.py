@@ -402,6 +402,74 @@ class _DraftInvoiceDialog(QDialog):
         self.accept()
 
 
+class _CustomLabelDialog(QDialog):
+    def __init__(self, container: Container, initial_lines: list[str] | None = None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._container = container
+        self._worker: BackgroundWorker | None = None
+        self.setWindowTitle("CUSTOM-LABEL")
+        self.setModal(True)
+        self.resize(420, 260)
+
+        layout = QVBoxLayout(self)
+        info = QLabel("Lieferadresse zeilenweise eingeben und direkt auf dem Labeldrucker ausgeben.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._editor = QPlainTextEdit(self)
+        self._editor.setPlaceholderText("Name\nStrasse Hausnummer\nPLZ Ort\nLand")
+        self._editor.setPlainText("\n".join(line for line in (initial_lines or []) if str(line).strip()))
+        layout.addWidget(self._editor, stretch=1)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color: #64748b;")
+        layout.addWidget(self._status)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, parent=self)
+        self._btn_print = QPushButton("PRINT")
+        buttons.addButton(self._btn_print, QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.rejected.connect(self.reject)
+        self._btn_print.clicked.connect(self._on_print_clicked)
+        layout.addWidget(buttons)
+
+    def _on_print_clicked(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+        lines = [str(line).strip() for line in self._editor.toPlainText().splitlines() if str(line).strip()]
+        if len(lines) < 2:
+            QMessageBox.information(
+                self,
+                "CUSTOM-LABEL",
+                "Bitte eine Lieferadresse mit mindestens zwei Zeilen eingeben.",
+            )
+            return
+        self._btn_print.setEnabled(False)
+        self._status.setText("Etikett wird gedruckt...")
+
+        def job() -> None:
+            from xw_studio.services.printing.label_printer import LabelPrinter
+
+            LabelPrinter(self._container.config.printing).print_address(lines)
+
+        self._worker = BackgroundWorker(job)
+        self._worker.signals.result.connect(self._on_print_result)
+        self._worker.signals.error.connect(self._on_print_error)
+        self._worker.signals.finished.connect(self._on_print_finished)
+        self._worker.start()
+
+    def _on_print_result(self, _payload: object) -> None:
+        self.accept()
+
+    def _on_print_error(self, exc: Exception) -> None:
+        self._status.setText("")
+        QMessageBox.warning(self, "CUSTOM-LABEL", f"Label konnte nicht gedruckt werden:\n\n{exc}")
+
+    def _on_print_finished(self) -> None:
+        self._worker = None
+        self._btn_print.setEnabled(True)
+
+
 class RechnungenView(QWidget):
     """Load and display sevDesk invoices (non-blocking)."""
 
@@ -470,6 +538,12 @@ class RechnungenView(QWidget):
             tooltip="Neuen sevDesk-Rechnungsentwurf aus Wix-Order-Nr erstellen",
         )
         self._btn_draft.clicked.connect(self._on_create_draft_clicked)
+        self._btn_custom_label = toolbar.add_button(
+            "label",
+            "CUSTOM-LABEL",
+            tooltip="Freie Lieferadresse eingeben und direkt als Label drucken",
+        )
+        self._btn_custom_label.clicked.connect(self._on_custom_label_clicked)
         toolbar.add_stretch()
         self._btn_sendungen_alert = toolbar.add_button(
             "sendungen_alert",
@@ -1235,6 +1309,16 @@ class RechnungenView(QWidget):
         self._fulfillment_step_worker.signals.finished.connect(self._on_fulfillment_step_finished)
         self._fulfillment_step_worker.start()
 
+    def _on_custom_label_clicked(self) -> None:
+        if not self._print_allowed:
+            return
+        initial_lines = self._current_shipping_lines()
+        if not initial_lines:
+            selected = self._selected_summary()
+            if selected is not None:
+                initial_lines = list(self._shipping_address_overrides.get(selected.id, []))
+        _CustomLabelDialog(self._container, initial_lines=initial_lines, parent=self).exec()
+
     def _on_print_plc_selected(self) -> None:
         if not self._print_allowed:
             return
@@ -1987,10 +2071,22 @@ class RechnungenView(QWidget):
             if item.is_unreleased:
                 print_btn = QPushButton("Drucken")
                 print_btn.setFixedHeight(24)
-                print_btn.setEnabled(self._print_allowed)
+                print_btn.setEnabled(self._print_allowed and item.print_file_path is not None)
+                if item.has_direct_print_config:
+                    print_btn.setToolTip("Direkter Produktdruck ueber hinterlegten Druckplan")
+                elif item.print_file_path is not None:
+                    print_btn.setToolTip("PDF vorhanden, aber noch kein Druckplan/Profil hinterlegt")
+                else:
+                    print_btn.setToolTip("Kein PDF-Pfad fuer dieses Produkt hinterlegt")
                 print_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_print_clicked(block))
                 row_layout.addWidget(print_btn)
                 self._piece_print_buttons.append(print_btn)
+
+                manage_btn = QPushButton("Produkte")
+                manage_btn.setFixedHeight(24)
+                manage_btn.setToolTip("Produkt-Pipeline oeffnen, um PDF-Pfad oder Druckplan zu pflegen")
+                manage_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_manage_clicked(block))
+                row_layout.addWidget(manage_btn)
 
             self._stuecke_layout.addWidget(row_widget)
             # Stock status line
@@ -2009,6 +2105,12 @@ class RechnungenView(QWidget):
                 color = "#16a34a"
             stock_lbl.setStyleSheet(f"color: {color}; font-size: 11px; padding-left: 8px;")
             self._stuecke_layout.addWidget(stock_lbl)
+            if item.is_unreleased:
+                print_meta = self._describe_piece_print_config(item)
+                meta_lbl = QLabel(f"  Druck: {print_meta}")
+                meta_lbl.setWordWrap(True)
+                meta_lbl.setStyleSheet("color: #64748b; font-size: 11px; padding-left: 8px;")
+                self._stuecke_layout.addWidget(meta_lbl)
             if item.note:
                 note_lbl = QLabel(f"  ↳ {item.note}")
                 note_lbl.setWordWrap(True)
@@ -2031,6 +2133,32 @@ class RechnungenView(QWidget):
                 engine.record_print_and_update_sevdesk(block, qty, invoice_ref=invoice_ref)
             except Exception as exc:
                 logger.warning("Stock update after product print failed: %s", exc)
+
+    def _on_product_manage_clicked(self, block: PieceBlock) -> None:
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit(
+            f"Produkte-Modul fuer SKU {block.sku} oeffnen und PDF-Pfad/Druckplan pflegen.",
+            5000,
+        )
+        signals.navigate_to_module.emit(ModuleKey.PRODUCTS.value)
+
+    @staticmethod
+    def _describe_piece_print_config(block: PieceBlock) -> str:
+        path = block.print_file_path
+        if path is None:
+            return "kein PDF-Pfad hinterlegt"
+        if block.print_plan:
+            parts: list[str] = []
+            for entry in block.print_plan:
+                if not isinstance(entry, dict):
+                    continue
+                range_text = str(entry.get("range") or "").strip() or "Alle Seiten"
+                profile_id = str(entry.get("profile_id") or "").strip() or "?"
+                parts.append(f"{range_text} -> {profile_id}")
+            return " / ".join(parts) if parts else "Print-Plan vorhanden"
+        if str(block.print_profile_id or "").strip():
+            return f"Profil {block.print_profile_id}"
+        return "PDF vorhanden, aber kein Druckplan"
 
     def _on_stuecke_error(self, exc: Exception) -> None:
         logger.warning("Stücke fetch failed: %s", exc)
