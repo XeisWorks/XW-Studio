@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QHideEvent,
+    QImage,
     QMouseEvent,
     QPainter,
     QPixmap,
@@ -103,6 +104,7 @@ class _HintsIconDelegate(QStyledItemDelegate):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._cache: dict[str, QPixmap] = {}
+        self._tinted_cache: dict[str, QPixmap] = {}
         self._icons_dir = Path(__file__).resolve().parents[5] / "icons"
 
     def _icon_for_key(self, key: str) -> QPixmap | None:
@@ -116,6 +118,32 @@ class _HintsIconDelegate(QStyledItemDelegate):
         pix = QPixmap(str(self._icons_dir / file_name))
         self._cache[key] = pix
         return pix if not pix.isNull() else None
+
+    def _tinted_icon_for_key(self, key: str, size: int) -> QPixmap | None:
+        cache_key = f"{key}:{size}"
+        if cache_key in self._tinted_cache:
+            pix = self._tinted_cache[cache_key]
+            return pix if not pix.isNull() else None
+        source = self._icon_for_key(key)
+        if source is None:
+            self._tinted_cache[cache_key] = QPixmap()
+            return None
+        scaled = source.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        image = QImage(scaled.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        icon_painter = QPainter(image)
+        icon_painter.drawPixmap(0, 0, scaled)
+        icon_painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        icon_painter.fillRect(image.rect(), QColor("white"))
+        icon_painter.end()
+        tinted = QPixmap.fromImage(image)
+        self._tinted_cache[cache_key] = tinted
+        return tinted if not tinted.isNull() else None
 
     def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
         row_data = index.data(Qt.ItemDataRole.UserRole)
@@ -135,17 +163,20 @@ class _HintsIconDelegate(QStyledItemDelegate):
         y = option.rect.y() + max(2, (option.rect.height() - size) // 2)
 
         for key in icon_keys:
+            target = option.rect.adjusted(0, 0, 0, 0)
+            target.setX(x)
+            target.setY(y)
+            target.setWidth(size)
+            target.setHeight(size)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#f59e0b"))
+            painter.drawEllipse(target)
+            painter.restore()
             if str(key) == "note":
-                target = option.rect.adjusted(0, 0, 0, 0)
-                target.setX(x)
-                target.setY(y)
-                target.setWidth(size)
-                target.setHeight(size)
                 painter.save()
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#f59e0b"))
-                painter.drawEllipse(target)
                 font = QFont(painter.font())
                 font.setBold(True)
                 font.setPixelSize(max(9, size - 7))
@@ -155,16 +186,14 @@ class _HintsIconDelegate(QStyledItemDelegate):
                 painter.restore()
                 x += size + gap
                 continue
-            pix = self._icon_for_key(str(key))
+            icon_size = max(8, size - 7)
+            pix = self._tinted_icon_for_key(str(key), icon_size)
             if pix is None:
                 x += size + gap
                 continue
-            target = option.rect.adjusted(0, 0, 0, 0)
-            target.setX(x)
-            target.setY(y)
-            target.setWidth(size)
-            target.setHeight(size)
-            painter.drawPixmap(target, pix)
+            icon_x = x + (size - pix.width()) // 2
+            icon_y = y + (size - pix.height()) // 2
+            painter.drawPixmap(icon_x, icon_y, pix)
             x += size + gap
         painter.restore()
 
