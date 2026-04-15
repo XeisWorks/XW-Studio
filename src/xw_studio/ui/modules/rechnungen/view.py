@@ -1201,7 +1201,9 @@ class RechnungenView(QWidget):
         self._rebuild_search_index()
         if len(summaries) == 1:
             self._table.select_source_row(0)
-        self._refresh_detail_for_selection()
+            self._populate_detail_for_summary(summaries[0])
+        else:
+            self._refresh_detail_for_selection()
         self._restart_hint_prefetch()
         signals: AppSignals = self._container.resolve(AppSignals)
         if summaries:
@@ -1741,35 +1743,37 @@ class RechnungenView(QWidget):
         self._overlay.hide()
 
     def _refresh_detail_for_selection(self) -> None:
-        row = self._table.selected_source_row()
-        if row is None or row < 0 or row >= len(self._summaries):
+        summary = self._selected_summary()
+        if summary is None:
             self._reset_detail()
             return
+        self._populate_detail_for_summary(summary)
+
+    def _populate_detail_for_summary(self, summary: InvoiceSummary) -> None:
         self._gb_open.hide()
         self._gb_info.show()
         self._gb_shipping.show()
-        s = self._summaries[row]
-        self._dl_number.setText(s.invoice_number or "")
-        self._dl_date.setText(s.formatted_date)
-        self._dl_status.setText(s.status_label())
-        self._dl_brutto.setText(s.formatted_brutto)
-        self._dl_contact.setText(s.contact_name or "")
-        self._dl_country.setText(s.display_country or "")
-        self._dl_id.setText(s.id)
-        if s.buyer_note.strip():
-            self._dl_note.setText(s.buyer_note)
+        self._dl_number.setText(summary.invoice_number or "")
+        self._dl_date.setText(summary.formatted_date)
+        self._dl_status.setText(summary.status_label())
+        self._dl_brutto.setText(summary.formatted_brutto)
+        self._dl_contact.setText(summary.contact_name or "")
+        self._dl_country.setText(summary.display_country or "")
+        self._dl_id.setText(summary.id)
+        if summary.buyer_note.strip():
+            self._dl_note.setText(summary.buyer_note)
             self._gb_note.show()
         else:
             self._dl_note.setText("")
             self._gb_note.hide()
-        self._dl_order_ref.setText(s.order_reference or "")
+        self._dl_order_ref.setText(summary.order_reference or "")
         self._reset_wix_meta("Lade Wix-Daten…")
         self._update_action_state()
         self._gb_actions.show()
         self._update_plc_controls()
-        self._prioritize_hint_prefetch_for_summary(s)
-        if s.order_reference:
-            self._load_wix_context(s.order_reference)
+        self._prioritize_hint_prefetch_for_summary(summary)
+        if summary.order_reference:
+            self._load_wix_context(summary.order_reference)
         else:
             self._reset_wix_meta("Keine Wix-Order-Referenz")
             self._reset_stuecke()
