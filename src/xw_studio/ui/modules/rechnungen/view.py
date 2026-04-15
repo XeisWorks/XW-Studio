@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
 )
 
 from xw_studio.core.signals import AppSignals
+from xw_studio.core.printer_detect import discover_printers, evaluate_printer_status
+from xw_studio.core.types import PrinterStatus
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
@@ -865,6 +867,7 @@ class RechnungenView(QWidget):
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.printer_status_changed.connect(self._on_printer_status)
+        self._initialize_printer_status()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -934,6 +937,12 @@ class RechnungenView(QWidget):
         for button in self._piece_print_buttons:
             button.setEnabled(printing_allowed)
         self._update_plc_controls()
+
+    def _initialize_printer_status(self) -> None:
+        names = list(self._container.config.printing.configured_printer_names)
+        discovered = discover_printers()
+        status = evaluate_printer_status(discovered, names)
+        self._on_printer_status(status != PrinterStatus.RED)
 
     def _reload_first_page(self) -> None:
         self._next_offset = 0
