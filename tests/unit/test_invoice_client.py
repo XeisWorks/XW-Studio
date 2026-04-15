@@ -231,6 +231,43 @@ def test_invoice_client_search_expands_to_next_100_day_window_when_needed() -> N
     assert [row.id for row in rows] == ["8"]
 
 
+def test_invoice_client_search_matches_reverse_name_order_and_umlaut_variants() -> None:
+    today = date.today()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "objects": [
+                    {
+                        "id": 12,
+                        "invoiceNumber": "RE-012",
+                        "invoiceDate": today.isoformat(),
+                        "status": 200,
+                        "sumGross": "20.00",
+                        "contact": {
+                            "name": "Staufner Böhmische",
+                            "surename": "Karl",
+                            "familyname": "Bogner",
+                        },
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://example.test/api/v1")
+    inv = InvoiceClient(SevdeskConnection(client=client, config=AppConfig()))
+
+    reverse_rows, reverse_days = inv.search_invoice_summaries("Bogner Karl")
+    umlaut_rows, umlaut_days = inv.search_invoice_summaries("Staufner Boehmische")
+
+    assert reverse_days == 100
+    assert umlaut_days == 100
+    assert [row.id for row in reverse_rows] == ["12"]
+    assert [row.id for row in umlaut_rows] == ["12"]
+
+
 def test_invoice_summary_coerces_null_invoice_number() -> None:
     summary = InvoiceSummary.model_validate(
         {

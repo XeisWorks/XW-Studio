@@ -5,6 +5,7 @@ import base64
 import logging
 import re
 from datetime import date, datetime
+import unicodedata
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -514,7 +515,19 @@ class InvoiceClient:
 
     @staticmethod
     def _normalize_search_text(value: str) -> str:
-        return " ".join(str(value or "").strip().casefold().split())
+        text = str(value or "").strip().casefold()
+        text = (
+            text.replace("ä", "ae")
+            .replace("ö", "oe")
+            .replace("ü", "ue")
+            .replace("ß", "ss")
+        )
+        text = "".join(
+            ch for ch in unicodedata.normalize("NFKD", text)
+            if not unicodedata.combining(ch)
+        )
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        return " ".join(text.split())
 
     @classmethod
     def _matches_search_query(cls, summary: InvoiceSummary, needle: str) -> bool:
@@ -526,7 +539,13 @@ class InvoiceClient:
             cls._normalize_search_text(order_ref),
             cls._normalize_search_text(order_digits),
         ]
-        return any(needle and needle in hay for hay in haystacks if hay)
+        if any(needle and needle in hay for hay in haystacks if hay):
+            return True
+        tokens = [token for token in needle.split() if token]
+        if not tokens:
+            return False
+        combined = " ".join(hay for hay in haystacks if hay)
+        return all(token in combined for token in tokens)
 
     @staticmethod
     def _parse_invoice_date(value: str | None) -> date | None:
