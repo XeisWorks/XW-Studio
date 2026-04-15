@@ -11,6 +11,7 @@ from PySide6.QtGui import (
     QColor,
     QCloseEvent,
     QDesktopServices,
+    QFont,
     QHideEvent,
     QMouseEvent,
     QPainter,
@@ -86,7 +87,7 @@ class _HintsIconDelegate(QStyledItemDelegate):
 
     _ICON_FILES = {
         "print": "print.png",
-        "printondemand": "printondemand.png",
+        "note": "",
         "alternateshippingaddress": "alternateshippingaddress.png",
         "country": "country.png",
         "plc": "plc.png",
@@ -127,6 +128,26 @@ class _HintsIconDelegate(QStyledItemDelegate):
         y = option.rect.y() + max(2, (option.rect.height() - size) // 2)
 
         for key in icon_keys:
+            if str(key) == "note":
+                target = option.rect.adjusted(0, 0, 0, 0)
+                target.setX(x)
+                target.setY(y)
+                target.setWidth(size)
+                target.setHeight(size)
+                painter.save()
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#f59e0b"))
+                painter.drawEllipse(target)
+                font = QFont(painter.font())
+                font.setBold(True)
+                font.setPixelSize(max(9, size - 7))
+                painter.setFont(font)
+                painter.setPen(QColor("white"))
+                painter.drawText(target, Qt.AlignmentFlag.AlignCenter, "N")
+                painter.restore()
+                x += size + gap
+                continue
             pix = self._icon_for_key(str(key))
             if pix is None:
                 x += size + gap
@@ -2057,9 +2078,11 @@ class RechnungenView(QWidget):
             self._stuecke_hint.show()
             return
         self._current_piece_blocks = [item for item in payload_items if isinstance(item, PieceBlock)]
+        invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
         for item in self._current_piece_blocks:
             # Header line: "×2  [XW-001]  Produktname ★"
-            unreleased_marker = " \u2605" if item.is_unreleased else ""
+            flagged_for_print = bool(item.is_unreleased or invoice_service.is_flagged_sku(item.sku))
+            unreleased_marker = " \u2605" if flagged_for_print else ""
             line = f"\u00d7{item.qty_needed}  [{item.sku}]  {item.name}{unreleased_marker}"
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
@@ -2069,7 +2092,7 @@ class RechnungenView(QWidget):
             lbl.setWordWrap(True)
             row_layout.addWidget(lbl, stretch=1)
 
-            if item.is_unreleased:
+            if flagged_for_print:
                 print_btn = QPushButton("Drucken")
                 print_btn.setFixedHeight(24)
                 print_btn.setEnabled(self._print_allowed and item.print_file_path is not None)
@@ -2106,7 +2129,7 @@ class RechnungenView(QWidget):
                 color = "#16a34a"
             stock_lbl.setStyleSheet(f"color: {color}; font-size: 11px; padding-left: 8px;")
             self._stuecke_layout.addWidget(stock_lbl)
-            if item.is_unreleased:
+            if flagged_for_print:
                 print_meta = self._describe_piece_print_config(item)
                 meta_lbl = QLabel(f"  Druck: {print_meta}")
                 meta_lbl.setWordWrap(True)

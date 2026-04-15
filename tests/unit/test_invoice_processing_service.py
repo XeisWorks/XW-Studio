@@ -211,6 +211,24 @@ def test_unreleased_sku_flags_from_settings() -> None:
     assert result[0].has_unreleased_sku is True
 
 
+def test_is_flagged_sku_uses_same_settings_as_hint_logic() -> None:
+    repo = _RepoStub(
+        {
+            "rechnungen.sku_flags": json.dumps(
+                {
+                    "exact": ["XW-123"],
+                    "prefixes": ["XW-6"],
+                }
+            )
+        }
+    )
+    svc = InvoiceProcessingService(AppConfig(), _InvoiceClientStub([]), repo)  # type: ignore[arg-type]
+
+    assert svc.is_flagged_sku("XW-6213") is True
+    assert svc.is_flagged_sku("XW-123") is True
+    assert svc.is_flagged_sku("XW-9999") is False
+
+
 def test_unreleased_sku_flags_fall_back_to_defaults() -> None:
     rows = [
         InvoiceSummary(
@@ -366,7 +384,7 @@ def test_invoice_list_hints_follow_legacy_alarm_rules() -> None:
     assert hints.address_mismatch is True
     assert hints.unreleased_sku is True
     assert hints.country_invalid is True
-    assert hints.icon_keys() == ["print", "printondemand", "alternateshippingaddress", "country"]
+    assert hints.icon_keys() == ["print", "note", "alternateshippingaddress", "country"]
     assert "Lieferland außerhalb Freigabe" in hints.tooltip()
 
 

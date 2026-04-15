@@ -310,7 +310,7 @@ class InvoiceSummary(BaseModel):
         if self.has_unreleased_sku:
             keys.append("print")
         if self.buyer_note.strip():
-            keys.append("printondemand")
+            keys.append("note")
         if self.has_delivery_address_override:
             keys.append("alternateshippingaddress")
         if self.is_sensitive_country:

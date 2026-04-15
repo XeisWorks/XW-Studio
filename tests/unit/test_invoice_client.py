@@ -54,7 +54,7 @@ def test_invoice_summary_flags_delivery_override_and_sensitive_country() -> None
     assert summary.is_sensitive_country is True
     row = summary.as_table_row()
     assert row["Hinweise"] == "✎ ⌂ ⚠"
-    assert row["__icons__Hinweise"] == ["printondemand", "alternateshippingaddress", "country"]
+    assert row["__icons__Hinweise"] == ["note", "alternateshippingaddress", "country"]
     assert "Käufernotiz" in row["__tooltip__Hinweise"]
     assert "Heikles Zielland" in row["__tooltip__Hinweise"]
     details = summary.detail_lines()

@@ -155,7 +155,7 @@ class InvoiceListHintFlags:
         if self.unreleased_sku:
             keys.append("print")
         if self.buyer_note.strip():
-            keys.append("printondemand")
+            keys.append("note")
         if self.address_mismatch:
             keys.append("alternateshippingaddress")
         if self.country_invalid:
@@ -1053,6 +1053,13 @@ class InvoiceProcessingService:
             if sku in exact or any(sku.startswith(prefix) for prefix in prefixes):
                 return True
         return False
+
+    def is_flagged_sku(self, sku: str) -> bool:
+        normalized = str(sku or "").strip().upper()
+        if not normalized:
+            return False
+        exact, prefixes = self._load_sku_flags()
+        return normalized in exact or any(normalized.startswith(prefix) for prefix in prefixes)
 
     @staticmethod
     def _line_item_sku(raw_item: dict[str, Any]) -> str:
