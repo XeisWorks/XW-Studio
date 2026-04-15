@@ -12,6 +12,7 @@ class _InvoiceClientStub:
     def __init__(self, rows: list[InvoiceSummary]) -> None:
         self._rows = rows
         self.render_calls: list[str] = []
+        self.invoice_payloads: dict[str, dict[str, object]] = {}
 
     def list_invoice_summaries(
         self,
@@ -23,6 +24,8 @@ class _InvoiceClientStub:
         return list(self._rows)
 
     def fetch_invoice_by_id(self, invoice_id: str) -> dict[str, object]:
+        if invoice_id in self.invoice_payloads:
+            return dict(self.invoice_payloads[invoice_id])
         return {
             "id": invoice_id,
             "invoiceNumber": "RE-TEST-1",
@@ -284,6 +287,27 @@ def test_shipping_lines_use_wix_cache_for_same_reference() -> None:
     assert wix.calls == 1
 
 
+def test_invoice_detail_context_uses_sevdesk_shipping_for_older_invoices() -> None:
+    summary = InvoiceSummary(id="6a", invoiceNumber="RE-ALT-1", contact_name="Alt Kunde")
+    client = _InvoiceClientStub([summary])
+    client.invoice_payloads["6a"] = {
+        "id": "6a",
+        "invoiceNumber": "RE-ALT-1",
+        "deliveryName": "Alt Kunde",
+        "deliveryStreet": "Hauptstrasse 7",
+        "deliveryZip": "8010",
+        "deliveryCity": "Graz",
+        "deliveryAddressCountry": "Austria",
+        "contact": {"emails": [{"value": "alt@example.test"}]},
+    }
+    svc = InvoiceProcessingService(AppConfig(), client, None)  # type: ignore[arg-type]
+
+    context = svc.get_invoice_detail_context(summary)
+
+    assert context["customer_email"] == "alt@example.test"
+    assert context["shipping_lines"] == ["Alt Kunde", "Hauptstrasse 7", "8010 Graz", "Austria"]
+
+
 def test_mail_step_uses_saved_template_when_available() -> None:
     summary = InvoiceSummary(id="7", invoiceNumber="RE-TEST-1", contact_name="Max Mustermann")
     client = _InvoiceClientStub([summary])
@@ -322,6 +346,30 @@ def test_mail_step_honors_recipient_override() -> None:
 
     assert flags.mail_sent is True
     assert mailer.calls[0]["to_email"] == "bernhard.holl@gmx.at"
+
+
+def test_manual_send_invoice_mail_uses_same_graph_template_path() -> None:
+    summary = InvoiceSummary(id="8a", invoiceNumber="RE-TEST-8A", contact_name="Max Mustermann")
+    client = _InvoiceClientStub([summary])
+    mailer = _MailServiceStub()
+    repo = _RepoStub(
+        {
+            "rechnungen.fulfillment_mail_subject": "Rechnung {{invoice_number}}",
+            "rechnungen.fulfillment_mail_template_html": "Hallo {{customer_name}},\n\nAnbei {{invoice_number}}",
+        }
+    )
+    svc = InvoiceProcessingService(AppConfig(), client, repo, None, mailer)  # type: ignore[arg-type]
+
+    flags, recipient, subject = svc.send_invoice_mail_for_invoice(summary)
+
+    assert flags.mail_sent is True
+    assert recipient == "max@example.test"
+    assert subject == "Rechnung RE-TEST-8A"
+    assert mailer.calls[0]["to_email"] == "max@example.test"
+    assert "Hallo Max Mustermann" in str(mailer.calls[0]["text_body"])
+    attachments = mailer.calls[0]["attachments"]
+    assert len(attachments) == 1
+    assert getattr(attachments[0], "filename", "") == "RE-TEST-8A.pdf"
 
 
 def test_product_step_marks_digital_fulfilled_without_warning() -> None:

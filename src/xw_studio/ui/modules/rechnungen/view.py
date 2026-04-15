@@ -544,6 +544,7 @@ class RechnungenView(QWidget):
         self._wix_context_worker: BackgroundWorker | None = None
         self._hint_worker: BackgroundWorker | None = None
         self._fulfillment_step_worker: BackgroundWorker | None = None
+        self._invoice_mail_worker: BackgroundWorker | None = None
         self._open_overview_worker: BackgroundWorker | None = None
         self._did_initial_load = False
         self._print_allowed = False
@@ -822,7 +823,12 @@ class RechnungenView(QWidget):
         self._btn_print_music = QPushButton("Noten drucken")
         self._btn_print_music.clicked.connect(self._on_print_music_clicked)
         self._btn_print_music.setEnabled(False)
-        actions_layout.addWidget(self._btn_print_music, 3, 0, 1, 2)
+        actions_layout.addWidget(self._btn_print_music, 3, 0)
+
+        self._btn_send_invoice = QPushButton("Rechnung senden")
+        self._btn_send_invoice.clicked.connect(self._on_send_invoice_clicked)
+        self._btn_send_invoice.setEnabled(False)
+        actions_layout.addWidget(self._btn_send_invoice, 3, 1)
         self._gb_actions.hide()
         detail_main.addWidget(self._gb_actions)
 
@@ -1202,6 +1208,7 @@ class RechnungenView(QWidget):
         if len(summaries) == 1:
             self._table.select_source_row(0)
             self._populate_detail_for_summary(summaries[0])
+            self._prefill_detail_from_invoice(summaries[0])
         else:
             self._refresh_detail_for_selection()
         self._restart_hint_prefetch()
@@ -1501,6 +1508,33 @@ class RechnungenView(QWidget):
 
         run_music_pdf_print(self, self._container)
 
+    def _on_send_invoice_clicked(self) -> None:
+        summary = self._require_selected_invoice()
+        if summary is None:
+            return
+        if self._invoice_mail_worker is not None and self._invoice_mail_worker.isRunning():
+            return
+
+        self._overlay.show_with_message("Rechnungsmail wird gesendetâ€¦")
+        self._overlay.setGeometry(self.rect())
+        self._overlay.raise_()
+
+        def job() -> dict[str, object]:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            flags, recipient, subject = service.send_invoice_mail_for_invoice(summary)
+            return {
+                "invoice": summary.invoice_number or summary.id,
+                "recipient": recipient,
+                "subject": subject,
+                "flags": flags.as_row_payload(),
+            }
+
+        self._invoice_mail_worker = BackgroundWorker(job)
+        self._invoice_mail_worker.signals.result.connect(self._on_send_invoice_result)
+        self._invoice_mail_worker.signals.error.connect(self._on_send_invoice_error)
+        self._invoice_mail_worker.signals.finished.connect(self._on_send_invoice_finished)
+        self._invoice_mail_worker.start()
+
     def _on_table_selection_changed(
         self,
         _selected: Any,
@@ -1748,6 +1782,7 @@ class RechnungenView(QWidget):
             self._reset_detail()
             return
         self._populate_detail_for_summary(summary)
+        self._prefill_detail_from_invoice(summary)
 
     def _populate_detail_for_summary(self, summary: InvoiceSummary) -> None:
         self._gb_open.hide()
@@ -1822,6 +1857,37 @@ class RechnungenView(QWidget):
         self._shipping_source_lines = []
         self._shipping_status.setText(text)
         self._set_shipping_editor_lines([])
+
+    def _prefill_detail_from_invoice(self, summary: InvoiceSummary) -> None:
+        self._wix_order_no.setText(summary.order_reference or "â€”")
+        try:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            context = service.get_invoice_detail_context(summary)
+        except Exception as exc:
+            logger.warning("Invoice detail prefill failed for %s: %s", summary.id, exc)
+            self._wix_customer.setText(summary.contact_name or "â€”")
+            if summary.order_reference:
+                self._shipping_status.setText("Lade Wix-Datenâ€¦")
+            else:
+                self._shipping_status.setText("Keine Versandadresse verfuegbar")
+            return
+
+        customer_name = str(context.get("customer_name") or "").strip() or summary.contact_name or "â€”"
+        customer_email = str(context.get("customer_email") or "").strip() or "â€”"
+        shipping_lines = self._normalize_shipping_lines(context.get("shipping_lines"))  # type: ignore[arg-type]
+        self._wix_customer.setText(customer_name)
+        self._wix_customer_email.setText(customer_email)
+        self._shipping_source_lines = shipping_lines
+        override_lines = list(self._shipping_address_overrides.get(summary.id, []))
+        if shipping_lines:
+            self._shipping_status.setText("Adresse aus sevDesk")
+            self._set_shipping_editor_lines(override_lines or shipping_lines)
+        elif summary.order_reference:
+            self._shipping_status.setText("Lade Wix-Datenâ€¦")
+            self._set_shipping_editor_lines(override_lines)
+        else:
+            self._shipping_status.setText("Keine Versandadresse in sevDesk")
+            self._set_shipping_editor_lines(override_lines)
 
     def _load_wix_context(self, order_reference: str) -> None:
         ref = order_reference.strip()
@@ -1906,7 +1972,9 @@ class RechnungenView(QWidget):
         status = str(data.get("status") or "").strip()
         if status:
             self._put_cached_wix_context(requested_ref, status=status, meta={}, items=[])
-            self._reset_wix_meta(status)
+            self._wix_order_no.setText(requested_ref or "â€”")
+            if not self._current_shipping_lines():
+                self._shipping_status.setText(status)
             self._reset_stuecke()
             self._stuecke_hint.setText(status)
             self._stuecke_hint.show()
@@ -1920,7 +1988,8 @@ class RechnungenView(QWidget):
         self._on_stuecke_loaded({"__requested_ref": requested_ref, "items": items})
 
     def _on_wix_context_error(self, exc: Exception) -> None:
-        self._reset_wix_meta(f"Wix-Fehler: {exc}")
+        if not self._current_shipping_lines():
+            self._shipping_status.setText(f"Wix-Fehler: {exc}")
         self._reset_stuecke()
         self._stuecke_hint.setText(f"Fehler: {exc}")
         self._stuecke_hint.show()
@@ -2005,7 +2074,9 @@ class RechnungenView(QWidget):
         self._set_shipping_editor_lines(override_lines or shipping_lines)
 
     def _on_wix_meta_error(self, exc: Exception) -> None:
-        self._reset_wix_meta(f"Wix-Fehler: {exc}")
+        if not self._current_shipping_lines():
+            self._shipping_status.setText(f"Wix-Fehler: {exc}")
+        logger.warning("Wix meta load failed: %s", exc)
 
     def _update_plc_controls(self) -> None:
         enabled = self._print_allowed and (self._selected_summary() is not None)
@@ -2013,6 +2084,7 @@ class RechnungenView(QWidget):
         self._btn_print_plc.setEnabled(enabled)
         self._btn_print_music.setEnabled(enabled)
         self._btn_print_label.setEnabled(enabled and len(self._current_shipping_lines()) >= 2)
+        self._btn_send_invoice.setEnabled(self._selected_summary() is not None)
 
     @staticmethod
     def _normalize_shipping_lines(lines: list[str] | None) -> list[str]:
@@ -2073,6 +2145,28 @@ class RechnungenView(QWidget):
             "Labeldruck",
             f"Label konnte nicht gedruckt werden:\n\n{exc}",
         )
+
+    def _on_send_invoice_result(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        invoice = str(data.get("invoice") or "â€”")
+        recipient = str(data.get("recipient") or "â€”")
+        QMessageBox.information(
+            self,
+            "Rechnung gesendet",
+            f"Rechnung {invoice} wurde an {recipient} gesendet.",
+        )
+        self._reload_first_page()
+
+    def _on_send_invoice_error(self, exc: Exception) -> None:
+        QMessageBox.warning(
+            self,
+            "Rechnung senden",
+            f"Rechnung konnte nicht gesendet werden:\n\n{exc}",
+        )
+
+    def _on_send_invoice_finished(self) -> None:
+        self._invoice_mail_worker = None
+        self._overlay.hide()
 
     def _on_create_draft_clicked(self) -> None:
         if (

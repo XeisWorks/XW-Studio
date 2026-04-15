@@ -369,7 +369,7 @@ class SettingsView(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
 
-        gb_template = QGroupBox("Vorlagen mit Variablen")
+        gb_template = QGroupBox("Rechnungsmail-Vorlage")
         template_layout = QVBoxLayout(gb_template)
         info = QLabel(
             "Variablen: {{customer_name}}, {{invoice_number}}, {{download_link}}, {{items_html}}"
@@ -403,7 +403,7 @@ class SettingsView(QWidget):
         self._mail_test_recipient.setPlaceholderText("Empfänger Test-Mail")
         self._mail_test_recipient.setMinimumWidth(240)
         mail_btn_row.addWidget(self._mail_test_recipient)
-        btn_send_test = QPushButton("Test-Mail senden")
+        btn_send_test = QPushButton("Rechnungsmail testen")
         btn_send_test.clicked.connect(self._send_template_test_mail)
         mail_btn_row.addWidget(btn_send_test)
         mail_btn_row.addStretch()
@@ -413,7 +413,7 @@ class SettingsView(QWidget):
         self._mail_template_status.setStyleSheet("color: #9e9e9e;")
         template_layout.addWidget(self._mail_template_status)
 
-        gb_html = QGroupBox("HTML-Ansicht")
+        gb_html = QGroupBox("HTML-Ansicht Rechnungsmail")
         html_layout = QVBoxLayout(gb_html)
         self._mail_subject_preview = QLabel("Betreff: —")
         self._mail_subject_preview.setTextInteractionFlags(self._mail_subject_preview.textInteractionFlags())
@@ -423,7 +423,7 @@ class SettingsView(QWidget):
         self._mail_template_preview.setMinimumHeight(420)
         html_layout.addWidget(self._mail_template_preview)
 
-        gb_plain = QGroupBox("Nur-Text-Ansicht (Outlook)")
+        gb_plain = QGroupBox("Nur-Text-Ansicht Rechnungsmail")
         plain_layout = QVBoxLayout(gb_plain)
         self._mail_template_plain_preview = QPlainTextEdit()
         self._mail_template_plain_preview.setReadOnly(True)

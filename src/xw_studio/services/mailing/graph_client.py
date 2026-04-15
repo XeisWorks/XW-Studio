@@ -276,7 +276,7 @@ class GraphMailClient:
         if attachment_items:
             message["attachments"] = attachment_items
         payload = {"message": message, "saveToSentItems": True}
-        url = "https://graph.microsoft.com/v1.0/me/sendMail"
+        url = f"https://graph.microsoft.com/v1.0/{self._mailbox_segment}/sendMail"
         response = requests.post(url, headers=self._auth_headers(), json=payload, timeout=60)
         self._raise_for_status(response)
 

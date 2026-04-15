@@ -51,12 +51,14 @@ def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
     assert view._btn_print_label.text() == "Label drucken"  # noqa: SLF001
     assert view._btn_print_plc.text() == "PLC-Label drucken"  # noqa: SLF001
     assert view._btn_print_music.text() == "Noten drucken"  # noqa: SLF001
+    assert view._btn_send_invoice.text() == "Rechnung senden"  # noqa: SLF001
     assert view._shipping_editor is not None  # noqa: SLF001
     assert view._gb_actions.isHidden()  # noqa: SLF001
     assert not view._btn_print.isEnabled()  # noqa: SLF001
     assert not view._btn_print_label.isEnabled()  # noqa: SLF001
     assert not view._btn_print_plc.isEnabled()  # noqa: SLF001
     assert not view._btn_print_music.isEnabled()  # noqa: SLF001
+    assert not view._btn_send_invoice.isEnabled()  # noqa: SLF001
 
 
 def test_rechnungen_mollie_alert_button_visibility(qtbot: object) -> None:

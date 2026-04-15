@@ -205,6 +205,7 @@ class InvoiceProcessingService:
         self._invoice_printer = InvoicePrinter(config.printing)
         self._label_printer = LabelPrinter(config.printing)
         self._invoice_pdf_cache: dict[str, bytes] = {}
+        self._invoice_detail_cache: dict[str, dict[str, Any]] = {}
         self._wix_address_cache: dict[str, list[str]] = {}
         self._wix_digital_cache: dict[str, bool] = {}
         self._wix_order_summary_cache: dict[str, dict[str, str]] = {}
@@ -515,6 +516,45 @@ class InvoiceProcessingService:
         self.write_fulfillment_flags(summary.id, next_flags)
         return next_flags
 
+    def send_invoice_mail_for_invoice(
+        self,
+        summary: InvoiceSummary,
+        *,
+        recipient_override: str | None = None,
+    ) -> tuple[FulfillmentFlags, str, str]:
+        """Send one invoice manually using the same template and Graph path as START."""
+
+        flags = self.read_fulfillment_flags(summary.id)
+        invoice = self._fetch_invoice_detail(summary.id)
+        to_email = str(recipient_override or "").strip() or self._resolve_customer_email(summary, invoice)
+        if not to_email:
+            raise RuntimeError("Keine E-Mail-Adresse fuer Rechnungsversand")
+        if self._mail_service is None or not self._mail_service.is_configured():
+            raise RuntimeError("MS-Graph-Konfiguration fuer Rechnungsmail fehlt")
+        subject, text_body = self._build_mail_content(summary, invoice)
+        html_body = self._build_mail_html(text_body)
+        attachment = self._build_invoice_attachment(summary, invoice)
+        self._mail_service.send_mail(
+            to_email=to_email,
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+            attachments=[attachment],
+        )
+        next_flags = self._next_flags(flags, mail_sent=True)
+        self.write_fulfillment_flags(summary.id, next_flags)
+        return next_flags, to_email, subject
+
+    def get_invoice_detail_context(self, summary: InvoiceSummary) -> dict[str, object]:
+        """Return sevDesk-backed customer/shipping fallback data for the detail panel."""
+
+        invoice = self._fetch_invoice_detail(summary.id)
+        return {
+            "customer_name": self._resolve_customer_name(summary, invoice),
+            "customer_email": self._contact_email_from_invoice(invoice),
+            "shipping_lines": self._shipping_lines_from_invoice_data(invoice, summary),
+        }
+
     def _load_all_open_drafts(self, *, limit_per_page: int, max_pages: int) -> list[InvoiceSummary]:
         all_rows: list[InvoiceSummary] = []
         offset = 0
@@ -676,29 +716,22 @@ class InvoiceProcessingService:
     ) -> FulfillmentFlags:
         if flags.mail_sent:
             return self._stamp(flags)
-        invoice = self._invoices.fetch_invoice_by_id(summary.id)
-        to_email = str(recipient_override or "").strip() or self._resolve_customer_email(summary, invoice)
-        if not to_email:
-            raise RuntimeError("Keine E-Mail-Adresse fuer Rechnungsversand")
-        if self._mail_service is None or not self._mail_service.is_configured():
-            raise RuntimeError("MS-Graph-Konfiguration fuer Rechnungsmail fehlt")
-        subject, text_body = self._build_mail_content(summary, invoice)
-        html_body = self._build_mail_html(text_body)
-        attachment = self._build_invoice_attachment(summary, invoice)
-        self._mail_service.send_mail(
-            to_email=to_email,
-            subject=subject,
-            text_body=text_body,
-            html_body=html_body,
-            attachments=[attachment],
+        next_flags, _to_email, _subject = self.send_invoice_mail_for_invoice(
+            summary,
+            recipient_override=recipient_override,
         )
-        return self._next_flags(flags, mail_sent=True)
+        return next_flags
 
     def _shipping_lines_from_invoice(self, invoice: dict[str, Any], summary: InvoiceSummary) -> list[str]:
         if summary.order_reference.strip():
             wix_lines = self._get_wix_address_lines_cached(summary.order_reference)
             if wix_lines:
                 return wix_lines
+
+        return self._shipping_lines_from_invoice_data(invoice, summary)
+
+    def _shipping_lines_from_invoice_data(self, invoice: dict[str, Any], summary: InvoiceSummary) -> list[str]:
+        """Build shipping lines from sevDesk invoice/contact data only."""
 
         contact = invoice.get("contact") if isinstance(invoice.get("contact"), dict) else {}
         delivery_name = str(invoice.get("deliveryName") or "").strip()
@@ -877,6 +910,15 @@ class InvoiceProcessingService:
         pdf_bytes = self._get_invoice_pdf_bytes(summary.id)
         invoice_number = self._invoice_number(summary, invoice)
         return MailAttachment(filename=f"{invoice_number}.pdf", content=pdf_bytes, mime_type="application/pdf")
+
+    def _fetch_invoice_detail(self, invoice_id: str) -> dict[str, Any]:
+        cached = self._invoice_detail_cache.get(str(invoice_id))
+        if cached is not None:
+            return cached
+        invoice = self._invoices.fetch_invoice_by_id(invoice_id)
+        normalized = invoice if isinstance(invoice, dict) else {}
+        self._invoice_detail_cache[str(invoice_id)] = normalized
+        return normalized
 
     def _get_invoice_pdf_bytes(self, invoice_id: str) -> bytes:
         cached = self._invoice_pdf_cache.get(str(invoice_id))
