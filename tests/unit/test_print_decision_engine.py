@@ -7,6 +7,14 @@ from xw_studio.services.products.print_decision import PrintDecisionEngine
 from xw_studio.services.wix.client import WixOrderItem
 
 
+class _RepoStub:
+    def __init__(self, data: dict[str, str]) -> None:
+        self._data = data
+
+    def get_value_json(self, key: str) -> str | None:
+        return self._data.get(key)
+
+
 class _PartClientStub:
     def find_part_by_sku(self, _sku: str):
         return None
@@ -15,40 +23,34 @@ class _PartClientStub:
         return 0
 
 
-def test_piece_block_imports_legacy_title_print_config(monkeypatch, tmp_path) -> None:
+def test_piece_block_uses_new_repo_print_config_for_title_specific_entry(tmp_path) -> None:
     pdf_path = tmp_path / "song-a.pdf"
     pdf_path.write_bytes(b"%PDF-1.4 test")
-    store_path = tmp_path / "inventory_store.json"
-    store_path.write_text(
-        json.dumps(
-            {
-                "records": {
-                    "XW-010": {
-                        "pdfs": [{"title": "Standard", "path": "", "is_default": True, "profile_id": "", "print_plan": []}],
+    repo = _RepoStub(
+        {
+            "inventory.products": json.dumps(
+                [
+                    {
+                        "sku": "XW-010",
+                        "name": "Basisprodukt",
+                        "print_file_path": "",
+                        "print_profile_id": "",
+                        "print_plan": [],
                         "title_print_configs": {
-                            "song_a": {
-                                "title": "Song A",
-                                "pdfs": [
-                                    {
-                                        "title": "Song A",
-                                        "path": str(pdf_path),
-                                        "is_default": True,
-                                        "profile_id": "noten_a4_duplex",
-                                        "print_plan": [{"range": "1-2", "profile_id": "canon_brochure_mono"}],
-                                    }
-                                ],
+                            "Song A": {
+                                "path": str(pdf_path),
+                                "profile_id": "noten_a4_duplex",
+                                "print_plan": [{"range": "1-2", "profile_id": "canon_brochure_mono"}],
                             }
                         },
                     }
-                }
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                ],
+                ensure_ascii=False,
+            )
+        }
     )
-    monkeypatch.setenv("XW_LEGACY_INVENTORY_STORE_PATH", str(store_path))
 
-    engine = PrintDecisionEngine(ProductCatalogService(), _PartClientStub())
+    engine = PrintDecisionEngine(ProductCatalogService(repo), _PartClientStub())
     blocks = engine.get_piece_blocks([WixOrderItem(sku="XW-010", name="Song A", qty=1, is_unreleased=True)])
 
     assert len(blocks) == 1

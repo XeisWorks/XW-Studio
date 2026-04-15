@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from xw_studio.repositories.settings_kv import SettingKvRepository
     from xw_studio.services.sevdesk.part_client import SevdeskPart
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,14 @@ class ProductCatalogService:
     The interface stays stable.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, settings_repo: "SettingKvRepository | None" = None) -> None:
+        self._settings_repo = settings_repo
         # In-memory cache: canonical SKU -> Product
         self._by_sku: dict[str, Product] = {}
         # Alias map: any_sku -> canonical_sku
         self._alias_map: dict[str, str] = {}
+        self._direct_print_config: dict[str, dict[str, object]] = {}
+        self.reload_from_settings()
 
     # ------------------------------------------------------------------ #
     # Upsert from external sources                                         #
@@ -150,6 +154,20 @@ class ProductCatalogService:
             return self._by_sku.get(canonical)
         return None
 
+    def resolve_print_config(self, raw_sku: str, *, title: str = "") -> dict[str, object]:
+        sku = raw_sku.strip().upper()
+        if not sku:
+            return {}
+        config = self._direct_print_config.get(sku) or {}
+        if not isinstance(config, dict):
+            return {}
+        titles = config.get("titles") if isinstance(config.get("titles"), dict) else {}
+        title_key = str(title or "").strip()
+        if title_key and title_key in titles and isinstance(titles[title_key], dict):
+            return dict(titles[title_key])
+        default = config.get("default")
+        return dict(default) if isinstance(default, dict) else {}
+
     def register_alias(self, alias_sku: str, canonical_sku: str) -> None:
         alias = alias_sku.strip().upper()
         canonical = canonical_sku.strip().upper()
@@ -182,6 +200,69 @@ class ProductCatalogService:
         if product is None:
             raise KeyError(f"Product {sku!r} not found")
         product.print_file_path = path
+
+    def reload_from_settings(self) -> None:
+        if self._settings_repo is None:
+            return
+        raw = self._settings_repo.get_value_json("inventory.products")
+        if not raw:
+            return
+        try:
+            import json
+
+            data = json.loads(raw)
+        except Exception:
+            return
+        if not isinstance(data, list):
+            return
+
+        self._by_sku.clear()
+        self._alias_map.clear()
+        self._direct_print_config.clear()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            sku = str(item.get("sku") or "").strip().upper()
+            if not sku:
+                continue
+            product = Product(
+                id=f"settings::{sku}",
+                sku=sku,
+                name=str(item.get("name") or sku),
+                category=str(item.get("category") or ""),
+                sevdesk_part_id=str(item.get("sevdesk_id") or ""),
+                wix_product_id=str(item.get("wix_id") or ""),
+                print_file_path=str(item.get("print_file_path") or ""),
+            )
+            self._by_sku[sku] = product
+            titles: dict[str, dict[str, object]] = {}
+            raw_titles = item.get("title_print_configs")
+            if isinstance(raw_titles, dict):
+                for raw_title, raw_cfg in raw_titles.items():
+                    if not isinstance(raw_cfg, dict):
+                        continue
+                    title = str(raw_title or "").strip()
+                    if not title:
+                        continue
+                    titles[title] = {
+                        "path": str(raw_cfg.get("path") or "").strip(),
+                        "profile_id": str(raw_cfg.get("profile_id") or "").strip(),
+                        "print_plan": [
+                            entry for entry in (raw_cfg.get("print_plan") or [])
+                            if isinstance(entry, dict)
+                        ],
+                    }
+            self._direct_print_config[sku] = {
+                "default": {
+                    "path": str(item.get("print_file_path") or "").strip(),
+                    "profile_id": str(item.get("print_profile_id") or "").strip(),
+                    "print_plan": [
+                        entry for entry in (item.get("print_plan") or [])
+                        if isinstance(entry, dict)
+                    ],
+                },
+                "titles": titles,
+            }
 
     # ------------------------------------------------------------------ #
     # Listing                                                              #

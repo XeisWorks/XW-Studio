@@ -7,11 +7,8 @@ Integrates:
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from xw_studio.services.products.catalog import Product, StockStatus
@@ -142,7 +139,6 @@ class PrintDecisionEngine:
     ) -> None:
         self._catalog = catalog
         self._part_client = part_client
-        self._legacy_print_configs = self._load_legacy_print_configs()
 
     # ------------------------------------------------------------------ #
     # Main entry points                                                    #
@@ -220,24 +216,24 @@ class PrintDecisionEngine:
     def _build_block(self, item: WixOrderItem) -> PieceBlock:
         product = self._catalog.resolve_sku(item.sku)
         stock_status: StockStatus | None = None
-        legacy_cfg = self._resolve_legacy_print_config(item.sku, item.name)
+        direct_cfg = self._catalog.resolve_print_config(item.sku, title=item.name)
 
         if product is None:
             fallback_part = self._part_client.find_part_by_sku(item.sku)
             if fallback_part is not None:
                 product = self._catalog.upsert_from_sevdesk(fallback_part)
-            elif str(legacy_cfg.get("path") or "").strip():
+            elif str(direct_cfg.get("path") or "").strip():
                 product = Product(
-                    id=f"legacy::{item.sku.strip().upper()}",
+                    id=f"settings::{item.sku.strip().upper()}",
                     sku=item.sku.strip().upper(),
                     name=item.name,
-                    print_file_path=str(legacy_cfg.get("path") or "").strip(),
+                    print_file_path=str(direct_cfg.get("path") or "").strip(),
                 )
 
         if product is not None and not product.print_file_path.strip():
-            legacy_pdf = str(legacy_cfg.get("path") or "").strip()
-            if legacy_pdf:
-                product.print_file_path = legacy_pdf
+            direct_pdf = str(direct_cfg.get("path") or "").strip()
+            if direct_pdf:
+                product.print_file_path = direct_pdf
 
         if product is not None and not product.is_digital and product.sevdesk_part_id:
             on_hand = self._fetch_stock_safe(product.sevdesk_part_id)
@@ -268,144 +264,14 @@ class PrintDecisionEngine:
             qty_needed=item.qty,
             note=item.note,
             is_unreleased=item.is_unreleased,
-            print_profile_id=str(legacy_cfg.get("profile_id") or "").strip(),
-            print_plan=self._normalize_print_plan(legacy_cfg.get("print_plan")),
+            print_profile_id=str(direct_cfg.get("profile_id") or "").strip(),
+            print_plan=[
+                entry for entry in (direct_cfg.get("print_plan") or [])
+                if isinstance(entry, dict)
+            ],
             product=product,
             stock_status=stock_status,
         )
-
-    def _load_legacy_print_configs(self) -> dict[str, dict[str, object]]:
-        inventory_path = self._detect_legacy_inventory_store_path()
-        if inventory_path is None:
-            return {}
-        try:
-            payload = json.loads(inventory_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Could not load legacy inventory store (%s): %s", inventory_path, exc)
-            return {}
-        records = payload.get("records") if isinstance(payload, dict) else {}
-        if not isinstance(records, dict):
-            return {}
-
-        out: dict[str, dict[str, object]] = {}
-        for raw_sku, raw_record in records.items():
-            if not isinstance(raw_record, dict):
-                continue
-            sku = str(raw_sku or "").strip().upper()
-            if not sku:
-                continue
-            default_entry = self._pick_default_pdf_entry(raw_record.get("pdfs"))
-            title_entries = self._collect_title_pdf_entries(raw_record.get("title_print_configs"))
-            out[sku] = {
-                "default": self._resolve_legacy_pdf_entry(inventory_path, default_entry),
-                "titles": title_entries,
-            }
-        if out:
-            logger.info("Loaded %d legacy print configs from %s", len(out), inventory_path)
-        return out
-
-    @staticmethod
-    def _pick_default_pdf_entry(raw_entries: object) -> dict[str, object]:
-        if not isinstance(raw_entries, list):
-            return {}
-        first_entry: dict[str, object] = {}
-        for raw in raw_entries:
-            if not isinstance(raw, dict):
-                continue
-            if not first_entry:
-                first_entry = raw
-            if bool(raw.get("is_default")):
-                return raw
-        return first_entry
-
-    @staticmethod
-    def _resolve_legacy_pdf_entry(inventory_path: Path, raw: dict[str, object]) -> dict[str, object]:
-        if not isinstance(raw, dict):
-            return {}
-        path_raw = str(raw.get("path") or "").strip()
-        resolved_path = ""
-        if path_raw:
-            path = Path(path_raw)
-            if not path.is_absolute():
-                path = (inventory_path.parent / path).resolve()
-            if path.exists():
-                resolved_path = str(path)
-        return {
-            "path": resolved_path,
-            "profile_id": str(raw.get("profile_id") or "").strip(),
-            "print_plan": PrintDecisionEngine._normalize_print_plan(raw.get("print_plan")),
-        }
-
-    @staticmethod
-    def _collect_title_pdf_entries(raw_title_configs: object) -> dict[str, dict[str, object]]:
-        if not isinstance(raw_title_configs, dict):
-            return {}
-        out: dict[str, dict[str, object]] = {}
-        for state in raw_title_configs.values():
-            if not isinstance(state, dict):
-                continue
-            title = str(state.get("title") or "").strip()
-            if not title:
-                continue
-            entry = PrintDecisionEngine._pick_default_pdf_entry(state.get("pdfs"))
-            if not entry:
-                continue
-            out[title.casefold()] = entry
-        return out
-
-    def _resolve_legacy_print_config(self, sku: str, title: str) -> dict[str, object]:
-        cfg = self._legacy_print_configs.get(str(sku or "").strip().upper()) or {}
-        if not isinstance(cfg, dict):
-            return {}
-        titles = cfg.get("titles") if isinstance(cfg.get("titles"), dict) else {}
-        title_key = str(title or "").strip().casefold()
-        if title_key and title_key in titles:
-            inventory_path = self._detect_legacy_inventory_store_path()
-            if inventory_path is not None:
-                resolved = self._resolve_legacy_pdf_entry(inventory_path, dict(titles[title_key]))
-                if resolved:
-                    return resolved
-        default_cfg = cfg.get("default")
-        return dict(default_cfg) if isinstance(default_cfg, dict) else {}
-
-    @staticmethod
-    def _normalize_print_plan(raw_plan: object) -> list[dict[str, str]]:
-        if not isinstance(raw_plan, list):
-            return []
-        plan: list[dict[str, str]] = []
-        for raw in raw_plan:
-            if not isinstance(raw, dict):
-                continue
-            range_text = str(raw.get("range") or "").strip() or "Alle Seiten"
-            profile_id = str(raw.get("profile_id") or "").strip()
-            if not profile_id:
-                continue
-            plan.append({"range": range_text, "profile_id": profile_id})
-        return plan
-
-    @staticmethod
-    def _detect_legacy_inventory_store_path() -> Path | None:
-        env_path = str(os.getenv("XW_LEGACY_INVENTORY_STORE_PATH") or "").strip()
-        candidates: list[Path] = []
-        if env_path:
-            candidates.append(Path(env_path).expanduser())
-
-        repo_root = Path(__file__).resolve().parents[4]
-        candidates.extend(
-            [
-                repo_root / "data" / "inventory_store.json",
-                repo_root.parent / "sevDesk" / "sevdesk_wix_fulfillment" / "data" / "inventory_store.json",
-            ]
-        )
-
-        for candidate in candidates:
-            try:
-                resolved = candidate.resolve()
-            except OSError:
-                continue
-            if resolved.exists() and resolved.is_file():
-                return resolved
-        return None
 
     def _fetch_stock_by_sku_safe(self, sku: str) -> StockStatus | None:
         """Fallback: find sevDesk Part by SKU and return a transient StockStatus."""

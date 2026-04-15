@@ -76,7 +76,9 @@ def register_default_services(container: Container) -> None:
     )
     container.register(
         ProductCatalogService,
-        lambda c: ProductCatalogService(),
+        lambda c: ProductCatalogService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
     )
     container.register(
         PrintDecisionEngine,

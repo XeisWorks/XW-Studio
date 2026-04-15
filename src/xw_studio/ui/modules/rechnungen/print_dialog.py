@@ -15,7 +15,6 @@ from xw_studio.services.printing.planned_pdf_printer import print_pdf_by_plan
 from xw_studio.services.printing.pdf_renderer import (
     INVOICE_DPI,
     MUSIC_DPI,
-    page_indices_from_qprinter,
     print_pdf,
 )
 
@@ -175,46 +174,30 @@ def run_piece_pdf_print(parent: QWidget, container: Container, *, piece: PieceBl
         except Exception:
             pass
 
-    if piece.has_direct_print_config:
-        try:
-            print_pdf_by_plan(
-                path,
-                container.config.printing,
-                print_plan=piece.print_plan,
-                profile_id=piece.print_profile_id,
-                copies=max(1, int(piece.print_qty or piece.qty_needed or 1)),
-                page_count=page_count,
-            )
-            return True
-        except Exception as exc:
-            logger.exception("Direct product print failed: %s", exc)
-            QMessageBox.warning(
-                parent,
-                "Produktdruck",
-                f"Direkter Produktdruck fehlgeschlagen:\n\n{exc}\n\nEs wird der manuelle Druckdialog geoeffnet.",
-            )
-
-    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    default_name = QPrinterInfo.defaultPrinter().printerName()
-    if default_name:
-        printer.setPrinterName(default_name)
-    dialog = QPrintDialog(printer, parent)
-    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+    if not piece.has_direct_print_config:
+        QMessageBox.warning(
+            parent,
+            "Produktdruck",
+            f"Fuer SKU {piece.sku} fehlt im neuen Repo ein vollstaendiger Druckpfad.\n\n"
+            "Bitte im Produkte-Modul PDF-Pfad und Druckplan/Profil pflegen.",
+        )
         return False
 
-    if not _check_printer_runtime(parent, container, printer):
-        return False
-
-    indices = page_indices_from_qprinter(printer, page_count)
-    dpi = int(container.config.printing.music_dpi or MUSIC_DPI)
     try:
-        print_pdf(path, printer, dpi=dpi, pages=indices)
+        print_pdf_by_plan(
+            path,
+            container.config.printing,
+            print_plan=piece.print_plan,
+            profile_id=piece.print_profile_id,
+            copies=max(1, int(piece.print_qty or piece.qty_needed or 1)),
+            page_count=page_count,
+        )
         return True
     except Exception as exc:
-        logger.exception("Product print failed: %s", exc)
+        logger.exception("Direct product print failed: %s", exc)
         QMessageBox.critical(
             parent,
             "Produktdruck fehlgeschlagen",
-            f"Die Produkt-PDF konnte nicht gedruckt werden:\n\n{exc}",
+            f"Die Produkt-PDF konnte nicht ueber den hinterlegten Druckplan gedruckt werden:\n\n{exc}",
         )
         return False

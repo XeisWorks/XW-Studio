@@ -2095,13 +2095,13 @@ class RechnungenView(QWidget):
             if flagged_for_print:
                 print_btn = QPushButton("Drucken")
                 print_btn.setFixedHeight(24)
-                print_btn.setEnabled(self._print_allowed and item.print_file_path is not None)
+                print_btn.setEnabled(self._print_allowed)
                 if item.has_direct_print_config:
                     print_btn.setToolTip("Direkter Produktdruck ueber hinterlegten Druckplan")
                 elif item.print_file_path is not None:
-                    print_btn.setToolTip("PDF vorhanden, aber noch kein Druckplan/Profil hinterlegt")
+                    print_btn.setToolTip("PDF vorhanden, aber noch kein Druckplan/Profil im neuen Repo hinterlegt")
                 else:
-                    print_btn.setToolTip("Kein PDF-Pfad fuer dieses Produkt hinterlegt")
+                    print_btn.setToolTip("Kein PDF-Pfad im neuen Repo hinterlegt")
                 print_btn.clicked.connect(lambda _checked=False, block=item: self._on_product_print_clicked(block))
                 row_layout.addWidget(print_btn)
                 self._piece_print_buttons.append(print_btn)
