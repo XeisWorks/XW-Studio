@@ -1,4 +1,5 @@
 """Tests for sevDesk invoice DTO parsing."""
+from datetime import date, timedelta
 import httpx
 
 from xw_studio.core.config import AppConfig
@@ -141,6 +142,93 @@ def test_invoice_client_fetch_invoice_positions_uses_invoice_filter_params() -> 
 
     assert len(positions) == 1
     assert positions[0]["id"] == "POS-1"
+
+
+def test_invoice_client_search_matches_wix_order_and_customer_within_initial_window() -> None:
+    today = date.today()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/Invoice")
+        body = {
+            "objects": [
+                {
+                    "id": 3,
+                    "invoiceNumber": "RE-300",
+                    "invoiceDate": today.isoformat(),
+                    "status": 200,
+                    "sumGross": "48.80",
+                    "customerInternalNote": "20522",
+                    "contact": {
+                        "name": "XeisWorks",
+                        "surename": "Felix",
+                        "familyname": "Griesbach",
+                    },
+                },
+                {
+                    "id": 2,
+                    "invoiceNumber": "RE-200",
+                    "invoiceDate": (today - timedelta(days=10)).isoformat(),
+                    "status": 200,
+                    "sumGross": "19.90",
+                    "contact": {"name": "Anderes Unternehmen"},
+                },
+            ]
+        }
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://example.test/api/v1")
+    inv = InvoiceClient(SevdeskConnection(client=client, config=AppConfig()))
+
+    by_order, order_days = inv.search_invoice_summaries("20522")
+    by_name, name_days = inv.search_invoice_summaries("felix griesbach")
+    by_invoice, invoice_days = inv.search_invoice_summaries("RE-300")
+
+    assert order_days == 100
+    assert name_days == 100
+    assert invoice_days == 100
+    assert [row.id for row in by_order] == ["3"]
+    assert [row.id for row in by_name] == ["3"]
+    assert [row.id for row in by_invoice] == ["3"]
+
+
+def test_invoice_client_search_expands_to_next_100_day_window_when_needed() -> None:
+    today = date.today()
+    first_page = {
+        "objects": [
+            {
+                "id": 9,
+                "invoiceNumber": "RE-009",
+                "invoiceDate": (today - timedelta(days=5)).isoformat(),
+                "status": 200,
+                "sumGross": "10.00",
+                "contact": {"name": "Nah GmbH"},
+            },
+            {
+                "id": 8,
+                "invoiceNumber": "RE-008",
+                "invoiceDate": (today - timedelta(days=130)).isoformat(),
+                "status": 200,
+                "sumGross": "10.00",
+                "customerInternalNote": "20599",
+                "contact": {"name": "Weiter GmbH", "surename": "Anna", "familyname": "Alt"},
+            },
+        ]
+    }
+    second_page = {"objects": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset", "0"))
+        return httpx.Response(200, json=first_page if offset == 0 else second_page)
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://example.test/api/v1")
+    inv = InvoiceClient(SevdeskConnection(client=client, config=AppConfig()))
+
+    rows, searched_days = inv.search_invoice_summaries("20599")
+
+    assert searched_days == 200
+    assert [row.id for row in rows] == ["8"]
 
 
 def test_invoice_summary_coerces_null_invoice_number() -> None:

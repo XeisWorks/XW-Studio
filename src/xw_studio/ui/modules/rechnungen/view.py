@@ -534,6 +534,7 @@ class RechnungenView(QWidget):
         super().__init__(parent)
         self._container = container
         self._worker: BackgroundWorker | None = None
+        self._search_worker: BackgroundWorker | None = None
         self._refund_worker: BackgroundWorker | None = None
         self._draft_worker: BackgroundWorker | None = None
         self._draft_product_worker: BackgroundWorker | None = None
@@ -551,6 +552,11 @@ class RechnungenView(QWidget):
         self._mollie_alert_count = 0
         self._sendungen_alert_count = 0
         self._search_index: list[dict[str, str]] = []
+        self._loaded_rows: list[dict[str, Any]] = []
+        self._loaded_summaries: list[InvoiceSummary] = []
+        self._loaded_has_more = False
+        self._search_active = False
+        self._search_seq = 0
         self._wix_digital_cache: dict[str, bool] = {}
         self._pending_wix_reference = ""
         self._pending_stuecke_reference = ""
@@ -887,7 +893,28 @@ class RechnungenView(QWidget):
             self._overlay.setGeometry(self.rect())
 
     def _on_search(self, text: str) -> None:
-        self._table.set_filter(text, column=-1)
+        query = str(text or "").strip()
+        if not query:
+            self._search_active = False
+            self._search_seq += 1
+            self._restore_loaded_invoice_list()
+            return
+        self._search_active = True
+        self._search_seq += 1
+        seq = self._search_seq
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Suche in sevDesk läuft…", 2500)
+
+        def job() -> tuple[list[dict[str, str]], list[InvoiceSummary], int, str, int]:
+            service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            rows, summaries, searched_days = service.search_invoice_batch(query)
+            return rows, summaries, searched_days, query, seq
+
+        self._search_worker = BackgroundWorker(job)
+        self._search_worker.signals.result.connect(self._on_search_result)
+        self._search_worker.signals.error.connect(self._on_search_error)
+        self._search_worker.signals.finished.connect(self._on_search_finished)
+        self._search_worker.start()
 
     def _on_printer_status(self, printing_allowed: bool) -> None:
         self._print_allowed = printing_allowed
@@ -981,6 +1008,9 @@ class RechnungenView(QWidget):
         else:
             self._table.set_data(rows)
             self._summaries = summaries
+            self._loaded_rows = rows
+            self._loaded_summaries = summaries
+            self._loaded_has_more = has_more
 
         self._search.refresh_suggestions()
         self._rebuild_search_index()
@@ -990,7 +1020,7 @@ class RechnungenView(QWidget):
         self._refresh_open_invoice_overview()
 
         self._next_offset = len(self._summaries)
-        self._btn_more.setEnabled(has_more)
+        self._btn_more.setEnabled(has_more and not self._search_active)
 
         signals: AppSignals = self._container.resolve(AppSignals)
         mode = "angehaengt" if self._append_mode else "geladen"
@@ -1139,6 +1169,60 @@ class RechnungenView(QWidget):
 
     def _on_load_finished(self) -> None:
         self._overlay.hide()
+
+    def _restore_loaded_invoice_list(self) -> None:
+        self._table.set_data(self._loaded_rows)
+        self._summaries = list(self._loaded_summaries)
+        self._btn_more.setEnabled(self._loaded_has_more)
+        self._search.refresh_suggestions()
+        self._rebuild_search_index()
+        self._refresh_detail_for_selection()
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit(
+            f"Rechnungen zurückgesetzt ({len(self._loaded_summaries)} in geladener Liste)",
+            3000,
+        )
+
+    def _on_search_result(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 5:
+            return
+        rows_obj, summaries_obj, searched_days_obj, query_obj, seq_obj = payload
+        if int(seq_obj) != self._search_seq:
+            return
+        rows = [row for row in rows_obj if isinstance(row, dict)] if isinstance(rows_obj, list) else []
+        summaries = [summary for summary in summaries_obj if isinstance(summary, InvoiceSummary)] if isinstance(summaries_obj, list) else []
+        searched_days = max(100, int(searched_days_obj or 100))
+        query = str(query_obj or "").strip()
+        self._prepare_rows_for_hint_prefetch(rows, summaries)
+        self._table.set_data(rows)
+        self._summaries = summaries
+        self._btn_more.setEnabled(False)
+        self._search.refresh_suggestions()
+        self._rebuild_search_index()
+        self._refresh_detail_for_selection()
+        self._restart_hint_prefetch()
+        signals: AppSignals = self._container.resolve(AppSignals)
+        if summaries:
+            signals.status_message.emit(
+                f"{len(summaries)} Treffer für '{query}' in den letzten {searched_days} Tagen",
+                5000,
+            )
+        else:
+            signals.status_message.emit(
+                f"Keine Treffer für '{query}' nach Suche über {searched_days} Tage",
+                5000,
+            )
+
+    def _on_search_error(self, exc: Exception) -> None:
+        logger.error("Invoice search failed: %s", exc)
+        QMessageBox.warning(
+            self,
+            "Suche",
+            f"Rechnungssuche fehlgeschlagen:\n\n{exc}",
+        )
+
+    def _on_search_finished(self) -> None:
+        self._search_worker = None
 
     def _refresh_open_invoice_overview(self) -> None:
         open_rows = [s for s in self._summaries if s.status_code == 100]

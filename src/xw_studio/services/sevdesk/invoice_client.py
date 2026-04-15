@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -455,6 +455,105 @@ class InvoiceClient:
                 status,
             )
         return result
+
+    def search_invoice_summaries(
+        self,
+        query: str,
+        *,
+        initial_window_days: int = 100,
+        window_step_days: int = 100,
+        limit_per_page: int = 200,
+        max_windows: int = 20,
+    ) -> tuple[list[InvoiceSummary], int]:
+        """Search sevDesk invoices by reference/customer/invoice number with widening date windows.
+
+        The search starts with the newest *initial_window_days* and automatically expands by
+        *window_step_days* until matches are found or the invoice history is exhausted.
+        Returns ``(matches, searched_days)``.
+        """
+        needle = self._normalize_search_text(query)
+        if not needle:
+            return [], max(1, int(initial_window_days))
+
+        searched_days = max(1, int(initial_window_days))
+        today = date.today()
+        fetched: list[InvoiceSummary] = []
+        offset = 0
+        reached_end = False
+
+        while searched_days <= max(1, int(initial_window_days)) + max(0, int(window_step_days)) * max(0, int(max_windows) - 1):
+            oldest_age = self._oldest_fetched_age_days(fetched, today) if fetched else 0
+            cutoff_reached = oldest_age >= searched_days if fetched else False
+            while not reached_end and not cutoff_reached:
+                batch = self.list_invoice_summaries(limit=limit_per_page, offset=offset, status=None)
+                if not batch:
+                    reached_end = True
+                    break
+                fetched.extend(batch)
+                offset += len(batch)
+                if len(batch) < limit_per_page:
+                    reached_end = True
+                oldest_age = self._oldest_fetched_age_days(fetched, today)
+                cutoff_reached = oldest_age >= searched_days
+
+            matches = [
+                summary for summary in fetched
+                if self._within_days(summary, today, searched_days) and self._matches_search_query(summary, needle)
+            ]
+            if matches:
+                matches.sort(
+                    key=lambda item: int(item.id) if item.id.isdigit() else -1,
+                    reverse=True,
+                )
+                return matches, searched_days
+            if reached_end and oldest_age <= searched_days:
+                return [], searched_days
+            searched_days += max(1, int(window_step_days))
+
+        return [], searched_days
+
+    @staticmethod
+    def _normalize_search_text(value: str) -> str:
+        return " ".join(str(value or "").strip().casefold().split())
+
+    @classmethod
+    def _matches_search_query(cls, summary: InvoiceSummary, needle: str) -> bool:
+        order_ref = str(summary.order_reference or "").strip()
+        order_digits = "".join(ch for ch in order_ref if ch.isdigit())
+        haystacks = [
+            cls._normalize_search_text(summary.invoice_number),
+            cls._normalize_search_text(summary.contact_name),
+            cls._normalize_search_text(order_ref),
+            cls._normalize_search_text(order_digits),
+        ]
+        return any(needle and needle in hay for hay in haystacks if hay)
+
+    @staticmethod
+    def _parse_invoice_date(value: str | None) -> date | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text).date()
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _within_days(cls, summary: InvoiceSummary, today: date, days: int) -> bool:
+        dt = cls._parse_invoice_date(summary.invoice_date)
+        if dt is None:
+            return True
+        return (today - dt).days <= days
+
+    @classmethod
+    def _oldest_fetched_age_days(cls, rows: list[InvoiceSummary], today: date) -> int:
+        ages: list[int] = []
+        for summary in rows:
+            dt = cls._parse_invoice_date(summary.invoice_date)
+            if dt is None:
+                continue
+            ages.append((today - dt).days)
+        return max(ages, default=0)
 
     def fetch_invoice_by_id(self, invoice_id: str) -> dict[str, Any]:
         """Return one invoice object as returned by sevDesk."""

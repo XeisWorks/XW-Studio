@@ -271,6 +271,24 @@ class InvoiceProcessingService:
         rows = [s.as_table_row() for s in summaries]
         return self._rows_with_fulfillment(summaries, rows), summaries
 
+    def search_invoice_batch(
+        self,
+        query: str,
+        *,
+        initial_window_days: int = 100,
+        window_step_days: int = 100,
+    ) -> tuple[list[dict[str, str]], list[InvoiceSummary], int]:
+        """Search invoices via sevDesk with widening date windows."""
+        summaries, searched_days = self._invoices.search_invoice_summaries(
+            query,
+            initial_window_days=initial_window_days,
+            window_step_days=window_step_days,
+        )
+        self._apply_sensitive_country_flags(summaries)
+        self._apply_unreleased_sku_flags(summaries)
+        rows = [summary.as_table_row() for summary in summaries]
+        return self._rows_with_fulfillment(summaries, rows), summaries, searched_days
+
     def read_fulfillment_flags(self, invoice_id: str) -> FulfillmentFlags:
         all_flags = self._load_fulfillment_flags_map()
         return all_flags.get(str(invoice_id), FulfillmentFlags())
