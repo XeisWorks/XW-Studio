@@ -13,6 +13,7 @@ from xw_studio.services.expenses.service import ExpenseAuditService
 from xw_studio.services.finanzonline import (
     FinanzOnlineClient,
     SevdeskUvaPreviewProvider,
+    UvaDocumentSelector,
     UvaPayloadService,
     UvaPreviewService,
     UvaService,
@@ -26,13 +27,20 @@ from xw_studio.services.ideas.stores import (
 )
 from xw_studio.services.inventory.service import InventoryService
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.services.draft_invoice.service import DraftInvoiceService
+from xw_studio.services.sendungen.service import OffeneSendungenService
 from xw_studio.services.layout.service import LayoutToolsService
+from xw_studio.services.mailing.service import MailDeliveryService
 from xw_studio.services.secrets.service import SecretService
 from xw_studio.services.sevdesk.contact_client import ContactClient
 from xw_studio.services.sevdesk.invoice_client import InvoiceClient
 from xw_studio.services.sevdesk.part_client import PartClient
+from xw_studio.services.sevdesk.refund_client import SevDeskRefundClient
 from xw_studio.services.statistics.service import StatisticsService
+from xw_studio.services.products.catalog import ProductCatalogService
+from xw_studio.services.products.print_decision import PrintDecisionEngine
 from xw_studio.services.wix.client import WixProductsClient
+from xw_studio.services.wix.client import WixOrdersClient
 from xw_studio.services.clickup.client import ClickUpClient
 from xw_studio.services.xw_copilot.dry_run import XWCopilotDryRunService
 from xw_studio.services.xw_copilot.ingress import XWCopilotIngress
@@ -70,8 +78,53 @@ def register_default_services(container: Container) -> None:
         lambda c: PartClient(c.resolve(SevdeskConnection)),
     )
     container.register(
+        SevDeskRefundClient,
+        lambda c: SevDeskRefundClient(c.resolve(SevdeskConnection)),
+    )
+    container.register(
+        ProductCatalogService,
+        lambda c: ProductCatalogService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+        ),
+    )
+    container.register(
+        PrintDecisionEngine,
+        lambda c: PrintDecisionEngine(
+            catalog=c.resolve(ProductCatalogService),
+            part_client=c.resolve(PartClient),
+        ),
+    )
+    container.register(
+        WixOrdersClient,
+        lambda c: WixOrdersClient(secret_service=c.resolve(SecretService)),
+    )
+    container.register(
+        DraftInvoiceService,
+        lambda c: DraftInvoiceService(
+            c.resolve(SevdeskConnection),
+            c.resolve(WixOrdersClient),
+            c.resolve(PartClient),
+            c.resolve(ContactClient),
+            c.resolve(InvoiceClient),
+        ),
+    )
+    container.register(
         InvoiceProcessingService,
-        lambda c: InvoiceProcessingService(c.resolve(InvoiceClient)),
+        lambda c: InvoiceProcessingService(
+            c.config,
+            c.resolve(InvoiceClient),
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+            c.resolve(WixOrdersClient),
+            c.resolve(MailDeliveryService),
+            c.resolve(DraftInvoiceService),
+        ),
+    )
+    container.register(
+        OffeneSendungenService,
+        lambda c: OffeneSendungenService(
+            c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+            c.resolve(SecretService),
+        ),
     )
 
     container.register(
@@ -82,8 +135,15 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(
+        UvaDocumentSelector,
+        lambda c: UvaDocumentSelector(),
+    )
+    container.register(
         UvaPreviewService,
-        lambda c: UvaPreviewService(SevdeskUvaPreviewProvider(c.resolve(SevdeskConnection))),
+        lambda c: UvaPreviewService(
+            SevdeskUvaPreviewProvider(c.resolve(SevdeskConnection)),
+            selector=c.resolve(UvaDocumentSelector),
+        ),
     )
     container.register(
         UvaPayloadService,
@@ -157,6 +217,10 @@ def register_default_services(container: Container) -> None:
     )
     container.register(LayoutToolsService, lambda c: LayoutToolsService())
     container.register(
+        MailDeliveryService,
+        lambda c: MailDeliveryService(secret_service=c.resolve(SecretService)),
+    )
+    container.register(
         CalculationService,
         lambda c: CalculationService(
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
@@ -166,6 +230,7 @@ def register_default_services(container: Container) -> None:
         DailyBusinessService,
         lambda c: DailyBusinessService(
             c.resolve(SettingKvRepository) if (c.config.database_url or "").strip() else None,
+            c.resolve(InvoiceProcessingService),
         ),
     )
     container.register(

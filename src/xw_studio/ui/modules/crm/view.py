@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.crm import ContactRecord, CrmService, MergeResult
 from xw_studio.services.crm.types import DuplicateCandidate
+from xw_studio.ui.widgets.search_bar import SearchBar
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -128,9 +128,10 @@ class CrmView(QWidget):
 
         # --- search bar ---
         search_row = QHBoxLayout()
-        self._search = QLineEdit()
+        self._search = SearchBar("Kontakte filtern (mind. 3 Zeichen)…")
         self._search.setPlaceholderText("Kontakte filtern…")
-        self._search.textChanged.connect(self._apply_filter)
+        self._search.search_changed.connect(self._apply_filter)
+        self._search.set_suggestion_provider(self._contact_search_suggestions)
         search_row.addWidget(self._search)
         self._scan_btn = QPushButton("Duplikat-Scan")
         self._scan_btn.clicked.connect(self._run_scan)
@@ -208,6 +209,7 @@ class CrmView(QWidget):
         src = "sevDesk" if crm.has_live_connection() else "Demo"
         self._status_lbl.setText(f"{len(self._contacts)} Kontakte geladen ({src})")
         self._sync_btn.setEnabled(True)
+        self._search.refresh_suggestions()
         self._populate_contacts_table(self._contacts)
 
     def _on_load_error(self, exc: BaseException) -> None:
@@ -240,6 +242,17 @@ class CrmView(QWidget):
             or needle in (r.email or "").lower()
         ]
         self._populate_contacts_table(filtered)
+
+    def _contact_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        out: list[str] = []
+        for row in self._contacts:
+            hay = f"{row.name} {row.email or ''} {row.phone or ''}".lower()
+            if q in hay:
+                out.append(f"{row.name} ({row.email or 'keine E-Mail'})")
+        return out
 
     # ------------------------------------------------------------------
     # Duplicate scan

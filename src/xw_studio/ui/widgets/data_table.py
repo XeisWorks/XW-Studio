@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyModel, Qt
 from PySide6.QtWidgets import QHeaderView, QTableView, QWidget
+from PySide6.QtCore import QItemSelectionModel
 
 
 class SimpleTableModel(QAbstractTableModel):
@@ -37,10 +39,34 @@ class SimpleTableModel(QAbstractTableModel):
         return len(self._columns)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        row = self._rows[index.row()]
+        col = self._columns[index.column()]
         if role == Qt.ItemDataRole.DisplayRole:
-            row = self._rows[index.row()]
-            col = self._columns[index.column()]
             return str(row.get(col, ""))
+        if role == Qt.ItemDataRole.UserRole:
+            return row
+        if role == Qt.ItemDataRole.ToolTipRole:
+            tip = row.get(f"__tooltip__{col}")
+            if tip:
+                return str(tip)
+            return None
+        if role == Qt.ItemDataRole.ForegroundRole:
+            color = row.get(f"__fg__{col}")
+            if isinstance(color, str) and color.strip():
+                return QBrush(QColor(color))
+            return None
+        if role == Qt.ItemDataRole.BackgroundRole:
+            color = row.get(f"__bg__{col}")
+            if isinstance(color, str) and color.strip():
+                return QBrush(QColor(color))
+            return None
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            align = row.get(f"__align__{col}")
+            if align == "center":
+                return int(Qt.AlignmentFlag.AlignCenter)
+            if align == "right":
+                return int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+            return None
         return None
 
     def headerData(
@@ -54,6 +80,14 @@ class SimpleTableModel(QAbstractTableModel):
         if 0 <= row < len(self._rows):
             return self._rows[row]
         return {}
+
+    def update_row_data(self, row: int, patch: dict[str, Any]) -> None:
+        if not (0 <= row < len(self._rows)) or not isinstance(patch, dict) or not patch:
+            return
+        self._rows[row].update(patch)
+        left = self.index(row, 0)
+        right = self.index(row, max(0, len(self._columns) - 1))
+        self.dataChanged.emit(left, right)
 
 
 class DataTable(QTableView):
@@ -71,9 +105,11 @@ class DataTable(QTableView):
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.setShowGrid(False)
         self.verticalHeader().setVisible(False)
         self.horizontalHeader().setStretchLastSection(True)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.horizontalHeader().setHighlightSections(False)
 
     def set_data(self, rows: Sequence[dict[str, Any]]) -> None:
         self._model.set_data(rows)
@@ -99,3 +135,24 @@ class DataTable(QTableView):
         if not indexes:
             return None
         return int(self._proxy.mapToSource(indexes[0]).row())
+
+    def update_source_row_data(self, row: int, patch: dict[str, Any]) -> None:
+        self._model.update_row_data(row, patch)
+
+    def select_source_row(self, row: int) -> None:
+        """Select one source-model row, respecting proxy sorting/filtering."""
+        if row < 0 or row >= self._model.rowCount():
+            return
+        source_index = self._model.index(row, 0)
+        proxy_index = self._proxy.mapFromSource(source_index)
+        if not proxy_index.isValid():
+            return
+        selection_model = self.selectionModel()
+        if selection_model is None:
+            return
+        selection_model.select(
+            proxy_index,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.setCurrentIndex(proxy_index)
+        self.scrollTo(proxy_index)

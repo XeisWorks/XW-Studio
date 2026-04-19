@@ -11,10 +11,11 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from xw_studio.bootstrap import register_default_services
 from xw_studio.core.config import AppConfig, load_config
 from xw_studio.core.container import Container
-from xw_studio.core.database import create_engine_from_config
+from xw_studio.core.database import create_engine_from_config, ensure_core_tables
 from xw_studio.core.logging_setup import setup_logging
 from xw_studio.core.signals import AppSignals
 from xw_studio.core.updater import check_and_update
+from xw_studio.ui.theme import apply_app_theme
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +24,23 @@ def _check_database_connection(config: AppConfig) -> str | None:
     """Return an error string when DB ping fails, else ``None``."""
     if not (config.database_url or "").strip():
         return None
+    engine = None
     try:
         engine = create_engine_from_config(config)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
+        created_tables = ensure_core_tables(engine)
+        if created_tables:
+            logger.warning(
+                "Database missing core tables. Created automatically: %s",
+                ", ".join(created_tables),
+            )
         return None
     except Exception as exc:
         return str(exc)
+    finally:
+        if engine is not None:
+            engine.dispose()
 
 
 def _handle_exception(exc_type, exc_value, exc_tb):  # type: ignore[no-untyped-def]
@@ -60,11 +71,7 @@ def create_application() -> QApplication:
     app.setApplicationName(config.app.name)
     app.setApplicationVersion("0.1.0")
 
-    try:
-        from qt_material import apply_stylesheet
-        apply_stylesheet(app, theme=f"{config.app.theme}.xml")
-    except Exception as exc:
-        logger.warning("Could not apply qt-material theme: %s", exc)
+    apply_app_theme(app, config.app.theme)
 
     sys.excepthook = _handle_exception
 
@@ -85,6 +92,6 @@ def create_application() -> QApplication:
 
     from xw_studio.ui.main_window import MainWindow
     window = MainWindow(container)
-    window.show()
+    window.showMaximized()
 
     return app

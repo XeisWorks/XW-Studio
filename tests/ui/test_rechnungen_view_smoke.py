@@ -1,0 +1,92 @@
+"""Smoke tests for the Rechnungen daily-business view."""
+from __future__ import annotations
+
+from xw_studio.bootstrap import register_default_services
+from xw_studio.core.config import AppConfig
+from xw_studio.core.container import Container
+from xw_studio.core.signals import AppSignals
+from xw_studio.services.inventory.service import StartMode, StartPreflight
+from xw_studio.ui.modules.rechnungen.tagesgeschaeft_view import TagesgeschaeftView, _StartDialog
+from xw_studio.ui.modules.rechnungen.view import RechnungenView
+
+
+def _build_container() -> Container:
+    cfg = AppConfig()
+    container = Container(cfg)
+    container.register(AppSignals, lambda _: AppSignals())
+    register_default_services(container)
+    return container
+
+
+def test_tagesgeschaeft_contains_rechnungen_view(qtbot: object) -> None:
+    container = _build_container()
+    view = TagesgeschaeftView(container)
+    qtbot.addWidget(view)
+    assert hasattr(view, "_rechnungen_view")  # noqa: SLF001
+    assert view._btn_start.text() == "▶  START"  # noqa: SLF001
+    assert view._btn_start.menu() is not None  # noqa: SLF001
+    assert view._btn_stop.text() == "STOP"  # noqa: SLF001
+    assert not view._btn_stop.isEnabled()  # noqa: SLF001
+
+
+def test_start_dialog_forces_invoice_mode_when_print_plan_missing(qtbot: object) -> None:
+    preflight = StartPreflight(open_invoice_count=2, decisions=[], missing_position_data=True)
+    dialog = _StartDialog(preflight, initial_mode=StartMode.INVOICES_AND_PRINT)
+    qtbot.addWidget(dialog)
+
+    assert dialog.full_mode is False
+    assert dialog.selected_mode == StartMode.INVOICES_ONLY
+    assert not dialog._mode_full.isEnabled()  # noqa: SLF001
+
+
+def test_rechnungen_toolbar_controls_exist(qtbot: object) -> None:
+    container = _build_container()
+    view = RechnungenView(container)
+    qtbot.addWidget(view)
+
+    assert view._btn_more.text() == "Weitere laden"  # noqa: SLF001
+    assert view._btn_draft.text() == "Rechnungs-Entwurf"  # noqa: SLF001
+    assert view._btn_custom_label.text() == "CUSTOM-LABEL"  # noqa: SLF001
+    assert view._btn_print.text() == "Rechnung drucken"  # noqa: SLF001
+    assert view._btn_print_label.toolTip() == "Label drucken"  # noqa: SLF001
+    assert view._btn_print_plc.text() == "PLC-Label drucken"  # noqa: SLF001
+    assert view._btn_print_music.text() == "Noten drucken"  # noqa: SLF001
+    assert view._btn_send_invoice.text() == "Rechnung senden"  # noqa: SLF001
+    assert view._shipping_editor is not None  # noqa: SLF001
+    assert view._gb_actions.isHidden()  # noqa: SLF001
+    assert not view._btn_print.isEnabled()  # noqa: SLF001
+    assert not view._btn_print_label.isEnabled()  # noqa: SLF001
+    assert not view._btn_print_plc.isEnabled()  # noqa: SLF001
+    assert not view._btn_print_music.isEnabled()  # noqa: SLF001
+    assert not view._btn_send_invoice.isEnabled()  # noqa: SLF001
+
+
+def test_rechnungen_mollie_alert_button_visibility(qtbot: object) -> None:
+    container = _build_container()
+    view = RechnungenView(container)
+    qtbot.addWidget(view)
+
+    view.update_mollie_alert_count(0)  # noqa: SLF001
+    assert view._mollie_alert_count == 0  # noqa: SLF001
+
+    view.update_mollie_alert_count(3)  # noqa: SLF001
+    assert view._mollie_alert_count == 3  # noqa: SLF001
+
+
+def test_custom_label_dialog_opens_even_when_print_status_is_unknown(qtbot: object, monkeypatch) -> None:
+    container = _build_container()
+    view = RechnungenView(container)
+    qtbot.addWidget(view)
+
+    called = {"count": 0}
+
+    def fake_exec(self) -> int:
+        called["count"] += 1
+        return 0
+
+    monkeypatch.setattr("xw_studio.ui.modules.rechnungen.view._CustomLabelDialog.exec", fake_exec)
+
+    view._print_allowed = False  # noqa: SLF001
+    view._on_custom_label_clicked()  # noqa: SLF001
+
+    assert called["count"] == 1

@@ -10,6 +10,10 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from xw_studio.services.finanzonline.uva_selection import (
+    UvaDocumentSelector,
+    UvaSelectionStats,
+)
 from xw_studio.services.http_client import SevdeskConnection
 
 logger = logging.getLogger(__name__)
@@ -67,6 +71,9 @@ class UvaPreviewResult(BaseModel):
     month: int
     sales: UvaPreviewSection
     input_tax: UvaPreviewSection
+    sales_stats: UvaSelectionStats = Field(default_factory=UvaSelectionStats)
+    input_tax_stats: UvaSelectionStats = Field(default_factory=UvaSelectionStats)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class UvaPreviewProvider(Protocol):
@@ -150,17 +157,27 @@ class SevdeskUvaPreviewProvider:
 class UvaPreviewService:
     """Build a legacy-like grouped VAT preview for the selected month."""
 
-    def __init__(self, provider: UvaPreviewProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: UvaPreviewProvider | None = None,
+        selector: UvaDocumentSelector | None = None,
+    ) -> None:
         self._provider = provider
+        self._selector = selector or UvaDocumentSelector()
 
     def build_preview(self, year: int, month: int) -> UvaPreviewResult:
         sales_docs = self._provider.load_sales_documents(year, month) if self._provider is not None else []
         purchase_docs = self._provider.load_purchase_documents(year, month) if self._provider is not None else []
+        sales_selection = self._selector.select_sales_documents(year, month, sales_docs)
+        purchase_selection = self._selector.select_purchase_documents(year, month, purchase_docs)
         return UvaPreviewResult(
             year=year,
             month=month,
-            sales=self._build_section(sales_docs),
-            input_tax=self._build_section(purchase_docs),
+            sales=self._build_section(sales_selection.documents),
+            input_tax=self._build_section(purchase_selection.documents),
+            sales_stats=sales_selection.stats,
+            input_tax_stats=purchase_selection.stats,
+            warnings=[*sales_selection.warnings, *purchase_selection.warnings],
         )
 
     def render_preview_text(self, preview: UvaPreviewResult) -> str:
@@ -174,7 +191,11 @@ class UvaPreviewService:
             tax_label="Vorsteuer",
             section=preview.input_tax,
         )
-        return "\n".join(sales_lines + ["", ""] + input_lines).strip()
+        lines = sales_lines + ["", ""] + input_lines
+        if preview.warnings:
+            lines.extend(["", "", "Hinweise:"])
+            lines.extend(f"- {warning}" for warning in preview.warnings)
+        return "\n".join(lines).strip()
 
     def _build_section(self, documents: list[dict[str, Any]]) -> UvaPreviewSection:
         groups: OrderedDict[str, dict[str, Decimal]] = OrderedDict()

@@ -4,6 +4,11 @@ from xw_studio.services.finanzonline.client import FinanzOnlineClient
 from xw_studio.services.finanzonline.settings import FinanzOnlineSettings
 from xw_studio.services.finanzonline.uva_models import UvaKennzahlen, UvaPayloadResult
 from xw_studio.services.finanzonline.uva_payload_service import UvaPayloadService
+from xw_studio.services.finanzonline.uva_selection import (
+    UvaDocumentSelector,
+    UvaSelectionResult,
+    UvaSelectionStats,
+)
 from xw_studio.services.finanzonline.uva_preview import (
     SevdeskUvaPreviewProvider,
     UvaPreviewGroup,
@@ -24,9 +29,12 @@ __all__ = [
     "FinanzOnlineSettings",
     "MockUvaSoapBackend",
     "SevdeskUvaPreviewProvider",
+    "UvaDocumentSelector",
     "UvaKennzahlen",
     "UvaPayloadResult",
     "UvaPayloadService",
+    "UvaSelectionResult",
+    "UvaSelectionStats",
     "UvaPreviewGroup",
     "UvaPreviewResult",
     "UvaPreviewSection",

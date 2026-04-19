@@ -42,7 +42,7 @@ class UvaPayloadService:
     def build_payload(self, year: int, month: int) -> UvaPayloadResult:
         preview = self._preview_service.build_preview(year, month)
         values: dict[str, Decimal] = {key: Decimal("0.00") for key in UvaKennzahlen.model_fields}
-        warnings: list[str] = []
+        warnings: list[str] = list(preview.warnings)
 
         for group in preview.sales.groups:
             self._apply_sales_group(group, values, warnings)

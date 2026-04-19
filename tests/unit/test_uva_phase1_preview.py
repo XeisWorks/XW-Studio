@@ -81,3 +81,92 @@ def test_phase2_kennzahlen_text_mentions_zahllast() -> None:
     assert "A022" in text
     assert "C060" in text
     assert "Zahllast" in text
+
+
+class _CashBasisSelectionProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 1,
+                "invoiceNumber": "RE-1",
+                "status": "1000",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "paidDate": "2026-03-05",
+            },
+            {
+                "id": 2,
+                "invoiceNumber": "RE-2",
+                "status": "1000",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "invoiceDate": "2026-03-06",
+                "paidDate": "2026-04-02",
+            },
+            {
+                "id": 3,
+                "invoiceNumber": "RE-3",
+                "status": "300",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "paidDate": "2026-03-15",
+                "paidAmount": "60.00",
+            },
+            {
+                "id": 4,
+                "invoiceNumber": "RE-4",
+                "status": "cancelled",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "invoiceDate": "2026-03-18",
+                "cancelled": True,
+            },
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 10,
+                "voucherNumber": "ER-100",
+                "supplierNameAtSave": "Supplier GmbH",
+                "status": "paid",
+                "creditDebit": "C",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "payDate": "2026-03-07",
+            },
+            {
+                "id": 11,
+                "voucherNumber": "ER-100",
+                "supplierNameAtSave": "Supplier GmbH",
+                "status": "paid",
+                "creditDebit": "C",
+                "taxText": "MIT 20% MEHRWERTSTEUER",
+                "sumGross": "120.00",
+                "sumNet": "100.00",
+                "sumTax": "20.00",
+                "payDate": "2026-03-08",
+            },
+        ]
+
+
+def test_phase2_uses_cash_basis_partial_payments_and_dedupes_duplicates() -> None:
+    payload_service = UvaPayloadService(UvaPreviewService(_CashBasisSelectionProvider()))
+    payload = payload_service.build_payload(2026, 3)
+
+    assert payload.kennzahlen.A022 == "150.00"
+    assert payload.kennzahlen.C060 == "20.00"
+    assert any("storniert" in warning.lower() for warning in payload.warnings)
+    assert any("duplik" in warning.lower() for warning in payload.warnings)

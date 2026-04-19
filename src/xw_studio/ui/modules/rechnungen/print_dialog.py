@@ -10,10 +10,11 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from xw_studio.core.printer_detect import discover_printers, evaluate_printer_status
 from xw_studio.core.types import PrinterStatus
+from xw_studio.services.products.print_decision import PieceBlock
+from xw_studio.services.printing.planned_pdf_printer import print_pdf_by_plan
 from xw_studio.services.printing.pdf_renderer import (
     INVOICE_DPI,
     MUSIC_DPI,
-    page_indices_from_qprinter,
     print_pdf,
 )
 
@@ -117,6 +118,23 @@ def run_label_pdf_print(parent: QWidget, container: Container) -> None:
     )
 
 
+def run_plc_label_pdf_print(
+    parent: QWidget,
+    container: Container,
+    *,
+    invoice_number: str,
+) -> None:
+    """Pick and print PLC label PDF for a specific invoice row."""
+    dpi = int(container.config.printing.invoice_dpi or INVOICE_DPI)
+    title = f"PLC-Label PDF auswählen ({invoice_number})" if invoice_number else "PLC-Label PDF auswählen"
+    _print_with_dialog(
+        parent,
+        container,
+        title=title,
+        dpi=dpi,
+    )
+
+
 def run_music_pdf_print(parent: QWidget, container: Container) -> None:
     """Pick a PDF, show print dialog, print at music DPI for score quality."""
     dpi = int(container.config.printing.music_dpi or MUSIC_DPI)
@@ -126,3 +144,60 @@ def run_music_pdf_print(parent: QWidget, container: Container) -> None:
         title="PDF auswählen (Noten)",
         dpi=dpi,
     )
+
+
+def run_piece_pdf_print(parent: QWidget, container: Container, *, piece: PieceBlock) -> bool:
+    """Print one product PDF from the product pipeline path.
+
+    Returns ``True`` when printing was started successfully.
+    """
+    if not _check_printer_runtime(parent, container):
+        return False
+
+    path_obj = piece.print_file_path
+    if path_obj is None:
+        QMessageBox.warning(
+            parent,
+            "Produktdruck",
+            f"Kein PDF-Pfad für SKU {piece.sku} konfiguriert.",
+        )
+        return False
+    path = str(path_obj)
+    doc = None
+    try:
+        doc = fitz.open(path)
+        page_count = len(doc)
+    finally:
+        try:
+            if doc is not None:
+                doc.close()
+        except Exception:
+            pass
+
+    if not piece.has_direct_print_config:
+        QMessageBox.warning(
+            parent,
+            "Produktdruck",
+            f"Fuer SKU {piece.sku} fehlt im neuen Repo ein vollstaendiger Druckpfad.\n\n"
+            "Bitte im Produkte-Modul PDF-Pfad und Druckplan/Profil pflegen.",
+        )
+        return False
+
+    try:
+        print_pdf_by_plan(
+            path,
+            container.config.printing,
+            print_plan=piece.print_plan,
+            profile_id=piece.print_profile_id,
+            copies=max(1, int(piece.print_qty or piece.qty_needed or 1)),
+            page_count=page_count,
+        )
+        return True
+    except Exception as exc:
+        logger.exception("Direct product print failed: %s", exc)
+        QMessageBox.critical(
+            parent,
+            "Produktdruck fehlgeschlagen",
+            f"Die Produkt-PDF konnte nicht ueber den hinterlegten Druckplan gedruckt werden:\n\n{exc}",
+        )
+        return False

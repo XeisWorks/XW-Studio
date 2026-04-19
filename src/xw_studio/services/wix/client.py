@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -14,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = 15.0
 _PRODUCTS_PAGE_SIZE = 100
+
+_ORDERS_BASE = "https://www.wixapis.com/ecom/v1"
+_UNRELEASED_PREFIXES = ("XW-600", "XW-010")
 
 
 class WixProduct(BaseModel):
@@ -162,3 +167,874 @@ class WixProductsClient:
 
         logger.info("WixProductsClient: fetched %s products", len(results))
         return results
+
+
+class WixOrderItem(BaseModel):
+    """Single line item from a Wix order — used in the Stücke panel."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    line_item_id: str = ""
+    sku: str = ""
+    name: str = ""
+    qty: int = 1
+    note: str = ""
+    is_unreleased: bool = False
+
+
+def _parse_order_line_item(raw: dict[str, Any]) -> WixOrderItem:
+    """Extract a normalized WixOrderItem from a Wix ecom lineItem dict."""
+    line_item_id = str(raw.get("id") or "").strip()
+    # SKU is nested: physicalProperties.sku or catalogReference.catalogItemOptions.sku
+    sku = ""
+    phys = raw.get("physicalProperties")
+    if isinstance(phys, dict):
+        sku = str(phys.get("sku") or "").strip()
+    if not sku:
+        cat = raw.get("catalogReference") or {}
+        if isinstance(cat, dict):
+            opts = cat.get("catalogItemOptions") or {}
+            if isinstance(opts, dict):
+                sku = str(opts.get("sku") or "").strip()
+
+    # Product name
+    product_name = raw.get("productName") or {}
+    if isinstance(product_name, dict):
+        name = str(product_name.get("translated") or product_name.get("original") or "").strip()
+    else:
+        name = str(product_name or raw.get("name") or raw.get("title") or "").strip()
+    if not name and sku:
+        name = sku
+
+    # Quantity
+    try:
+        qty = int(raw.get("quantity") or 1)
+    except (TypeError, ValueError):
+        qty = 1
+    qty = max(qty, 1)
+
+    # Note from line item description or options
+    note = ""
+    desc = raw.get("descriptionLines") or []
+    if isinstance(desc, list):
+        parts: list[str] = []
+        for entry in desc:
+            if not isinstance(entry, dict):
+                continue
+            label = str((entry.get("name") or {}).get("translated") or
+                        (entry.get("name") or {}).get("original") or "").strip()
+            value_obj = entry.get("plainText") or entry.get("colorInfo") or {}
+            value = str((value_obj.get("translated") or value_obj.get("original") or "")
+                        if isinstance(value_obj, dict) else value_obj).strip()
+            if label and value:
+                parts.append(f"{label}: {value}")
+            elif value:
+                parts.append(value)
+        note = " | ".join(parts)
+
+    is_unreleased = any(sku.upper().startswith(p) for p in _UNRELEASED_PREFIXES)
+
+    return WixOrderItem(
+        line_item_id=line_item_id,
+        sku=sku,
+        name=name,
+        qty=qty,
+        note=note,
+        is_unreleased=is_unreleased,
+    )
+
+
+class WixOrdersClient:
+    """Fetch Wix ecom orders and their line items.
+
+    Credentials from :class:`SecretService` (same keys as WixProductsClient).
+    """
+
+    def __init__(
+        self,
+        *,
+        secret_service: "SecretService | None" = None,
+        orders_base: str = _ORDERS_BASE,
+    ) -> None:
+        self._secrets = secret_service
+        self._orders_base = orders_base.rstrip("/")
+
+    def _api_key(self) -> str:
+        return self._secrets.get_secret("WIX_API_KEY") if self._secrets else ""
+
+    def _site_id(self) -> str:
+        return self._secrets.get_secret("WIX_SITE_ID") if self._secrets else ""
+
+    def _account_id(self) -> str:
+        return self._secrets.get_secret("WIX_ACCOUNT_ID") if self._secrets else ""
+
+    def has_credentials(self) -> bool:
+        return bool(self._api_key() and self._site_id())
+
+    def _headers(self) -> dict[str, str]:
+        h: dict[str, str] = {
+            "Authorization": self._api_key(),
+            "wix-site-id": self._site_id(),
+            "Content-Type": "application/json",
+        }
+        acc = self._account_id()
+        if acc:
+            h["wix-account-id"] = acc
+        return h
+
+    @staticmethod
+    def _extract_text(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in (
+                "name",
+                "displayName",
+                "value",
+                "label",
+                "shortName",
+                "country",
+                "code",
+                "translated",
+                "original",
+            ):
+                candidate = value.get(key)
+                if candidate is not None:
+                    text = str(candidate).strip()
+                    if text:
+                        return text
+            return ""
+        return str(value).strip()
+
+    @classmethod
+    def _nested_dict(cls, source: object, *path: str) -> dict[str, Any]:
+        current = source
+        for key in path:
+            if not isinstance(current, dict):
+                return {}
+            current = current.get(key)
+        return current if isinstance(current, dict) else {}
+
+    @classmethod
+    def _first_address_node(cls, order: dict[str, Any]) -> dict[str, Any]:
+        paths = (
+            ("shippingInfo", "shippingAddress"),
+            ("shippingInfo", "address"),
+            ("shippingInfo", "shippingDestination", "address"),
+            ("shippingInfo", "deliveryAddress"),
+            ("shippingInfo", "logistics", "shippingDestination", "address"),
+        )
+        for path in paths:
+            node = cls._nested_dict(order, *path)
+            if node:
+                return node
+        return {}
+
+    @classmethod
+    def _resolve_country_name(cls, value: object) -> str:
+        text = cls._extract_text(value)
+        if not text:
+            return ""
+        mapping = {
+            "AT": "Austria",
+            "AUT": "Austria",
+            "DE": "Germany",
+            "DEU": "Germany",
+            "CH": "Switzerland",
+            "CHE": "Switzerland",
+            "IT": "Italy",
+            "ITA": "Italy",
+            "FR": "France",
+            "FRA": "France",
+            "BE": "Belgium",
+            "BEL": "Belgium",
+            "NL": "Netherlands",
+            "NLD": "Netherlands",
+            "LU": "Luxembourg",
+            "LUX": "Luxembourg",
+            "DK": "Denmark",
+            "DNK": "Denmark",
+            "SE": "Sweden",
+            "SWE": "Sweden",
+            "FI": "Finland",
+            "FIN": "Finland",
+            "EE": "Estonia",
+            "EST": "Estonia",
+            "LV": "Latvia",
+            "LVA": "Latvia",
+            "LT": "Lithuania",
+            "LTU": "Lithuania",
+            "CZ": "Czech Republic",
+            "CZE": "Czech Republic",
+            "SK": "Slovakia",
+            "SVK": "Slovakia",
+            "SI": "Slovenia",
+            "SVN": "Slovenia",
+            "HR": "Croatia",
+            "HRV": "Croatia",
+        }
+        return mapping.get(text.upper(), text)
+
+    @classmethod
+    def _street_line_from_value(cls, value: object) -> str:
+        if isinstance(value, dict):
+            name = cls._extract_text(value.get("name"))
+            number = cls._extract_text(value.get("number"))
+            apt = cls._extract_text(value.get("apt"))
+            parts = [part for part in (name, number) if part]
+            line = " ".join(parts).strip()
+            if apt:
+                line = " ".join(part for part in (line, apt) if part).strip()
+            return line
+        return cls._extract_text(value)
+
+    @staticmethod
+    def _looks_like_numeric_address_addition(value: str) -> bool:
+        text = str(value or "").strip()
+        return bool(re.match(r"^\d[\w\s./-]*$", text))
+
+    @staticmethod
+    def _contains_house_number(value: str) -> bool:
+        return bool(re.search(r"\d", str(value or "")))
+
+    @classmethod
+    def _merge_street_with_addition(cls, street1: str, street2: str) -> tuple[str, str]:
+        primary = str(street1 or "").strip().rstrip(",")
+        addition = str(street2 or "").strip().rstrip(",")
+        if primary and addition and not cls._contains_house_number(primary) and cls._looks_like_numeric_address_addition(addition):
+            return " ".join(part for part in (primary, addition) if part).strip(), ""
+        return primary, addition
+
+    @classmethod
+    def _address_field(cls, *sources: object, keys: tuple[str, ...]) -> str:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                raw_value = source.get(key)
+                if key in {"addressLine1", "addressLine", "streetAddress", "street", "address"}:
+                    text = cls._street_line_from_value(raw_value)
+                else:
+                    text = cls._extract_text(raw_value)
+                if text:
+                    return text
+        return ""
+
+    @classmethod
+    def _shipping_address_parts_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(order, dict):
+            return {}
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        shipping = order.get("shippingInfo") if isinstance(order.get("shippingInfo"), dict) else {}
+        shipment_details = shipping.get("shipmentDetails") if isinstance(shipping.get("shipmentDetails"), dict) else {}
+        destination = shipping.get("shippingDestination") if isinstance(shipping.get("shippingDestination"), dict) else {}
+        destination_address = destination.get("address") if isinstance(destination.get("address"), dict) else {}
+        destination_contact = destination.get("contactDetails") if isinstance(destination.get("contactDetails"), dict) else {}
+        logistics_destination = cls._nested_dict(order, "shippingInfo", "logistics", "shippingDestination")
+        logistics_address = logistics_destination.get("address") if isinstance(logistics_destination.get("address"), dict) else {}
+        logistics_contact = logistics_destination.get("contactDetails") if isinstance(logistics_destination.get("contactDetails"), dict) else {}
+        address_node = cls._first_address_node(order)
+
+        first = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            buyer,
+            shipping,
+            keys=("firstName", "givenName", "firstname", "givenname", "surename", "name"),
+        )
+        last = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            buyer,
+            shipping,
+            keys=("lastName", "familyName", "familyname", "surname", "lastname"),
+        )
+        company = cls._address_field(
+            shipment_details,
+            destination_contact,
+            logistics_contact,
+            shipping,
+            keys=("company", "companyName", "businessName", "addressName"),
+        )
+        name = company or " ".join(part for part in (first, last) if part).strip()
+        if not name:
+            name = cls._norm_text(buyer.get("firstName"))
+            fallback_last = cls._norm_text(buyer.get("lastName"))
+            if fallback_last and fallback_last not in name:
+                name = " ".join(part for part in (name, fallback_last) if part).strip()
+
+        street1 = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("addressLine1", "addressLine", "streetAddress", "street", "address"),
+        )
+        house = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("houseNumber", "streetNumber", "addressNumber"),
+        )
+        if house and house not in street1:
+            street1 = " ".join(part for part in (street1, house) if part).strip()
+        street2 = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("addressLine2", "addressAddition", "addressDetail"),
+        )
+        street1, street2 = cls._merge_street_with_addition(street1, street2)
+        postal_code = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("postalCode", "zipCode", "zip"),
+        )
+        city = cls._address_field(
+            destination_address,
+            logistics_address,
+            address_node,
+            destination,
+            logistics_destination,
+            shipping,
+            keys=("city", "town", "region", "locality"),
+        )
+        country = cls._resolve_country_name(
+            cls._address_field(
+                destination_address,
+                logistics_address,
+                address_node,
+                destination,
+                logistics_destination,
+                shipping,
+                keys=("countryFullname", "country", "countryName", "countryCode", "isoCountry", "addressCountry"),
+            )
+        )
+        return {
+            "name": name,
+            "street1": street1,
+            "street2": street2,
+            "postal_code": postal_code,
+            "city": city,
+            "country": country,
+        }
+
+    @classmethod
+    def _billing_address_parts_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        if not isinstance(order, dict):
+            return {}
+        billing = order.get("billingInfo") if isinstance(order.get("billingInfo"), dict) else {}
+        details = billing.get("contactDetails") if isinstance(billing.get("contactDetails"), dict) else {}
+        address = billing.get("address") if isinstance(billing.get("address"), dict) else {}
+        first = cls._address_field(details, keys=("firstName", "givenName", "surename"))
+        last = cls._address_field(details, keys=("lastName", "familyName", "familyname"))
+        company = cls._address_field(details, billing, keys=("company", "companyName", "businessName"))
+        name = company or " ".join(part for part in (first, last) if part).strip()
+        street1 = cls._address_field(address, keys=("addressLine1", "addressLine", "streetAddress", "street", "address"))
+        street2 = cls._address_field(address, keys=("addressLine2", "addressAddition", "addressDetail"))
+        street1, street2 = cls._merge_street_with_addition(street1, street2)
+        postal_code = cls._address_field(address, keys=("postalCode", "zipCode", "zip"))
+        city = cls._address_field(address, keys=("city", "town", "region", "locality"))
+        country = cls._resolve_country_name(
+            cls._address_field(address, keys=("countryFullname", "country", "countryName", "countryCode", "isoCountry", "addressCountry"))
+        )
+        return {
+            "name": name,
+            "street1": street1,
+            "street2": street2,
+            "postal_code": postal_code,
+            "city": city,
+            "country": country,
+        }
+
+    def _get_order_by_id(self, order_id: str) -> dict[str, Any]:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.get(
+                    f"{self._orders_base}/orders/{order_id}",
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                return payload.get("order") or payload or {}
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient GET order/%s failed: %s", order_id, exc)
+                return {}
+
+    def _search_order_by_field(self, field: str, value: str) -> dict[str, Any]:
+        body = {
+            "search": {
+                "filter": {str(field): {"$eq": str(value)}},
+                "cursorPaging": {"limit": 25},
+            }
+        }
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/orders/search",
+                    headers=self._headers(),
+                    json=body,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                orders = payload.get("orders") or []
+                return self._pick_exact_order_match(str(value), orders)
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient search %s=%s failed: %s", field, value, exc)
+                return {}
+
+    @staticmethod
+    def _normalize_order_number(value: str) -> str:
+        text = str(value or "").strip()
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return digits if digits else text.casefold()
+
+    @classmethod
+    def _pick_exact_order_match(cls, requested_number: str, orders: list[Any]) -> dict[str, Any]:
+        if not isinstance(orders, list):
+            return {}
+        requested_norm = cls._normalize_order_number(requested_number)
+        if not requested_norm:
+            return {}
+        for raw in orders:
+            if not isinstance(raw, dict):
+                continue
+            candidate_norm = cls._normalize_order_number(str(raw.get("number") or ""))
+            if candidate_norm and candidate_norm == requested_norm:
+                return raw
+        return {}
+
+    def _resolve_order(self, reference: str) -> dict[str, Any]:
+        ref = str(reference or "").strip()
+        if not ref or not self.has_credentials():
+            return {}
+        if self._looks_like_uuid(ref):
+            order_by_id = self._get_order_by_id(ref)
+            if order_by_id:
+                return order_by_id
+        order = self._search_order_by_field("number", ref)
+        if not order:
+            order = self._search_order_by_field("orderNumber", ref)
+        if not order and not ref.startswith("00"):
+            digits = "".join(c for c in ref if c.isdigit())
+            if digits and digits != ref:
+                order = self._search_order_by_field("number", digits)
+                if not order:
+                    order = self._search_order_by_field("orderNumber", digits)
+        return order
+
+    @staticmethod
+    def line_item_is_digital(raw: dict[str, Any]) -> bool:
+        product_type = str(raw.get("productType") or "").strip().lower()
+        if product_type == "digital":
+            return True
+        item_type = raw.get("itemType") if isinstance(raw.get("itemType"), dict) else {}
+        preset = str(item_type.get("preset") or "").strip().lower()
+        if preset == "digital":
+            return True
+        physical_props = raw.get("physicalProperties") if isinstance(raw.get("physicalProperties"), dict) else {}
+        shippable_raw = physical_props.get("shippable")
+        shippable = str(shippable_raw).strip().lower() if shippable_raw is not None else ""
+        if shippable in ("false", "0", "no"):
+            return True
+        if raw.get("digitalFile"):
+            return True
+        return False
+
+    def is_reference_digital_only(self, reference: str) -> bool:
+        order = self._resolve_order(reference)
+        if not order:
+            return False
+        raw_items = order.get("lineItems") if isinstance(order.get("lineItems"), list) else []
+        if not raw_items:
+            return False
+        return all(self.line_item_is_digital(item) for item in raw_items if isinstance(item, dict))
+
+    def fulfillment_status(self, reference: str) -> str:
+        order = self._resolve_order(reference)
+        return str(order.get("fulfillmentStatus") or "").strip().upper() if isinstance(order, dict) else ""
+
+    def _resolve_order_id(self, reference: str) -> str:
+        order = self._resolve_order(reference)
+        return str(order.get("id") or "").strip()
+
+    def resolve_order(self, reference: str) -> dict[str, Any]:
+        """Resolve an order by order number/reference or UUID."""
+        return self._resolve_order(reference)
+
+    @staticmethod
+    def _norm_text(value: object) -> str:
+        return str(value or "").strip()
+
+    @classmethod
+    def shipping_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        parts = cls._shipping_address_parts_from_order(order)
+        if not parts:
+            return []
+        name = parts.get("name", "")
+        street1 = parts.get("street1", "")
+        street2 = parts.get("street2", "")
+        postal_code = parts.get("postal_code", "")
+        city = parts.get("city", "")
+        country = parts.get("country", "")
+        city_line = " ".join(part for part in (postal_code, city) if part)
+
+        return [line for line in (name, street1, street2, city_line, country) if line]
+
+    @classmethod
+    def billing_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        parts = cls._billing_address_parts_from_order(order)
+        if not parts:
+            return []
+        name = parts.get("name", "")
+        street = parts.get("street1", "")
+        street2 = parts.get("street2", "")
+        postal_code = parts.get("postal_code", "")
+        city = parts.get("city", "")
+        country = parts.get("country", "")
+        city_line = " ".join(part for part in (postal_code, city) if part)
+
+        return [line for line in (name, street, street2, city_line, country) if line]
+
+    @classmethod
+    def best_address_lines_from_order(cls, order: dict[str, Any]) -> list[str]:
+        shipping_lines = cls.shipping_address_lines_from_order(order)
+        if shipping_lines:
+            return shipping_lines
+        return cls.billing_address_lines_from_order(order)
+
+    def resolve_order_address_lines(self, reference: str) -> list[str]:
+        order = self._resolve_order(reference)
+        if not order:
+            return []
+        return self.best_address_lines_from_order(order)
+
+    @classmethod
+    def _summary_from_order(cls, order: dict[str, Any]) -> dict[str, str]:
+        buyer = order.get("buyerInfo") if isinstance(order.get("buyerInfo"), dict) else {}
+        first = cls._norm_text(buyer.get("firstName"))
+        last = cls._norm_text(buyer.get("lastName"))
+        full_name = " ".join(part for part in (first, last) if part).strip()
+        email = cls._norm_text(buyer.get("email"))
+
+        shipping_lines = cls.best_address_lines_from_order(order)
+        shipping_parts = cls._shipping_address_parts_from_order(order)
+        billing_lines = cls.billing_address_lines_from_order(order)
+        billing_parts = cls._billing_address_parts_from_order(order)
+        if not full_name:
+            full_name = shipping_parts.get("name", "")
+
+        return {
+            "wix_order_id": cls._norm_text(order.get("id")),
+            "wix_order_number": cls._norm_text(order.get("number")),
+            "wix_customer_name": full_name,
+            "wix_customer_email": email,
+            "wix_shipping_street": shipping_parts.get("street1", ""),
+            "wix_shipping_street2": shipping_parts.get("street2", ""),
+            "wix_shipping_zip": shipping_parts.get("postal_code", ""),
+            "wix_shipping_city": shipping_parts.get("city", ""),
+            "wix_shipping_country": shipping_parts.get("country", ""),
+            "wix_shipping_address": "\n".join(shipping_lines),
+            "wix_billing_street": billing_parts.get("street1", ""),
+            "wix_billing_street2": billing_parts.get("street2", ""),
+            "wix_billing_zip": billing_parts.get("postal_code", ""),
+            "wix_billing_city": billing_parts.get("city", ""),
+            "wix_billing_country": billing_parts.get("country", ""),
+            "wix_billing_address": "\n".join(billing_lines),
+        }
+
+    def resolve_order_summary(self, reference: str) -> dict[str, str]:
+        """Return normalized customer/order fields used by the details panel."""
+        started = time.perf_counter()
+        order = self._resolve_order(reference)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "Wix metric summary_ms=%s ref=%s found=%s",
+            elapsed_ms,
+            str(reference or "").strip(),
+            bool(order),
+        )
+        if not order:
+            return {}
+        return self._summary_from_order(order)
+
+    def resolve_order_dashboard_url(self, reference: str) -> str:
+        """Return Wix dashboard URL for an order reference (number or UUID)."""
+        ref = str(reference or "").strip()
+        order: dict[str, Any] = {}
+        # Wix search can be briefly stale on first lookup; retry once/twice before failing.
+        for attempt in range(3):
+            order = self._resolve_order(ref)
+            if order:
+                break
+            if attempt < 2:
+                time.sleep(0.25)
+        order_id = str(order.get("id") or "").strip()
+        site_id = self._site_id().strip()
+        if not order_id or not site_id:
+            logger.info("Wix dashboard resolve failed ref=%s attempts=%s", ref, 3)
+            return ""
+        return f"https://manage.wix.com/dashboard/{site_id}/ecom-platform/order-details/{order_id}"
+
+    def list_fulfillments(self, reference: str) -> list[dict[str, Any]]:
+        order_id = self._resolve_order_id(reference)
+        if not order_id or not self.has_credentials():
+            return []
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.get(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}",
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    data = payload.get("fulfillments")
+                    if isinstance(data, list):
+                        return [item for item in data if isinstance(item, dict)]
+                if isinstance(payload, list):
+                    return [item for item in payload if isinstance(item, dict)]
+                return []
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient list fulfillments failed: %s", exc)
+                return []
+
+    def get_fulfillable_items(self, reference: str) -> list[dict[str, Any]]:
+        started = time.perf_counter()
+        order_id = self._resolve_order_id(reference)
+        if not order_id or not self.has_credentials():
+            return []
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.get(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}/fulfillable-items",
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    data = payload.get("fulfillableLineItems")
+                    if isinstance(data, list):
+                        elapsed_ms = int((time.perf_counter() - started) * 1000)
+                        logger.info(
+                            "Wix metric fulfillable_items_ms=%s ref=%s items=%s",
+                            elapsed_ms,
+                            str(reference or "").strip(),
+                            len(data),
+                        )
+                        return [item for item in data if isinstance(item, dict)]
+                if isinstance(payload, list):
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    logger.info(
+                        "Wix metric fulfillable_items_ms=%s ref=%s items=%s",
+                        elapsed_ms,
+                        str(reference or "").strip(),
+                        len(payload),
+                    )
+                    return [item for item in payload if isinstance(item, dict)]
+                return []
+            except httpx.HTTPError as exc:
+                response = getattr(exc, "response", None)
+                if getattr(response, "status_code", None) == 404:
+                    logger.info(
+                        "WixOrdersClient fulfillable items unavailable ref=%s status=404",
+                        str(reference or "").strip(),
+                    )
+                else:
+                    logger.warning("WixOrdersClient get fulfillable items failed: %s", exc)
+                return []
+
+    def create_fulfillment(
+        self,
+        reference: str,
+        line_items: list[dict[str, Any]],
+        *,
+        notify_customer: bool = False,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        order_id = self._resolve_order_id(reference)
+        items = [item for item in line_items if isinstance(item, dict)]
+        if not order_id or not items or not self.has_credentials():
+            return {}
+        payload = {
+            "fulfillment": {
+                "lineItems": items,
+                "status": "Fulfilled",
+            },
+            "notifyCustomer": bool(notify_customer),
+        }
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/fulfillments/orders/{order_id}/create-fulfillment",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                resp.raise_for_status()
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                logger.info(
+                    "Wix metric create_fulfillment_ms=%s ref=%s lines=%s",
+                    elapsed_ms,
+                    str(reference or "").strip(),
+                    len(items),
+                )
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient create fulfillment failed: %s", exc)
+                return {}
+
+    def get_order_refundability(self, order_id: str) -> dict[str, Any]:
+        real_id = str(order_id or "").strip()
+        if not real_id or not self.has_credentials():
+            return {}
+        body = {"orderId": real_id}
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/order-billing/get-order-refundability",
+                    headers=self._headers(),
+                    json=body,
+                )
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "WixOrdersClient refundability order_id=%s failed: %s",
+                    real_id,
+                    exc,
+                )
+                return {}
+
+    def refund_order_payments(
+        self,
+        order_id: str,
+        payment_refunds: list[dict[str, Any]],
+        *,
+        send_customer_email: bool = True,
+        customer_reason: str = "",
+    ) -> dict[str, Any]:
+        real_id = str(order_id or "").strip()
+        refunds = [entry for entry in payment_refunds if isinstance(entry, dict)]
+        if not real_id or not refunds or not self.has_credentials():
+            return {}
+
+        body: dict[str, Any] = {
+            "orderId": real_id,
+            "paymentRefunds": refunds,
+            "sideEffects": {
+                "notifications": {
+                    "sendCustomerEmail": bool(send_customer_email),
+                },
+            },
+        }
+        if customer_reason.strip():
+            body["customerReason"] = customer_reason.strip()
+
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            try:
+                resp = client.post(
+                    f"{self._orders_base}/order-billing/refund-payments",
+                    headers=self._headers(),
+                    json=body,
+                )
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except httpx.HTTPError as exc:
+                logger.warning("WixOrdersClient refund payments order_id=%s failed: %s", real_id, exc)
+                return {}
+
+    def refund_full_order(
+        self,
+        reference: str,
+        *,
+        send_customer_email: bool = True,
+        customer_reason: str = "",
+    ) -> dict[str, Any]:
+        """Refund all currently refundable payments for an order reference."""
+        order = self._resolve_order(reference)
+        order_id = str(order.get("id") or "").strip()
+        if not order_id:
+            return {}
+
+        refundability = self.get_order_refundability(order_id)
+        payments = refundability.get("payments")
+        if not isinstance(payments, list):
+            payments = []
+
+        payment_refunds: list[dict[str, Any]] = []
+        for entry in payments:
+            if not isinstance(entry, dict) or not entry.get("refundable"):
+                continue
+            payment = entry.get("payment")
+            if not isinstance(payment, dict):
+                continue
+            payment_id = str(payment.get("paymentId") or "").strip()
+            amount_obj = entry.get("availableRefundAmount")
+            if not isinstance(amount_obj, dict):
+                continue
+            amount = str(amount_obj.get("amount") or "").strip()
+            if not payment_id or not amount:
+                continue
+            payment_refunds.append(
+                {
+                    "paymentId": payment_id,
+                    "amount": {"amount": amount},
+                }
+            )
+
+        if not payment_refunds:
+            return {}
+
+        return self.refund_order_payments(
+            order_id,
+            payment_refunds,
+            send_customer_email=send_customer_email,
+            customer_reason=customer_reason,
+        )
+
+    @staticmethod
+    def _looks_like_uuid(value: str) -> bool:
+        parts = value.split("-")
+        return len(parts) == 5 and len(value) == 36
+
+    def fetch_order_line_items(self, reference: str) -> list[WixOrderItem]:
+        """Resolve a sevDesk order reference to Wix line items.
+
+        *reference* can be a Wix order number (digits) or order UUID.
+        Returns an empty list when credentials are missing or order not found.
+        """
+        started = time.perf_counter()
+        ref = str(reference or "").strip()
+        if not ref or not self.has_credentials():
+            return []
+
+        order = self._resolve_order(ref)
+
+        if not order:
+            logger.info("WixOrdersClient: no order found for reference=%r", ref)
+            return []
+
+        raw_items = order.get("lineItems") or []
+        items = [_parse_order_line_item(item) for item in raw_items if isinstance(item, dict)]
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "Wix metric line_items_ms=%s ref=%s items=%s",
+            elapsed_ms,
+            ref,
+            len(items),
+        )
+        return items

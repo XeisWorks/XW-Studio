@@ -1,5 +1,8 @@
 # XW-Studio Umbau Checkliste (Prioritaet + autonome Abarbeitung)
 
+Hinweis (2026-04-03): Diese Datei ist historisch.
+Verbindlicher Status und Phasenstand liegen in `docs/phase_master_daily_rechnungen.md`.
+
 Zielbild (erste Ausbaustufe):
 - App startet stabil auf jedem PC.
 - PostgreSQL und Alembic sind sauber eingebunden.

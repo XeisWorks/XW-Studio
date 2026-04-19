@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -28,6 +27,7 @@ from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.inventory import InventoryService, ProductRow
 from xw_studio.services.sevdesk.part_client import PartClient, SevdeskPart
 from xw_studio.services.wix.client import WixProduct, WixProductsClient
+from xw_studio.ui.widgets.search_bar import SearchBar
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -106,9 +106,10 @@ class ProductsView(QWidget):
         bar.addWidget(self._inv_refresh_btn)
         lay.addLayout(bar)
 
-        self._inv_search = QLineEdit()
+        self._inv_search = SearchBar("Produkte filtern (mind. 3 Zeichen)…")
         self._inv_search.setPlaceholderText("Produkte filtern (SKU, Name, Kategorie)...")
-        self._inv_search.textChanged.connect(self._apply_inv_filter)
+        self._inv_search.search_changed.connect(self._apply_inv_filter)
+        self._inv_search.set_suggestion_provider(self._inv_search_suggestions)
         lay.addWidget(self._inv_search)
 
         self._inv_table = QTableWidget(0, len(_INV_HEADERS))
@@ -148,6 +149,7 @@ class ProductsView(QWidget):
             self._inv_status_lbl.setText("Keine Produkte in DB — Einstellungen > inventory.products")
         else:
             self._inv_status_lbl.setText(f"{len(self._all_rows)} Produkte geladen")
+        self._inv_search.refresh_suggestions()
         self._populate_inv(self._all_rows)
 
     def _on_inv_error(self, exc: BaseException) -> None:
@@ -203,9 +205,10 @@ class ProductsView(QWidget):
         bar.addWidget(self._wix_load_btn)
         lay.addLayout(bar)
 
-        self._wix_search = QLineEdit()
+        self._wix_search = SearchBar("Wix-Produkte filtern (mind. 3 Zeichen)…")
         self._wix_search.setPlaceholderText("Filtern (SKU, Name)...")
-        self._wix_search.textChanged.connect(self._apply_wix_filter)
+        self._wix_search.search_changed.connect(self._apply_wix_filter)
+        self._wix_search.set_suggestion_provider(self._wix_search_suggestions)
         lay.addWidget(self._wix_search)
 
         self._wix_table = QTableWidget(0, len(_WIX_HEADERS))
@@ -250,6 +253,7 @@ class ProductsView(QWidget):
             return
         self._wix_rows = rows  # type: ignore[assignment]
         self._wix_status_lbl.setText(f"{len(self._wix_rows)} Wix-Produkte geladen")
+        self._wix_search.refresh_suggestions()
         self._populate_wix(self._wix_rows)
         self._compute_overlap()
 
@@ -296,6 +300,28 @@ class ProductsView(QWidget):
         ]
         self._populate_wix(filtered)
 
+    def _inv_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._all_rows:
+            hay = f"{row.sku} {row.name} {row.category}".lower()
+            if q in hay:
+                items.append(f"{row.sku} - {row.name}")
+        return items
+
+    def _wix_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._wix_rows:
+            hay = f"{row.sku} {row.name}".lower()
+            if q in hay:
+                items.append(f"{row.sku} - {row.name}")
+        return items
+
     def _compute_overlap(self) -> None:
         inv_skus = {p.sku for p in self._all_rows if p.sku}
         wix_skus = {p.sku for p in self._wix_rows if p.sku}
@@ -325,6 +351,9 @@ class ProductsView(QWidget):
         self._sync_load_btn = QPushButton("Alle Quellen laden")
         self._sync_load_btn.clicked.connect(self._load_sync_sources)
         bar.addWidget(self._sync_load_btn)
+        self._legacy_import_btn = QPushButton("Legacy-Druckdaten importieren")
+        self._legacy_import_btn.clicked.connect(self._import_legacy_print_data)
+        bar.addWidget(self._legacy_import_btn)
         self._sync_apply_btn = QPushButton("Wix -> Lokal uebernehmen")
         self._sync_apply_btn.clicked.connect(self._apply_wix_to_local)
         self._sync_apply_btn.setEnabled(False)
@@ -513,6 +542,10 @@ class ProductsView(QWidget):
                     price_eur=wix.price,
                     wix_id=wix.id,
                     sevdesk_id="",
+                    print_file_path="",
+                    print_profile_id="",
+                    print_plan=[],
+                    title_print_configs={},
                 )
                 changed += 1
                 continue
@@ -524,6 +557,10 @@ class ProductsView(QWidget):
                 price_eur=wix.price or current.price_eur,
                 wix_id=wix.id or current.wix_id,
                 sevdesk_id=current.sevdesk_id,
+                print_file_path=current.print_file_path,
+                print_profile_id=current.print_profile_id,
+                print_plan=list(current.print_plan or []),
+                title_print_configs=dict(current.title_print_configs or {}),
             )
             if updated != current:
                 merged[wix.sku] = updated
@@ -550,6 +587,12 @@ class ProductsView(QWidget):
         self._sync_apply_btn.setEnabled(True)
         count = int(changed) if isinstance(changed, int) else 0
         self._sync_status_lbl.setText(f"Wix->Lokal gespeichert: {count} Produkte aktualisiert")
+        try:
+            from xw_studio.services.products.catalog import ProductCatalogService
+
+            self._container.resolve(ProductCatalogService).reload_from_settings()
+        except Exception:
+            pass
         QMessageBox.information(self, "Produkte", f"{count} Produkte wurden lokal aktualisiert.")
         self._load_inventory()
 
@@ -557,6 +600,59 @@ class ProductsView(QWidget):
         self._sync_apply_btn.setEnabled(True)
         self._sync_status_lbl.setText(f"Fehler: {exc}")
         QMessageBox.warning(self, "Produkte", str(exc))
+
+    def _import_legacy_print_data(self) -> None:
+        inv: InventoryService = self._container.resolve(InventoryService)
+        self._legacy_import_btn.setEnabled(False)
+        self._sync_status_lbl.setText("Importiere Legacy-Druckdaten...")
+
+        def job():
+            return inv.import_legacy_print_data()
+
+        self._save_worker = BackgroundWorker(job)
+        self._save_worker.signals.result.connect(self._on_legacy_import_done)
+        self._save_worker.signals.error.connect(self._on_legacy_import_error)
+        self._save_worker.start()
+
+    def _on_legacy_import_done(self, payload: object) -> None:
+        self._legacy_import_btn.setEnabled(True)
+        report = payload
+        if report is None:
+            self._sync_status_lbl.setText("Legacy-Import abgeschlossen")
+            self._load_inventory()
+            return
+        source_path = str(getattr(report, "source_path", "") or "")
+        updated = int(getattr(report, "products_updated", 0) or 0)
+        title_count = int(getattr(report, "title_configs_imported", 0) or 0)
+        missing = list(getattr(report, "missing_files", []) or [])
+        unknown_profiles = list(getattr(report, "unknown_profiles", []) or [])
+        self._sync_status_lbl.setText(f"Legacy-Import: {updated} Produkte aktualisiert")
+        lines = [
+            f"Quelle: {source_path}",
+            f"Aktualisierte Produkte: {updated}",
+            f"Importierte Titel-Konfigurationen: {title_count}",
+        ]
+        if unknown_profiles:
+            lines.append("")
+            lines.append("Unbekannte Profil-IDs:")
+            lines.extend(f"- {value}" for value in unknown_profiles[:12])
+        if missing:
+            lines.append("")
+            lines.append("Fehlende PDF-Dateien:")
+            lines.extend(f"- {value}" for value in missing[:12])
+        try:
+            from xw_studio.services.products.catalog import ProductCatalogService
+
+            self._container.resolve(ProductCatalogService).reload_from_settings()
+        except Exception:
+            pass
+        QMessageBox.information(self, "Legacy-Druckdaten", "\n".join(lines))
+        self._load_inventory()
+
+    def _on_legacy_import_error(self, exc: BaseException) -> None:
+        self._legacy_import_btn.setEnabled(True)
+        self._sync_status_lbl.setText(f"Fehler: {exc}")
+        QMessageBox.warning(self, "Legacy-Druckdaten", str(exc))
 
     def _load_print_plans(self) -> None:
         inv: InventoryService = self._container.resolve(InventoryService)

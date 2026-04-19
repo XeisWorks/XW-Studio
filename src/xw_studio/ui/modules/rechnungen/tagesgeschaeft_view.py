@@ -1,11 +1,15 @@
-"""Tagesgeschäft — tabbed Daily-Business hub (Rechnungen, Mollie, Gutscheine, …)."""
+"""Tagesgeschäft — Rechnungen hub with start/reprint actions."""
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QShowEvent
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QCloseEvent, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QApplication,
+    QToolButton,
+    QMenu,
     QDialog,
     QDialogButtonBox,
     QGroupBox,
@@ -23,13 +27,24 @@ from xw_studio.core.signals import AppSignals
 from xw_studio.core.types import ModuleKey
 from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.daily_business.service import DailyBusinessService
+from xw_studio.services.draft_invoice.service import (
+    DraftInvoiceService,
+    ProductIssueDecision,
+    ProductIssueTarget,
+    ProductPreflightApplyResult,
+    ProductPreflightPlan,
+)
 from xw_studio.services.inventory.service import (
     InventoryService,
+    ReprintExecutionReport,
+    ReprintPreflight,
     StartExecutionReport,
     StartMode,
     StartPreflight,
 )
 from xw_studio.services.invoice_processing.service import InvoiceProcessingService
+from xw_studio.ui.modules.rechnungen.product_preflight_dialog import ProductPreflightDialog
+from xw_studio.ui.modules.rechnungen.reprint_dialog import ReprintPreviewDialog
 from xw_studio.ui.modules.rechnungen.view import RechnungenView
 from xw_studio.ui.widgets.data_table import DataTable
 from xw_studio.ui.widgets.search_bar import SearchBar
@@ -39,7 +54,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_COLUMNS = ["Ref", "Kunde", "Betrag", "Status", "Hinweis"]
+_QUEUE_COLUMNS = ["Ref", "Kunde", "Betrag", "Status", "Hinweis", "Mark."]
 
 
 class _QueueTabView(QWidget):
@@ -51,6 +66,7 @@ class _QueueTabView(QWidget):
         self._queue_name = queue_name
         self._title = title
         self._worker: BackgroundWorker | None = None
+        self._rows: list[dict[str, str]] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -65,6 +81,7 @@ class _QueueTabView(QWidget):
         row = QHBoxLayout()
         self._search = SearchBar("Suchen…")
         self._search.search_changed.connect(self._on_search)
+        self._search.set_suggestion_provider(self._queue_search_suggestions)
         row.addWidget(self._search, stretch=1)
         self._count_lbl = QLabel("0 Eintraege")
         row.addWidget(self._count_lbl)
@@ -84,6 +101,16 @@ class _QueueTabView(QWidget):
         if sel is not None:
             sel.selectionChanged.connect(self._on_selection_changed)
 
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.wait(2000)
+        super().closeEvent(event)
+
     def reload(self, fallback_count: int = 0) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
@@ -102,7 +129,9 @@ class _QueueTabView(QWidget):
     def _on_load_result(self, result: object) -> None:
         rows = result if isinstance(result, list) else []
         norm_rows = [r for r in rows if isinstance(r, dict)]
+        self._rows = norm_rows
         self._table.set_data(norm_rows)
+        self._search.refresh_suggestions()
         self._count_lbl.setText(f"{len(norm_rows)} Eintraege")
         self._detail.setText("Zeile waehlen fuer Details …")
 
@@ -112,6 +141,17 @@ class _QueueTabView(QWidget):
 
     def _on_search(self, text: str) -> None:
         self._table.set_filter(text, column=0)
+
+    def _queue_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        items: list[str] = []
+        for row in self._rows:
+            hay = f"{row.get('Ref', '')} {row.get('Kunde', '')} {row.get('Status', '')} {row.get('Hinweis', '')}".lower()
+            if q in hay:
+                items.append(f"{row.get('Ref', '—')} - {row.get('Kunde', '—')}")
+        return items
 
     def _on_selection_changed(self, _selected: object, _deselected: object) -> None:
         row = self._table.selected_row_data() or {}
@@ -130,7 +170,12 @@ class _QueueTabView(QWidget):
 class _StartDialog(QDialog):
     """Pre-flight dialog for the ▶ START workflow."""
 
-    def __init__(self, preflight: StartPreflight, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        preflight: StartPreflight,
+        initial_mode: StartMode = StartMode.INVOICES_AND_PRINT,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._preflight = preflight
         self.setWindowTitle("Tagesgeschäft starten")
@@ -150,11 +195,14 @@ class _StartDialog(QDialog):
         gb_lay = QVBoxLayout(gb)
         self._mode_invoices = QPushButton("📄  Nur Rechnungen")
         self._mode_invoices.setCheckable(True)
-        self._mode_invoices.setChecked(True)
         self._mode_invoices.setMinimumHeight(40)
         self._mode_full = QPushButton("📄 + 🖨  Rechnungen + Druck (Noten & Labels vorbereiten)")
         self._mode_full.setCheckable(True)
         self._mode_full.setMinimumHeight(40)
+        full_allowed = not preflight.missing_position_data
+        self._mode_full.setEnabled(full_allowed)
+        self._mode_invoices.setChecked(initial_mode != StartMode.INVOICES_AND_PRINT or not full_allowed)
+        self._mode_full.setChecked(initial_mode == StartMode.INVOICES_AND_PRINT and full_allowed)
         gb_lay.addWidget(self._mode_invoices)
         gb_lay.addWidget(self._mode_full)
         layout.addWidget(gb)
@@ -183,9 +231,13 @@ class _StartDialog(QDialog):
     def full_mode(self) -> bool:
         return bool(self._mode_full.isChecked())
 
+    @property
+    def selected_mode(self) -> StartMode:
+        return StartMode.INVOICES_AND_PRINT if self.full_mode else StartMode.INVOICES_ONLY
+
     def _format_preflight(self) -> str:
         lines: list[str] = [
-            f"Offene Rechnungen: {self._preflight.open_invoice_count}",
+            f"Entwürfe zur Abarbeitung: {self._preflight.open_invoice_count}",
             "",
         ]
         if self._preflight.missing_position_data:
@@ -215,19 +267,62 @@ class _StartDialog(QDialog):
 
 
 class TagesgeschaeftView(QWidget):
-    """Tabbed Daily-Business hub — Rechnungen tab is fully functional."""
+    """Daily-Business hub for Rechnungen with top action bar."""
 
     def __init__(self, container: Container, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._container = container
         self._badge_worker: BackgroundWorker | None = None
         self._start_worker: BackgroundWorker | None = None
+        self._start_product_worker: BackgroundWorker | None = None
         self._start_exec_worker: BackgroundWorker | None = None
+        self._reprint_worker: BackgroundWorker | None = None
+        self._reprint_exec_worker: BackgroundWorker | None = None
+        self._start_requested_mode: StartMode = StartMode.INVOICES_AND_PRINT
+        self._start_selected_mode: StartMode = StartMode.INVOICES_AND_PRINT
+        self._pending_start_preflight: StartPreflight | None = None
+        self._start_abort_requested = False
+        self._badge_timer = QTimer(self)
+        self._badge_timer.setInterval(60000)
+        self._badge_timer.timeout.connect(self._refresh_badges)
         self._build_ui()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._refresh_badges()
+        self._badge_timer.start()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        super().hideEvent(event)
+        self._badge_timer.stop()
+        self._wait_for_workers()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._badge_timer.stop()
+        self._wait_for_workers()
+        super().closeEvent(event)
+
+    def has_active_flow(self) -> bool:
+        return any(
+            worker is not None and worker.isRunning()
+            for worker in (
+                self._start_worker,
+                self._start_product_worker,
+                self._start_exec_worker,
+                self._reprint_worker,
+                self._reprint_exec_worker,
+            )
+        )
+
+    def prepare_shutdown(self) -> None:
+        self._badge_timer.stop()
+        self._wait_for_workers()
+
+    def _wait_for_workers(self) -> None:
+        for worker in (self._badge_worker, self._start_worker, self._start_product_worker, self._start_exec_worker,
+                       self._reprint_worker, self._reprint_exec_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(3000)
 
     def _build_ui(self) -> None:
         main_layout = QVBoxLayout(self)
@@ -246,38 +341,61 @@ class TagesgeschaeftView(QWidget):
         bar_lay.addWidget(title)
         bar_lay.addStretch()
 
-        btn_start = QPushButton("▶  START")
-        btn_start.setToolTip("Tagesgeschäft starten: Rechnungen & Druck-Workflow")
-        btn_start.setFixedHeight(34)
-        btn_start.setFixedWidth(130)
-        btn_start.setStyleSheet(
-            "QPushButton { background-color: #1976d2; color: white; border-radius: 6px;"
+        self._btn_start = QToolButton()
+        self._btn_start.setText("▶  START")
+        self._btn_start.setToolTip("Direktklick: Vollflow | Pfeil: Teil-Flow auswählen")
+        self._btn_start.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._btn_start.setFixedHeight(34)
+        self._btn_start.setFixedWidth(150)
+        self._btn_start.setStyleSheet(
+            "QToolButton { background-color: #1976d2; color: white; border-radius: 6px;"
             " font-weight: bold; font-size: 13px; }"
-            " QPushButton:hover { background-color: #1565c0; }"
-            " QPushButton:pressed { background-color: #0d47a1; }"
+            " QToolButton:hover { background-color: #1565c0; }"
+            " QToolButton:pressed { background-color: #0d47a1; }"
         )
-        btn_start.clicked.connect(self._on_start_clicked)
-        bar_lay.addWidget(btn_start)
+        menu = QMenu(self._btn_start)
+        act_full = menu.addAction("Vollflow (Rechnungen + Druck)")
+        act_full.triggered.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
+        act_invoices = menu.addAction("Nur Rechnungen")
+        act_invoices.triggered.connect(lambda: self._on_start_clicked(StartMode.INVOICES_ONLY))
+        act_print = menu.addAction("Nachdrucke (nur Lagerauffüllung)")
+        act_print.triggered.connect(self._on_reprints_clicked)
+        self._btn_start.setMenu(menu)
+        self._btn_start.clicked.connect(lambda: self._on_start_clicked(StartMode.INVOICES_AND_PRINT))
+        bar_lay.addWidget(self._btn_start)
+
+        self._btn_stop = QPushButton("STOP")
+        self._btn_stop.setToolTip("Laufenden START nach der aktuellen Rechnung anhalten")
+        self._btn_stop.setFixedHeight(34)
+        self._btn_stop.setFixedWidth(100)
+        self._btn_stop.setEnabled(False)
+        self._btn_stop.setStyleSheet(
+            "QPushButton { background-color: #ef6c00; color: white; border-radius: 6px;"
+            " font-weight: bold; font-size: 13px; }"
+            " QPushButton:hover { background-color: #e65100; }"
+            " QPushButton:pressed { background-color: #bf360c; }"
+            " QPushButton:disabled { background-color: #cfd8dc; color: #607d8b; }"
+        )
+        self._btn_stop.clicked.connect(self._on_start_stop_clicked)
+        bar_lay.addWidget(self._btn_stop)
+
+        btn_beenden = QPushButton("■  Beenden")
+        btn_beenden.setToolTip("App beenden (laufende Hintergrundaufgaben werden abgewartet)")
+        btn_beenden.setFixedHeight(34)
+        btn_beenden.setFixedWidth(130)
+        btn_beenden.setStyleSheet(
+            "QPushButton { background-color: #c62828; color: white; border-radius: 6px;"
+            " font-weight: bold; font-size: 13px; }"
+            " QPushButton:hover { background-color: #b71c1c; }"
+            " QPushButton:pressed { background-color: #7f0000; }"
+        )
+        btn_beenden.clicked.connect(self._on_beenden_clicked)
+        bar_lay.addWidget(btn_beenden)
 
         main_layout.addWidget(action_bar)
 
-        # — Tab widget —
-        self._tabs = QTabWidget()
-        self._tabs.setDocumentMode(True)
-
         self._rechnungen_view = RechnungenView(self._container)
-        self._mollie_view = _QueueTabView(self._container, "mollie", "Mollie Authorized")
-        self._gutscheine_view = _QueueTabView(self._container, "gutscheine", "Gutscheine")
-        self._downloads_view = _QueueTabView(self._container, "downloads", "Download-Links")
-        self._refunds_view = _QueueTabView(self._container, "refunds", "Rueckerstattungen")
-
-        self._tabs.addTab(self._rechnungen_view, "📋  Rechnungen")
-        self._tabs.addTab(self._mollie_view, "💳  Mollie")
-        self._tabs.addTab(self._gutscheine_view, "🎁  Gutscheine")
-        self._tabs.addTab(self._downloads_view, "📥  Downloads")
-        self._tabs.addTab(self._refunds_view, "↩  Refunds")
-
-        main_layout.addWidget(self._tabs, stretch=1)
+        main_layout.addWidget(self._rechnungen_view, stretch=1)
 
     def _refresh_badges(self) -> None:
         if self._badge_worker is not None and self._badge_worker.isRunning():
@@ -285,9 +403,9 @@ class TagesgeschaeftView(QWidget):
 
         def job() -> dict[str, int]:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
-            open_invoices = invoice_service.load_invoice_summaries(status=200, limit=100, offset=0)
+            open_count = invoice_service.count_invoices(status=100)
             service: DailyBusinessService = self._container.resolve(DailyBusinessService)
-            return service.load_counts(open_invoice_count=len(open_invoices))
+            return service.load_counts(open_invoice_count=open_count)
 
         self._badge_worker = BackgroundWorker(job)
         self._badge_worker.signals.result.connect(self._on_badges_result)
@@ -297,24 +415,22 @@ class TagesgeschaeftView(QWidget):
     def _on_badges_result(self, result: object) -> None:
         counts = result if isinstance(result, dict) else {}
         open_count = max(0, int(counts.get("rechnungen", 0)))
-        self._tabs.setTabText(0, f"📋  Rechnungen ({open_count})")
-        self._tabs.setTabText(1, f"💳  Mollie ({max(0, int(counts.get('mollie', 0)))})")
-        self._tabs.setTabText(2, f"🎁  Gutscheine ({max(0, int(counts.get('gutscheine', 0)))})")
-        self._tabs.setTabText(3, f"📥  Downloads ({max(0, int(counts.get('downloads', 0)))})")
-        self._tabs.setTabText(4, f"↩  Refunds ({max(0, int(counts.get('refunds', 0)))})")
-        self._mollie_view.reload(max(0, int(counts.get("mollie", 0))))
-        self._gutscheine_view.reload(max(0, int(counts.get("gutscheine", 0))))
-        self._downloads_view.reload(max(0, int(counts.get("downloads", 0))))
-        self._refunds_view.reload(max(0, int(counts.get("refunds", 0))))
+        mollie_count = max(0, int(counts.get("mollie", 0)))
+        gutscheine_count = max(0, int(counts.get("gutscheine", 0)))
+
+        self._rechnungen_view.update_mollie_alert_count(mollie_count)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.badge_updated.emit(ModuleKey.RECHNUNGEN.value, open_count)
+        signals.badge_updated.emit(ModuleKey.GUTSCHEINE.value, gutscheine_count)
+        signals.badge_updated.emit(ModuleKey.MOLLIE.value, mollie_count)
 
     def _on_badges_error(self, exc: Exception) -> None:
         logger.warning("Badge refresh failed: %s", exc)
 
-    def _on_start_clicked(self) -> None:
+    def _on_start_clicked(self, requested_mode: StartMode = StartMode.INVOICES_AND_PRINT) -> None:
         if self._start_worker is not None and self._start_worker.isRunning():
             return
+        self._start_requested_mode = requested_mode
 
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("Pre-Flight wird erstellt…", 2500)
@@ -322,8 +438,8 @@ class TagesgeschaeftView(QWidget):
         def job() -> StartPreflight:
             invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
             inventory_service: InventoryService = self._container.resolve(InventoryService)
-            open_invoices = invoice_service.load_invoice_summaries(status=200, limit=100, offset=0)
-            return inventory_service.build_start_preflight(len(open_invoices))
+            open_count = invoice_service.count_invoices(status=100)
+            return inventory_service.build_start_preflight(open_count)
 
         self._start_worker = BackgroundWorker(job)
         self._start_worker.signals.result.connect(self._on_start_preflight_ready)
@@ -333,67 +449,325 @@ class TagesgeschaeftView(QWidget):
     def _on_start_preflight_ready(self, result: object) -> None:
         if not isinstance(result, StartPreflight):
             return
-        dlg = _StartDialog(result, self)
+        dlg = _StartDialog(result, initial_mode=self._start_requested_mode, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
+            signals: AppSignals = self._container.resolve(AppSignals)
+            signals.status_message.emit("START abgebrochen", 2500)
+            return
+        self._start_selected_mode = dlg.selected_mode
+        self._pending_start_preflight = result
+
+        logger.info("Tagesgeschäft START: mode=%s", self._start_selected_mode.value)
+
+        if (
+            (self._start_product_worker is not None and self._start_product_worker.isRunning())
+            or (self._start_exec_worker is not None and self._start_exec_worker.isRunning())
+        ):
             return
 
-        mode = StartMode.INVOICES_AND_PRINT if dlg.full_mode else StartMode.INVOICES_ONLY
-        if mode == StartMode.INVOICES_AND_PRINT and result.missing_position_data:
-            QMessageBox.information(
-                self,
-                "Hinweis",
-                "Für den Druckplan fehlen noch Positionsdaten. "
-                "Der START läuft daher im Modus 'Nur Rechnungen'.",
-            )
-            mode = StartMode.INVOICES_ONLY
+        signals.status_message.emit("Produktprüfung wird vorbereitet…", 2500)
 
-        logger.info("Tagesgeschäft START: mode=%s", mode.value)
+        def job() -> ProductPreflightPlan:
+            invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            draft_service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            summaries = invoice_service.load_invoice_summaries(status=100, limit=1000, offset=0)
+            targets_by_reference: dict[str, list[ProductIssueTarget]] = {}
+            refs: list[str] = []
+            for summary in summaries:
+                reference = str(summary.order_reference or "").strip()
+                if not reference:
+                    continue
+                refs.append(reference)
+                targets_by_reference.setdefault(reference, []).append(
+                    ProductIssueTarget(
+                        invoice_id=str(summary.id or "").strip(),
+                        invoice_number=str(summary.invoice_number or "").strip(),
+                        wix_order_number=reference,
+                        customer_name=str(summary.contact_name or "").strip(),
+                    )
+                )
+            return draft_service.build_missing_product_plan(refs, targets_by_reference=targets_by_reference)
 
+        self._start_product_worker = BackgroundWorker(job)
+        self._start_product_worker.signals.result.connect(self._on_start_product_preflight_ready)
+        self._start_product_worker.signals.error.connect(self._on_start_preflight_error)
+        self._start_product_worker.signals.finished.connect(lambda: setattr(self, "_start_product_worker", None))
+        self._start_product_worker.start()
+
+    def _on_start_product_preflight_ready(self, result: object) -> None:
+        plan = result if isinstance(result, ProductPreflightPlan) else ProductPreflightPlan(issues=[], part_categories=[])
+        decisions = self._run_product_preflight_dialogs(plan)
+        preflight = self._pending_start_preflight
+        mode = self._start_selected_mode
+        if preflight is None:
+            QMessageBox.warning(self, "START", "START-Preflight ist nicht mehr verfuegbar.")
+            return
         if self._start_exec_worker is not None and self._start_exec_worker.isRunning():
             return
 
+        self._start_abort_requested = False
+        self._set_start_running(True)
         signals: AppSignals = self._container.resolve(AppSignals)
         signals.status_message.emit("START wird ausgefuehrt…", 2500)
 
-        def job() -> StartExecutionReport:
-            inventory_service: InventoryService = self._container.resolve(InventoryService)
-            return inventory_service.execute_start_workflow(result, mode)
+        def job() -> dict[str, object]:
+            draft_service: DraftInvoiceService = self._container.resolve(DraftInvoiceService)
+            apply_result = (
+                draft_service.apply_missing_product_plan(plan, decisions)
+                if plan.issues
+                else ProductPreflightApplyResult()
+            )
+            invoice_service: InvoiceProcessingService = self._container.resolve(InvoiceProcessingService)
+            batch_result = invoice_service.run_start_fullflow(
+                full_mode=(mode == StartMode.INVOICES_AND_PRINT),
+                should_abort=lambda: self._start_abort_requested,
+            )
+            inventory_report: StartExecutionReport | None = None
+            inventory_warning = ""
+            if mode == StartMode.INVOICES_AND_PRINT:
+                if preflight.missing_position_data:
+                    inventory_warning = (
+                        "Inventar wurde nicht aktualisiert, weil kein Druckplan vorlag."
+                    )
+                elif bool(batch_result.get("failures")) or bool(batch_result.get("aborted")):
+                    inventory_warning = (
+                        "Inventar wurde nicht aktualisiert, weil der Lauf Fehler hatte "
+                        "oder manuell gestoppt wurde."
+                    )
+                else:
+                    inventory_service: InventoryService = self._container.resolve(InventoryService)
+                    inventory_report = inventory_service.execute_start_workflow(preflight, mode)
+            return {
+                "batch": batch_result,
+                "inventory_report": inventory_report,
+                "inventory_warning": inventory_warning,
+                "product_apply": apply_result,
+            }
 
         self._start_exec_worker = BackgroundWorker(job)
         self._start_exec_worker.signals.result.connect(self._on_start_executed)
         self._start_exec_worker.signals.error.connect(self._on_start_preflight_error)
+        self._start_exec_worker.signals.finished.connect(lambda: self._set_start_running(False))
         self._start_exec_worker.start()
 
+    def _run_product_preflight_dialogs(self, plan: ProductPreflightPlan) -> dict[str, ProductIssueDecision]:
+        decisions: dict[str, ProductIssueDecision] = {}
+        for issue in plan.issues:
+            dialog = ProductPreflightDialog(issue, part_categories=plan.part_categories, parent=self)
+            decision = dialog.show_dialog()
+            if decision is None:
+                decision = ProductIssueDecision(action="skip", draft=issue.draft)
+            decisions[issue.sku] = decision
+        return decisions
+
     def _on_start_executed(self, result: object) -> None:
-        if not isinstance(result, StartExecutionReport):
+        if not isinstance(result, dict):
             return
+        self._pending_start_preflight = None
+        batch = result.get("batch") if isinstance(result.get("batch"), dict) else result
+        inventory_report = result.get("inventory_report")
+        inventory_warning = str(result.get("inventory_warning") or "")
+        product_apply = result.get("product_apply")
+
+        processed = int(batch.get("processed") or 0)
+        failures = int(batch.get("failures") or 0)
+        successful = int(batch.get("successful") or max(0, processed - failures))
+        full_mode = bool(batch.get("full_mode"))
+        aborted = bool(batch.get("aborted"))
+        mode_label = StartMode.INVOICES_AND_PRINT.value if full_mode else StartMode.INVOICES_ONLY.value
 
         signals: AppSignals = self._container.resolve(AppSignals)
-        signals.status_message.emit(
-            f"START ausgefuehrt: {result.open_invoice_count} offene Rechnungen "
-            f"({result.mode.value}), Druckjobs: {len(result.printed_skus)}",
-            5000,
-        )
+        if aborted:
+            signals.status_message.emit(
+                f"START gestoppt: {successful}/{processed} Rechnungen verarbeitet, Fehler: {failures}",
+                5000,
+            )
+        else:
+            signals.status_message.emit(
+                f"START ausgefuehrt: {processed} Rechnungen ({mode_label}), Fehler: {failures}",
+                5000,
+            )
+
+        lines = [
+            f"Modus: {mode_label}",
+            f"Verarbeitete Rechnungen: {processed}",
+            f"Erfolgreich: {successful}",
+            f"Fehler: {failures}",
+        ]
+        if aborted:
+            lines.append("Laufstatus: manuell gestoppt")
+        if isinstance(inventory_report, StartExecutionReport):
+            lines.append(
+                f"Inventar aktualisiert: {'ja' if inventory_report.stock_updated else 'nein'}"
+            )
+            lines.append(
+                f"Inventar-Druckjobs: {len(inventory_report.printed_skus)}"
+            )
+        elif inventory_warning:
+            lines.append(inventory_warning)
+        if isinstance(product_apply, ProductPreflightApplyResult):
+            if product_apply.created_skus:
+                lines.append(f"Neue sevDesk-Produkte: {', '.join(product_apply.created_skus)}")
+            if product_apply.warnings:
+                lines.append("Produkt-Hinweise:")
+                lines.extend(f"- {warning}" for warning in product_apply.warnings)
 
         QMessageBox.information(
             self,
             "START abgeschlossen",
-            (
-                f"Modus: {result.mode.value}\n"
-                f"Offene Rechnungen: {result.open_invoice_count}\n"
-                f"Druckjobs: {len(result.printed_skus)}\n"
-                f"Betroffene SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}"
-            ),
+            "\n".join(lines),
         )
 
-        self._tabs.setCurrentIndex(0)
         self._rechnungen_view._reload_first_page()  # noqa: SLF001
         self._refresh_badges()
 
     def _on_start_preflight_error(self, exc: Exception) -> None:
+        self._set_start_running(False)
         logger.error("Preflight failed: %s", exc)
+        self._pending_start_preflight = None
         QMessageBox.warning(
             self,
             "Fehler",
             f"Pre-Flight konnte nicht erstellt werden:\n\n{exc}",
         )
+
+    def _set_start_running(self, running: bool) -> None:
+        self._btn_start.setEnabled(not running)
+        self._btn_stop.setEnabled(running)
+
+    def _on_start_stop_clicked(self) -> None:
+        if self._start_exec_worker is None or not self._start_exec_worker.isRunning():
+            return
+        self._start_abort_requested = True
+        self._btn_stop.setEnabled(False)
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("STOP angefordert – aktueller Datensatz wird noch beendet…", 4000)
+
+    def _on_reprints_clicked(self) -> None:
+        """Trigger reprint preflight job for stock-up workflow."""
+        if self._reprint_worker is not None and self._reprint_worker.isRunning():
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Nachdrucke Pre-Flight wird erstellt…", 2500)
+
+        def job() -> ReprintPreflight:
+            inventory_service: InventoryService = self._container.resolve(InventoryService)
+            requirements = inventory_service.load_pending_requirements()
+            return inventory_service.build_reprint_preflight(requirements)
+
+        self._reprint_worker = BackgroundWorker(job)
+        self._reprint_worker.signals.result.connect(self._on_reprint_preflight_ready)
+        self._reprint_worker.signals.error.connect(self._on_reprint_error)
+        self._reprint_worker.start()
+
+    def _on_reprint_preflight_ready(self, result: object) -> None:
+        """Show reprint preview dialog after preflight job completes."""
+        if not isinstance(result, ReprintPreflight):
+            return
+
+        dlg = ReprintPreviewDialog(result, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        if self._reprint_exec_worker is not None and self._reprint_exec_worker.isRunning():
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit("Nachdrucke werden ausgefuehrt…", 2500)
+
+        def job() -> object:
+            inventory_service: InventoryService = self._container.resolve(InventoryService)
+            return inventory_service.execute_reprint_workflow(result)
+
+        self._reprint_exec_worker = BackgroundWorker(job)
+        self._reprint_exec_worker.signals.result.connect(self._on_reprint_executed)
+        self._reprint_exec_worker.signals.error.connect(self._on_reprint_error)
+        self._reprint_exec_worker.start()
+
+    def _on_reprint_executed(self, result: object) -> None:
+        """Show reprint execution summary and refresh UI."""
+        if not isinstance(result, ReprintExecutionReport):
+            return
+
+        signals: AppSignals = self._container.resolve(AppSignals)
+        signals.status_message.emit(
+            f"Nachdrucke ausgefuehrt: {result.decisions_count} Positionen geprüft, "
+            f"{len(result.printed_skus)} SKUs zum Druck gegeben",
+            5000,
+        )
+
+        QMessageBox.information(
+            self,
+            "Nachdrucke abgeschlossen",
+            (
+                f"Positionen geprüft: {result.decisions_count}\n"
+                f"Druckjobs: {len(result.printed_skus)}\n"
+                f"SKU: {', '.join(result.printed_skus) if result.printed_skus else 'keine'}\n"
+                f"Bestand aktualisiert: {result.stock_updated}"
+            ),
+        )
+
+        self._refresh_badges()
+
+    def _on_reprint_error(self, exc: Exception) -> None:
+        """Handle reprint workflow errors."""
+        logger.error("Reprint workflow failed: %s", exc)
+        QMessageBox.warning(
+            self,
+            "Fehler",
+            f"Nachdrucke-Workflow konnte nicht ausgefuehrt werden:\n\n{exc}",
+        )
+
+    def _on_beenden_clicked(self) -> None:
+        """Gracefully shut down the application."""
+        if self.has_active_flow():
+            QMessageBox.warning(
+                self,
+                "App beenden",
+                "Es laeuft noch ein Workflow. Bitte zuerst STOP bzw. den laufenden Flow abschliessen.",
+            )
+            return
+        logger.info("User requested application shutdown via BEENDEN button.")
+        window = self.window()
+        if isinstance(window, QWidget):
+            window.close()
+            return
+        QApplication.quit()
+        running = any(
+            w is not None and w.isRunning()
+            for w in (
+                self._badge_worker,
+                self._start_worker,
+                self._start_exec_worker,
+                self._reprint_worker,
+                self._reprint_exec_worker,
+            )
+        )
+        if running:
+            answer = QMessageBox.question(
+                self,
+                "App beenden",
+                "Es laufen noch Hintergrundaufgaben.\n"
+                "Trotzdem beenden? Laufende Operationen werden abgewartet (max. 5 s).",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        else:
+            answer = QMessageBox.question(
+                self,
+                "App beenden",
+                "XW-Studio wirklich beenden?\n"
+                "Alle Änderungen sind bereits in PostgreSQL gespeichert.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
+        logger.info("User requested application shutdown via BEENDEN button.")
+        self._badge_timer.stop()
+        self._wait_for_workers()
+        QApplication.quit()

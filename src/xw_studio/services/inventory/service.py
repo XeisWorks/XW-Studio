@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from xw_studio.core.config import AppConfig
 from xw_studio.repositories.settings_kv import SettingKvRepository
@@ -58,6 +60,35 @@ class StartExecutionReport:
 
 
 @dataclass(frozen=True)
+class ReprintDecision:
+    """Single SKU decision for REPRINTS (print-only, no consumption)."""
+
+    sku: str
+    on_hand_qty: int
+    min_stock_target: int
+    reprint_batch_qty: int
+    will_print: bool
+    final_print_qty: int
+
+
+@dataclass(frozen=True)
+class ReprintPreflight:
+    """Preflight result for REPRINTS dialog (restock decision)."""
+
+    decisions: list[ReprintDecision]
+    missing_position_data: bool
+
+
+@dataclass(frozen=True)
+class ReprintExecutionReport:
+    """Result payload for REPRINTS execution (stock auffülling only)."""
+
+    decisions_count: int
+    printed_skus: list[str]
+    stock_updated: bool
+
+
+@dataclass(frozen=True)
 class ProductRow:
     """Single product row for UI tables."""
 
@@ -68,6 +99,20 @@ class ProductRow:
     price_eur: str
     wix_id: str
     sevdesk_id: str
+    print_file_path: str = ""
+    print_profile_id: str = ""
+    print_plan: list[dict[str, str]] | None = None
+    title_print_configs: dict[str, dict[str, object]] | None = None
+
+
+@dataclass(frozen=True)
+class LegacyPrintImportReport:
+    source_path: str
+    records_seen: int
+    products_updated: int
+    title_configs_imported: int
+    missing_files: list[str]
+    unknown_profiles: list[str]
 
 
 class InventoryService:
@@ -168,6 +213,81 @@ class InventoryService:
             missing_position_data=False,
         )
 
+    def build_reprint_preflight(
+        self,
+        requirements: dict[str, int] | None = None,
+    ) -> ReprintPreflight:
+        """Build preflight for REPRINTS (restock without invoice consumption).
+
+        If *requirements* is None, uses load_pending_requirements().
+        Returns decisions for products that need restocking (on_hand <= min_stock_target).
+        """
+        if requirements is None:
+            requirements = self.load_pending_requirements()
+        if not requirements:
+            return ReprintPreflight(decisions=[], missing_position_data=True)
+
+        stock_levels = self.load_stock_levels()
+        buffer_qty = max(0, int(self._config.printing.buffer_quantity))
+        decisions: list[ReprintDecision] = []
+
+        for sku in sorted(requirements):
+            on_hand = max(0, int(stock_levels.get(sku, 0)))
+            # For reprints, use simple heuristic: restock if on_hand is low
+            min_target = 5  # Default minimum stock target
+            reprint_batch = buffer_qty
+            will_print = on_hand <= min_target
+            final_print_qty = reprint_batch if will_print else 0
+            decisions.append(
+                ReprintDecision(
+                    sku=sku,
+                    on_hand_qty=on_hand,
+                    min_stock_target=min_target,
+                    reprint_batch_qty=reprint_batch,
+                    will_print=will_print,
+                    final_print_qty=final_print_qty,
+                )
+            )
+
+        return ReprintPreflight(
+            decisions=decisions,
+            missing_position_data=False,
+        )
+
+    def execute_reprint_workflow(
+        self,
+        preflight: ReprintPreflight,
+    ) -> ReprintExecutionReport:
+        """Execute REPRINTS: only print, only auffüllen (no invoice consumption).
+
+        Returns a report with printed SKUs and updated stock levels.
+        """
+        if preflight.missing_position_data or not preflight.decisions:
+            return ReprintExecutionReport(
+                decisions_count=len(preflight.decisions),
+                printed_skus=[],
+                stock_updated=False,
+            )
+
+        stock_levels = self.load_stock_levels()
+        printed_skus: list[str] = []
+
+        for decision in preflight.decisions:
+            if not decision.will_print:
+                continue
+            current = max(0, int(stock_levels.get(decision.sku, decision.on_hand_qty)))
+            produced = max(0, int(decision.final_print_qty))
+            final_stock = current + produced
+            stock_levels[decision.sku] = final_stock
+            printed_skus.append(decision.sku)
+
+        self._save_stock_levels(stock_levels)
+        return ReprintExecutionReport(
+            decisions_count=len(preflight.decisions),
+            printed_skus=printed_skus,
+            stock_updated=True,
+        )
+
     def execute_start_workflow(
         self,
         preflight: StartPreflight,
@@ -177,7 +297,8 @@ class InventoryService:
 
         In ``INVOICES_AND_PRINT`` mode this updates inventory.stock_levels with
         post-run amounts (required quantities consumed, shortage printed with
-        configured buffer).
+        configured buffer). In ``PRINT_ONLY`` mode it only applies print production
+        to stock levels (no invoice consumption).
         """
         if mode == StartMode.INVOICES_ONLY:
             return StartExecutionReport(
@@ -206,7 +327,9 @@ class InventoryService:
         for decision in preflight.decisions:
             current = max(0, int(stock_levels.get(decision.sku, decision.on_hand_qty)))
             produced = max(0, int(decision.final_print_qty)) if decision.will_print else 0
-            consumed = max(0, int(decision.required_qty))
+            consumed = 0
+            if mode == StartMode.INVOICES_AND_PRINT:
+                consumed = max(0, int(decision.required_qty))
             final_stock = max(0, current + produced - consumed)
             stock_levels[decision.sku] = final_stock
 
@@ -277,6 +400,17 @@ class InventoryService:
                     price_eur=str(item.get("price_eur") or ""),
                     wix_id=str(item.get("wix_id") or ""),
                     sevdesk_id=str(item.get("sevdesk_id") or ""),
+                    print_file_path=str(item.get("print_file_path") or ""),
+                    print_profile_id=str(item.get("print_profile_id") or ""),
+                    print_plan=[
+                        entry for entry in (item.get("print_plan") or [])
+                        if isinstance(entry, dict)
+                    ],
+                    title_print_configs=(
+                        dict(item.get("title_print_configs"))
+                        if isinstance(item.get("title_print_configs"), dict)
+                        else {}
+                    ),
                 )
             )
         return rows
@@ -294,6 +428,10 @@ class InventoryService:
                 "price_eur": row.price_eur,
                 "wix_id": row.wix_id,
                 "sevdesk_id": row.sevdesk_id,
+                "print_file_path": str(row.print_file_path or "").strip(),
+                "print_profile_id": str(row.print_profile_id or "").strip(),
+                "print_plan": list(row.print_plan or []),
+                "title_print_configs": dict(row.title_print_configs or {}),
             }
             for row in rows
             if row.sku
@@ -322,3 +460,180 @@ class InventoryService:
             return
         clean = [item for item in plans if isinstance(item, dict)]
         self._settings_repo.set_value_json(_PRINT_PLANS_KEY, json.dumps(clean, ensure_ascii=False, indent=2))
+
+    def import_legacy_print_data(self) -> LegacyPrintImportReport:
+        """Import legacy PDF paths and print plans into ``inventory.products``."""
+        source = self._detect_legacy_inventory_store_path()
+        if source is None:
+            raise RuntimeError("Legacy inventory_store.json nicht gefunden")
+
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Legacy inventory_store.json unlesbar: {exc}") from exc
+
+        records = payload.get("records") if isinstance(payload, dict) else None
+        if not isinstance(records, dict):
+            raise RuntimeError("Legacy inventory_store.json hat kein gueltiges 'records'-Objekt")
+
+        existing = {row.sku.strip().upper(): row for row in self.list_products() if row.sku.strip()}
+        unknown_profiles: set[str] = set()
+        missing_files: list[str] = []
+        products_updated = 0
+        title_configs_imported = 0
+
+        valid_profile_ids = {profile.id for profile in self._config.printing.all_profiles()}
+        valid_profile_ids.update(
+            {"noten_a4_simplex", "noten_a4_duplex", "canon_brochure_mono", "canon_brochure_duo"}
+        )
+
+        for raw_sku, raw_record in records.items():
+            if not isinstance(raw_record, dict):
+                continue
+            sku = str(raw_sku or "").strip().upper()
+            if not sku:
+                continue
+            current = existing.get(sku) or ProductRow(
+                sku=sku,
+                name=str(raw_record.get("name") or "").strip(),
+                category=str(raw_record.get("category") or "").strip(),
+                on_hand=0,
+                price_eur="",
+                wix_id="",
+                sevdesk_id=str(raw_record.get("sevdesk_part_id") or "").strip(),
+            )
+
+            default_entry = self._normalize_legacy_pdf_entry(source, self._pick_default_pdf_entry(raw_record.get("pdfs")))
+            title_entries, title_count = self._normalize_legacy_title_configs(source, raw_record.get("title_print_configs"))
+            title_configs_imported += title_count
+
+            for candidate in [default_entry, *title_entries.values()]:
+                profile_id = str(candidate.get("profile_id") or "").strip()
+                if profile_id and profile_id not in valid_profile_ids:
+                    unknown_profiles.add(profile_id)
+                path = str(candidate.get("path") or "").strip()
+                if not path:
+                    raw_path = str(candidate.get("_raw_path") or "").strip()
+                    if raw_path:
+                        missing_files.append(f"{sku}: {raw_path}")
+
+            updated = ProductRow(
+                sku=current.sku,
+                name=current.name or str(raw_record.get("name") or "").strip(),
+                category=current.category or str(raw_record.get("category") or "").strip(),
+                on_hand=current.on_hand,
+                price_eur=current.price_eur,
+                wix_id=current.wix_id,
+                sevdesk_id=current.sevdesk_id or str(raw_record.get("sevdesk_part_id") or "").strip(),
+                print_file_path=str(default_entry.get("path") or current.print_file_path or "").strip(),
+                print_profile_id=str(default_entry.get("profile_id") or current.print_profile_id or "").strip(),
+                print_plan=list(default_entry.get("print_plan") or current.print_plan or []),
+                title_print_configs=title_entries or dict(current.title_print_configs or {}),
+            )
+            if updated != current:
+                products_updated += 1
+            existing[sku] = updated
+
+        self.save_products(sorted(existing.values(), key=lambda row: row.sku))
+
+        return LegacyPrintImportReport(
+            source_path=str(source),
+            records_seen=len(records),
+            products_updated=products_updated,
+            title_configs_imported=title_configs_imported,
+            missing_files=missing_files,
+            unknown_profiles=sorted(unknown_profiles),
+        )
+
+    @staticmethod
+    def _pick_default_pdf_entry(raw_entries: object) -> dict[str, object]:
+        if not isinstance(raw_entries, list):
+            return {}
+        first_entry: dict[str, object] = {}
+        for raw in raw_entries:
+            if not isinstance(raw, dict):
+                continue
+            if not first_entry:
+                first_entry = raw
+            if bool(raw.get("is_default")):
+                return raw
+        return first_entry
+
+    @staticmethod
+    def _normalize_legacy_pdf_entry(base_path: Path, raw: dict[str, object]) -> dict[str, object]:
+        if not isinstance(raw, dict):
+            return {}
+        raw_path = str(raw.get("path") or "").strip()
+        resolved_path = ""
+        if raw_path:
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = (base_path.parent / path).resolve()
+            if path.exists():
+                resolved_path = str(path)
+        return {
+            "path": resolved_path,
+            "_raw_path": raw_path,
+            "profile_id": str(raw.get("profile_id") or "").strip(),
+            "print_plan": InventoryService._normalize_print_plan(raw.get("print_plan")),
+        }
+
+    @staticmethod
+    def _normalize_legacy_title_configs(base_path: Path, raw_configs: object) -> tuple[dict[str, dict[str, object]], int]:
+        if not isinstance(raw_configs, dict):
+            return {}, 0
+        out: dict[str, dict[str, object]] = {}
+        imported = 0
+        for state in raw_configs.values():
+            if not isinstance(state, dict):
+                continue
+            title = str(state.get("title") or "").strip()
+            if not title:
+                continue
+            entry = InventoryService._normalize_legacy_pdf_entry(
+                base_path,
+                InventoryService._pick_default_pdf_entry(state.get("pdfs")),
+            )
+            if not entry:
+                continue
+            out[title] = entry
+            imported += 1
+        return out, imported
+
+    @staticmethod
+    def _normalize_print_plan(raw_plan: object) -> list[dict[str, str]]:
+        if not isinstance(raw_plan, list):
+            return []
+        plan: list[dict[str, str]] = []
+        for raw in raw_plan:
+            if not isinstance(raw, dict):
+                continue
+            range_text = str(raw.get("range") or "").strip() or "Alle Seiten"
+            profile_id = str(raw.get("profile_id") or "").strip()
+            if not profile_id:
+                continue
+            plan.append({"range": range_text, "profile_id": profile_id})
+        return plan
+
+    @staticmethod
+    def _detect_legacy_inventory_store_path() -> Path | None:
+        env_path = str(os.environ.get("XW_LEGACY_INVENTORY_STORE_PATH") or "").strip()
+        candidates: list[Path] = []
+        if env_path:
+            candidates.append(Path(env_path).expanduser())
+        repo_root = Path(__file__).resolve().parents[4]
+        candidates.extend(
+            [
+                repo_root / "data" / "inventory_store.json",
+                repo_root.parent / "sevDesk" / "data" / "inventory_store.json",
+                repo_root.parent / "sevDesk" / "sevdesk_wix_fulfillment" / "data" / "inventory_store.json",
+            ]
+        )
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        return None

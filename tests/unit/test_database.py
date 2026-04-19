@@ -1,10 +1,31 @@
 """Tests for database helpers."""
+from sqlalchemy import create_engine, inspect
+
 import pytest
 
 from xw_studio.core.config import AppConfig
-from xw_studio.core.database import create_engine_from_config
+from xw_studio.core.database import create_engine_from_config, ensure_core_tables
 
 
 def test_create_engine_requires_database_url() -> None:
     with pytest.raises(ValueError, match="DATABASE_URL"):
         create_engine_from_config(AppConfig())
+
+
+def test_create_engine_rejects_invalid_database_url() -> None:
+    with pytest.raises(ValueError, match="DATABASE_URL is invalid"):
+        create_engine_from_config(AppConfig(database_url="postgresql://user:pw@host:port/db"))
+
+
+def test_ensure_core_tables_creates_missing_tables() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+
+    try:
+        created_tables = ensure_core_tables(engine)
+        assert set(created_tables) == {"api_secret", "pc_registry", "setting_kv"}
+        assert {"api_secret", "pc_registry", "setting_kv"}.issubset(
+            set(inspect(engine).get_table_names())
+        )
+        assert ensure_core_tables(engine) == ()
+    finally:
+        engine.dispose()

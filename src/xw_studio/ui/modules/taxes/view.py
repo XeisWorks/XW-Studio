@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -28,6 +27,7 @@ from xw_studio.core.worker import BackgroundWorker
 from xw_studio.services.clearing.service import ClearingRow, PaymentClearingService
 from xw_studio.services.expenses.service import ExpenseAuditService, ExpenseRow
 from xw_studio.services.finanzonline import UvaService, UvaSubmitResult
+from xw_studio.ui.widgets.search_bar import SearchBar
 
 if TYPE_CHECKING:
     from xw_studio.core.container import Container
@@ -134,13 +134,14 @@ class TaxesView(QWidget):
         bl.addWidget(QLabel(svc.describe()))
 
         filters = QHBoxLayout()
-        self._clearing_search = QLineEdit()
+        self._clearing_search = SearchBar("Suchen (mind. 3 Zeichen)…")
         self._clearing_search.setPlaceholderText("Suchen (Ref, Kunde, Betrag, Hinweis)")
-        self._clearing_search.textChanged.connect(self._apply_clearing_filter)
+        self._clearing_search.search_changed.connect(lambda _t: self._apply_clearing_filter())
+        self._clearing_search.set_suggestion_provider(self._clearing_search_suggestions)
         filters.addWidget(self._clearing_search)
         self._clearing_status_filter = QComboBox()
         self._clearing_status_filter.addItems(["", "offen", "authorized", "zugeordnet", "done"])
-        self._clearing_status_filter.currentTextChanged.connect(self._apply_clearing_filter)
+        self._clearing_status_filter.currentTextChanged.connect(lambda _t: self._apply_clearing_filter())
         filters.addWidget(self._clearing_status_filter)
         refresh = QPushButton("Neu laden")
         refresh.clicked.connect(self._load_clearing_rows)
@@ -174,13 +175,14 @@ class TaxesView(QWidget):
         bl.addWidget(QLabel(svc.describe()))
 
         filters = QHBoxLayout()
-        self._expenses_search = QLineEdit()
+        self._expenses_search = SearchBar("Suchen (mind. 3 Zeichen)…")
         self._expenses_search.setPlaceholderText("Suchen (Ref, Lieferant, Kategorie, Hinweis)")
-        self._expenses_search.textChanged.connect(self._apply_expenses_filter)
+        self._expenses_search.search_changed.connect(lambda _t: self._apply_expenses_filter())
+        self._expenses_search.set_suggestion_provider(self._expenses_search_suggestions)
         filters.addWidget(self._expenses_search)
         self._expenses_status_filter = QComboBox()
         self._expenses_status_filter.addItems(["", "offen", "in_pruefung", "gebucht", "done"])
-        self._expenses_status_filter.currentTextChanged.connect(self._apply_expenses_filter)
+        self._expenses_status_filter.currentTextChanged.connect(lambda _t: self._apply_expenses_filter())
         filters.addWidget(self._expenses_status_filter)
         refresh = QPushButton("Neu laden")
         refresh.clicked.connect(self._load_expense_rows)
@@ -228,6 +230,7 @@ class TaxesView(QWidget):
         if not isinstance(rows, list):
             return
         self._clearing_rows = [row for row in rows if isinstance(row, ClearingRow)]
+        self._clearing_search.refresh_suggestions()
         self._apply_clearing_filter()
 
     def _apply_clearing_filter(self) -> None:
@@ -287,7 +290,30 @@ class TaxesView(QWidget):
         if not isinstance(rows, list):
             return
         self._expenses_rows = [row for row in rows if isinstance(row, ExpenseRow)]
+        self._expenses_search.refresh_suggestions()
         self._apply_expenses_filter()
+
+    def _clearing_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        out: list[str] = []
+        for row in self._clearing_rows:
+            hay = f"{row.ref} {row.customer} {row.amount} {row.status} {row.note}".lower()
+            if q in hay:
+                out.append(f"{row.ref} - {row.customer}")
+        return out
+
+    def _expenses_search_suggestions(self, query: str) -> list[str]:
+        q = query.lower().strip()
+        if len(q) < 3:
+            return []
+        out: list[str] = []
+        for row in self._expenses_rows:
+            hay = f"{row.ref} {row.supplier} {row.category} {row.status} {row.note}".lower()
+            if q in hay:
+                out.append(f"{row.ref} - {row.supplier}")
+        return out
 
     def _apply_expenses_filter(self) -> None:
         svc: ExpenseAuditService = self._container.resolve(ExpenseAuditService)

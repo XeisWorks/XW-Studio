@@ -6,6 +6,8 @@ class ModuleKey(str, Enum):
     """Sidebar module identifiers."""
     HOME = "home"
     RECHNUNGEN = "rechnungen"
+    GUTSCHEINE = "gutscheine"
+    MOLLIE = "mollie"
     PRODUCTS = "products"
     CRM = "crm"
     TAXES = "taxes"
