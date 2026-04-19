@@ -99,6 +99,7 @@ class SevdeskUvaPreviewProvider:
         self._connection = connection
         self._page_size = page_size
         self._max_pages = max_pages
+        self._payment_cache: dict[tuple[str, str, int, int], tuple[str | None, str | None]] = {}
 
     def load_sales_documents(self, year: int, month: int) -> list[dict[str, Any]]:
         docs = self._load_resource("/Invoice")
@@ -109,7 +110,7 @@ class SevdeskUvaPreviewProvider:
             status = str(doc.get("status") or "").strip()
             if status and status not in {"1000", "300", "750"} and not doc.get("paidDate"):
                 continue
-            result.append(doc)
+            result.append(self._enrich_payment_metadata("Invoice", doc, year, month))
         return result
 
     def load_purchase_documents(self, year: int, month: int) -> list[dict[str, Any]]:
@@ -121,7 +122,7 @@ class SevdeskUvaPreviewProvider:
             credit_debit = str(doc.get("creditDebit") or "").upper().strip()
             if credit_debit and credit_debit != "C":
                 continue
-            result.append(doc)
+            result.append(self._enrich_payment_metadata("Voucher", doc, year, month))
         return result
 
     def _load_resource(self, path: str) -> list[dict[str, Any]]:
@@ -138,6 +139,72 @@ class SevdeskUvaPreviewProvider:
                 break
             offset += self._page_size
         return result
+
+    def _enrich_payment_metadata(
+        self,
+        resource: str,
+        document: dict[str, Any],
+        year: int,
+        month: int,
+    ) -> dict[str, Any]:
+        if document.get("paidDate") or document.get("payDate"):
+            return document
+        if not _looks_paid_like(document):
+            return document
+        doc_id = document.get("id")
+        if doc_id in (None, ""):
+            return document
+
+        cache_key = (resource, str(doc_id), year, month)
+        if cache_key not in self._payment_cache:
+            self._payment_cache[cache_key] = self._load_payment_metadata(resource, str(doc_id), year, month)
+        payment_date, paid_amount = self._payment_cache[cache_key]
+        if payment_date is None and paid_amount is None:
+            return document
+
+        enriched = dict(document)
+        if payment_date is not None:
+            enriched["xw_payment_date"] = payment_date
+        if paid_amount is not None:
+            enriched["xw_paid_amount"] = paid_amount
+        return enriched
+
+    def _load_payment_metadata(self, resource: str, doc_id: str, year: int, month: int) -> tuple[str | None, str | None]:
+        events: list[dict[str, Any]] = []
+        for suffix in ("getCheckAccountTransactionLogs", "getCheckAccountTransactions"):
+            try:
+                response = self._connection.get(f"/{resource}/{doc_id}/{suffix}")
+                payload = response.json()
+            except Exception as exc:
+                logger.debug("Payment metadata lookup failed for %s/%s via %s: %s", resource, doc_id, suffix, exc)
+                continue
+            objects = payload.get("objects") if isinstance(payload, dict) else None
+            if isinstance(objects, list):
+                events.extend(item for item in objects if isinstance(item, dict))
+
+        if not events:
+            return None, None
+
+        any_payment_date: datetime | None = None
+        period_payment_date: datetime | None = None
+        period_paid_amount = Decimal("0.00")
+
+        for event in events:
+            event_date = _extract_payment_event_date(event)
+            if event_date is not None and (any_payment_date is None or event_date > any_payment_date):
+                any_payment_date = event_date
+            if event_date is None or event_date.year != year or event_date.month != month:
+                continue
+            if period_payment_date is None or event_date > period_payment_date:
+                period_payment_date = event_date
+            amount = _extract_payment_event_amount(event)
+            if amount > Decimal("0.00"):
+                period_paid_amount += amount
+
+        payment_date = period_payment_date or any_payment_date
+        payment_date_text = payment_date.isoformat() if payment_date is not None else None
+        paid_amount_text = _format_plain(period_paid_amount) if period_paid_amount > Decimal("0.00") else None
+        return payment_date_text, paid_amount_text
 
     @staticmethod
     def _is_period_match(
@@ -259,6 +326,35 @@ class UvaPreviewService:
                 ]
             )
         return lines
+
+
+def _looks_paid_like(document: dict[str, Any]) -> bool:
+    status = str(document.get("status") or document.get("statusText") or "").strip().lower()
+    if status in {"300", "750", "1000", "paid", "bezahlt", "partial", "teilweise"}:
+        return True
+    for key in ("paid", "isPaid", "partiallyPaid", "isPartiallyPaid"):
+        value = document.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "ja"}:
+            return True
+    return False
+
+
+def _extract_payment_event_date(event: dict[str, Any]) -> datetime | None:
+    for key in ("bookingDate", "valueDate", "entryDate", "date", "create"):
+        dt = _parse_date(event.get(key))
+        if dt is not None:
+            return dt
+    return None
+
+
+def _extract_payment_event_amount(event: dict[str, Any]) -> Decimal:
+    for key in ("amountPaid", "amount", "value"):
+        amount = _to_decimal(event.get(key))
+        if amount > Decimal("0.00"):
+            return amount
+    return Decimal("0.00")
 
 
 def _to_decimal(value: object) -> Decimal:

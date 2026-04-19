@@ -170,3 +170,32 @@ def test_phase2_uses_cash_basis_partial_payments_and_dedupes_duplicates() -> Non
     assert payload.kennzahlen.C060 == "20.00"
     assert any("storniert" in warning.lower() for warning in payload.warnings)
     assert any("duplik" in warning.lower() for warning in payload.warnings)
+
+
+class _PaidWithoutDateProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 200,
+                "invoiceNumber": "RE-FALLBACK-1",
+                "status": "1000",
+                "invoiceDate": "2026-03-10",
+                "taxText": "MIT 10% MEHRWERTSTEUER",
+                "sumGross": "110.00",
+                "sumNet": "100.00",
+                "sumTax": "10.00",
+            }
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return []
+
+
+def test_paid_like_document_without_paid_date_falls_back_to_period_date() -> None:
+    payload_service = UvaPayloadService(UvaPreviewService(_PaidWithoutDateProvider()))
+    payload = payload_service.build_payload(2026, 3)
+
+    assert payload.kennzahlen.A029 == "100.00"
+    assert any("belegdatum" in warning.lower() for warning in payload.warnings)

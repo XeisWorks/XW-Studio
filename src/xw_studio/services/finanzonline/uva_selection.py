@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 _DECIMAL_2 = Decimal("0.01")
 _RATIO_QUANT = Decimal("0.0001")
 _EPS = Decimal("0.005")
-_PAID_DATE_KEYS = ("paidDate", "payDate")
+_PAID_DATE_KEYS = ("xw_payment_date", "paidDate", "payDate")
 _SALES_FALLBACK_DATE_KEYS = ("invoiceDate", "deliveryDate", "date")
 _PURCHASE_FALLBACK_DATE_KEYS = ("voucherDate", "deliveryDate", "date")
 
@@ -112,6 +112,19 @@ class UvaDocumentSelector:
             if payment_date is not None:
                 result.stats.payment_out_of_period += 1
                 result.warnings.append(f"Zahlung liegt außerhalb des UVA-Monats: {label}")
+                continue
+
+            if fallback_in_period and _is_paid_like(document):
+                result.stats.missing_payment_evidence += 1
+                result.warnings.append(
+                    f"Bezahlter Beleg ohne Zahlungsdatum per Belegdatum übernommen: {label}"
+                )
+                scaled_document, scaled = _scale_document_to_paid_ratio(document)
+                if scaled:
+                    result.stats.partial_scaled += 1
+                    result.warnings.append(f"Teilzahlung anteilig berücksichtigt: {label}")
+                selected.append(scaled_document)
+                result.stats.selected += 1
                 continue
 
             if fallback_in_period:
@@ -227,7 +240,7 @@ def _scale_document_to_paid_ratio(document: dict[str, Any]) -> tuple[dict[str, A
 
 
 def _extract_paid_amount(document: dict[str, Any], gross_amount: Decimal) -> Decimal:
-    for key in ("paidAmount", "sumPaid", "sumPaidAccounting", "paidValue"):
+    for key in ("xw_paid_amount", "xw_period_paid_amount", "paidAmount", "sumPaid", "sumPaidAccounting", "paidValue"):
         value = document.get(key)
         amount = _to_decimal(value)
         if amount > _EPS:
