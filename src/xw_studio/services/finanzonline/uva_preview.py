@@ -44,6 +44,12 @@ _FOREIGN_MARKERS = (
     "DPH",
     "DDV",
 )
+_EXPORT_TAX_RULES = {"2"}
+_ICS_TAX_RULES = {"3"}
+_REVERSE_TAX_RULES = {"5", "21"}
+_EXPORT_TAXSETS = {"45412"}
+_ICS_TAXSETS = {"27267"}
+_REVERSE_TAXSETS = {"35315"}
 
 
 class UvaPreviewGroup(BaseModel):
@@ -105,24 +111,26 @@ class SevdeskUvaPreviewProvider:
         docs = self._load_resource("/Invoice")
         result: list[dict[str, Any]] = []
         for doc in docs:
-            if not self._is_period_match(doc, year, month, ("paidDate", "invoiceDate", "date")):
+            enriched = self._enrich_payment_metadata("Invoice", doc, year, month)
+            if not self._is_period_match(enriched, year, month, ("xw_payment_date", "paidDate", "invoiceDate", "date")):
                 continue
-            status = str(doc.get("status") or "").strip()
-            if status and status not in {"1000", "300", "750"} and not doc.get("paidDate"):
+            status = str(enriched.get("status") or "").strip()
+            if status and status not in {"1000", "300", "750"} and not enriched.get("paidDate") and not enriched.get("xw_payment_date"):
                 continue
-            result.append(self._enrich_payment_metadata("Invoice", doc, year, month))
+            result.append(enriched)
         return result
 
     def load_purchase_documents(self, year: int, month: int) -> list[dict[str, Any]]:
         docs = self._load_resource("/Voucher")
         result: list[dict[str, Any]] = []
         for doc in docs:
-            if not self._is_period_match(doc, year, month, ("payDate", "voucherDate", "date")):
+            enriched = self._enrich_payment_metadata("Voucher", doc, year, month)
+            if not self._is_period_match(enriched, year, month, ("xw_payment_date", "payDate", "voucherDate", "date")):
                 continue
-            credit_debit = str(doc.get("creditDebit") or "").upper().strip()
+            credit_debit = str(enriched.get("creditDebit") or "").upper().strip()
             if credit_debit and credit_debit != "C":
                 continue
-            result.append(self._enrich_payment_metadata("Voucher", doc, year, month))
+            result.append(enriched)
         return result
 
     def _load_resource(self, path: str) -> list[dict[str, Any]]:
@@ -420,6 +428,9 @@ def _first_decimal(document: dict[str, Any], *keys: str) -> Decimal:
 
 def _normalize_tax_label(document: dict[str, Any], *, net_amount: Decimal, vat_amount: Decimal) -> str:
     raw = " ".join(str(document.get("taxText") or "").split()).strip()
+    if raw in {"0", "0%", "0.0", "0,0", "-"}:
+        raw = ""
+
     if raw:
         upper = raw.upper()
         if "REVERSE" in upper and "CHARGE" in upper:
@@ -434,6 +445,10 @@ def _normalize_tax_label(document: dict[str, Any], *, net_amount: Decimal, vat_a
         if rate is not None:
             return f"MIT {rate}% MEHRWERTSTEUER"
         return upper
+
+    metadata_label = _classify_special_tax_label(document)
+    if metadata_label is not None:
+        return metadata_label
 
     inferred_rate = _infer_rate(net_amount, vat_amount)
     return f"MIT {inferred_rate}% MEHRWERTSTEUER"
@@ -452,8 +467,33 @@ def _extract_percent(label: str) -> int | None:
     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def _get_reference_id(value: object) -> str:
+    if isinstance(value, dict):
+        ref = value.get("id") or value.get("value")
+        return str(ref or "").strip()
+    return str(value or "").strip()
+
+
+def _classify_special_tax_label(document: dict[str, Any]) -> str | None:
+    tax_rule = _get_reference_id(document.get("taxRule"))
+    tax_set = _get_reference_id(document.get("taxSet"))
+    tax_type = str(document.get("taxType") or "").strip().lower()
+
+    if tax_rule in _EXPORT_TAX_RULES or tax_set in _EXPORT_TAXSETS:
+        return "STEUERFREIE AUSFUHRLIEFERUNG (§ 7 USTG 1994)"
+    if tax_rule in _REVERSE_TAX_RULES or tax_set in _REVERSE_TAXSETS:
+        return "REVERSE CHARGE"
+    if tax_rule in _ICS_TAX_RULES or tax_type == "eu" or tax_set in _ICS_TAXSETS:
+        return "STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)"
+    return None
+
+
 def _infer_rate(net_amount: Decimal, vat_amount: Decimal) -> int:
     if net_amount == Decimal("0.00") or vat_amount == Decimal("0.00"):
         return 0
-    ratio = (vat_amount / net_amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return int(ratio)
+    ratio = vat_amount / net_amount * Decimal("100")
+    for candidate in (Decimal("10"), Decimal("13"), Decimal("20")):
+        if abs(ratio - candidate) <= Decimal("1.5"):
+            return int(candidate)
+    rounded = ratio.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(rounded)

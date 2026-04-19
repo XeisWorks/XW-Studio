@@ -199,3 +199,48 @@ def test_paid_like_document_without_paid_date_falls_back_to_period_date() -> Non
 
     assert payload.kennzahlen.A029 == "100.00"
     assert any("belegdatum" in warning.lower() for warning in payload.warnings)
+
+
+class _LegacyTaxClassificationProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 300,
+                "invoiceNumber": "RE-EU-1",
+                "status": "1000",
+                "invoiceDate": "2026-03-10",
+                "taxType": "eu",
+                "sumGross": "250.00",
+                "sumNet": "250.00",
+                "sumTax": "0.00",
+            },
+            {
+                "id": 301,
+                "invoiceNumber": "RE-AT-13",
+                "status": "1000",
+                "invoiceDate": "2026-03-11",
+                "taxText": "0",
+                "sumGross": "113.00",
+                "sumNet": "100.00",
+                "sumTax": "13.00",
+            },
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return []
+
+
+def test_legacy_tax_metadata_is_mapped_to_expected_uva_groups() -> None:
+    preview_service = UvaPreviewService(_LegacyTaxClassificationProvider())
+    payload_service = UvaPayloadService(preview_service)
+
+    preview = preview_service.build_preview(2026, 3)
+    payload = payload_service.build_payload(2026, 3)
+    labels = {group.label for group in preview.sales.groups}
+
+    assert "STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)" in labels
+    assert "MIT 13% MEHRWERTSTEUER" in labels
+    assert payload.kennzahlen.A017 == "250.00"
+    assert payload.kennzahlen.A006 == "100.00"
