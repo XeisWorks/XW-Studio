@@ -1,0 +1,90 @@
+Mehrwertsteuer
+EUR 1 111,43
+
+Brutto: EUR 18 276,83
+Netto: EUR 17 165,40
+
+MIT 0% MEHRWERTSTEUER
+Mehrwertsteuer: EUR 0,00
+Brutto: EUR 80,87
+Netto: EUR 80,87
+
+MIT 10% MEHRWERTSTEUER
+Mehrwertsteuer: EUR 718,54
+Brutto: EUR 7 909,60
+Netto: EUR 7 191,06
+
+MIT 13% MEHRWERTSTEUER
+Mehrwertsteuer: EUR 206,36
+Brutto: EUR 1 793,73
+Netto: EUR 1 587,37
+
+MIT 20% MEHRWERTSTEUER
+Mehrwertsteuer: EUR 11,56
+Brutto: EUR 69,39
+Netto: EUR 57,83
+
+STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)
+Netto: EUR 4 825,18
+
+REVERSE CHARGE
+Mehrwertsteuer: EUR 0,00
+Brutto: EUR 122,83
+Netto: EUR 122,83
+
+DEUTSCHE MWST. 7%
+Mehrwertsteuer: EUR 165,64
+Brutto: EUR 2 438,60
+Netto: EUR 2 272,96
+
+ITALIENISCHE IVA 4%
+Mehrwertsteuer: EUR 4,43
+Brutto: EUR 114,90
+Netto: EUR 110,47
+
+STEUERFREIE AUSFUHRLIEFERUNG (§ 7 USTG 1994)
+Mehrwertsteuer: EUR 0,00
+Brutto: EUR 865,13
+Netto: EUR 865,13
+
+LUXEMBURGISCHE TVA 3%
+Mehrwertsteuer: EUR 0,93
+Brutto: EUR 31,80
+Netto: EUR 30,87
+
+SCHWEDISCHE MOMS 6%
+Mehrwertsteuer: EUR 3,97
+Brutto: EUR 24,80
+Netto: EUR 20,83
+
+
+Vorsteuer
+EUR 300,58
+
+Brutto: EUR 5 607,47
+Netto: EUR 5 306,89
+
+MIT 0% MEHRWERTSTEUER
+Vorsteuer: EUR 0,00
+Brutto: EUR 2 446,99
+Netto: EUR 2 446,99
+
+MIT 10% MEHRWERTSTEUER
+Vorsteuer: EUR 125,90
+Brutto: EUR 1 384,93
+Netto: EUR 1 259,03
+
+MIT 20% MEHRWERTSTEUER
+Vorsteuer: EUR 174,68
+Brutto: EUR 1 048,11
+Netto: EUR 873,43
+
+STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)
+Vorsteuer: EUR 0,00
+Brutto: EUR 76,62
+Netto: EUR 76,62
+
+REVERSE CHARGE
+Vorsteuer: EUR 0,00
+Brutto: EUR 650,82
+Netto: EUR 650,82
