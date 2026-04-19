@@ -32,11 +32,12 @@ class UvaSoapBackend(Protocol):
 class UnconfiguredUvaSoapBackend:
     """Default backend until zeep endpoints and credentials are wired."""
 
+    def __init__(self, *, reason: str | None = None) -> None:
+        self._reason = reason or "FinanzOnline SOAP client is not configured (zeep backend missing)."
+
     def submit_uva(self, payload: dict[str, Any]) -> UvaSubmitResult:
         logger.warning("FinanzOnline UVA submission not configured; payload keys: %s", tuple(payload))
-        raise UvaSoapUnavailableError(
-            "FinanzOnline SOAP client is not configured (zeep backend missing).",
-        )
+        raise UvaSoapUnavailableError(self._reason)
 
 
 class MockUvaSoapBackend:
@@ -90,7 +91,12 @@ class ZeepUvaSoapBackend:
         if not self._wsdl_url.strip():
             raise UvaSoapUnavailableError("FON_SOAP_WSDL fehlt fuer Live-UVA.")
 
-        client = self._client_factory(self._wsdl_url)
+        try:
+            client = self._client_factory(self._wsdl_url)
+        except Exception as exc:
+            logger.exception("FinanzOnline SOAP client init failed")
+            return UvaSubmitResult(ok=False, reference_id=None, message=f"FinanzOnline SOAP init fehlgeschlagen: {exc}")
+
         op = getattr(client.service, self._operation_name, None)
         if op is None:
             raise UvaSoapUnavailableError(
@@ -98,9 +104,19 @@ class ZeepUvaSoapBackend:
             )
 
         try:
-            raw = op(payload=payload, **self._static_kwargs)
-        except TypeError:
-            raw = op(payload)
+            try:
+                raw = op(payload=payload, **self._static_kwargs)
+            except TypeError:
+                try:
+                    raw = op(**payload, **self._static_kwargs)
+                except TypeError:
+                    try:
+                        raw = op(payload, **self._static_kwargs)
+                    except TypeError:
+                        raw = op(payload)
+        except Exception as exc:
+            logger.exception("FinanzOnline SOAP call failed")
+            return UvaSubmitResult(ok=False, reference_id=None, message=f"FinanzOnline SOAP call failed: {exc}")
 
         if isinstance(raw, UvaSubmitResult):
             return raw
@@ -111,4 +127,14 @@ class ZeepUvaSoapBackend:
             return UvaSubmitResult(ok=ok, reference_id=None if ref is None else str(ref), message=msg)
         if isinstance(raw, str):
             return UvaSubmitResult(ok=True, reference_id=None, message=raw)
+
+        ok = bool(getattr(raw, "ok", True))
+        ref = getattr(raw, "reference_id", None) or getattr(raw, "reference", None)
+        msg = getattr(raw, "message", None) or getattr(raw, "msg", None)
+        if ref is not None or msg is not None:
+            return UvaSubmitResult(
+                ok=ok,
+                reference_id=None if ref is None else str(ref),
+                message=str(msg or "accepted"),
+            )
         return UvaSubmitResult(ok=True, reference_id=None, message="accepted")

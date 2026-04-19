@@ -86,13 +86,17 @@ class TaxesView(QWidget):
 
         def on_preview() -> None:
             payload = uva.mock_build_payload(year.value(), month.value())
+            preview_text = str(payload.get("preview_text") or "").strip()
+            kennzahlen_text = str(payload.get("kennzahlen_text") or "").strip()
+            combined = "\n\n".join(part for part in [preview_text, kennzahlen_text] if part)
+            if combined:
+                info.appendPlainText("\n\n" + combined)
+                return
             info.appendPlainText("\n\n" + repr(payload))
 
         def on_submit() -> None:
-            payload = uva.mock_build_payload(year.value(), month.value())
-
             def job() -> UvaSubmitResult:
-                return uva.submit_uva(payload)
+                return uva.submit_month(year.value(), month.value())
 
             self._worker = BackgroundWorker(job)
 

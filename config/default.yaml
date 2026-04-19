@@ -24,6 +24,12 @@ wix:
   base_url_v1: "https://www.wixapis.com/stores/v1"
   base_url_v3: "https://www.wixapis.com/stores/v3"
 
+finanzonline:
+  wsdl_url: ""
+  operation_name: "submitUva"
+  test_mode: true
+  submit_timeout_seconds: 30
+
 printing:
   music_dpi: 600
   invoice_dpi: 300

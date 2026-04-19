@@ -64,6 +64,14 @@ class WixSection:
 
 
 @dataclass(frozen=True)
+class FinanzOnlineSection:
+    wsdl_url: str = ""
+    operation_name: str = "submitUva"
+    test_mode: bool = True
+    submit_timeout_seconds: int = 30
+
+
+@dataclass(frozen=True)
 class PrintingSection:
     """Print settings. ``configured_printer_names`` = expected Windows printer names on print PC."""
 
@@ -98,6 +106,7 @@ class AppConfig:
     app: AppSection = field(default_factory=AppSection)
     sevdesk: SevdeskSection = field(default_factory=SevdeskSection)
     wix: WixSection = field(default_factory=WixSection)
+    finanzonline: FinanzOnlineSection = field(default_factory=FinanzOnlineSection)
     printing: PrintingSection = field(default_factory=PrintingSection)
     inventory: InventorySection = field(default_factory=InventorySection)
     crm: CrmSection = field(default_factory=CrmSection)
@@ -145,6 +154,20 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     yaml_data.setdefault("wix", {})["api_key"] = os.getenv("WIX_API_KEY", "")
     yaml_data.setdefault("wix", {})["site_id"] = os.getenv("WIX_SITE_ID", "")
     yaml_data.setdefault("wix", {})["account_id"] = os.getenv("WIX_ACCOUNT_ID", "")
+    yaml_data.setdefault("finanzonline", {})["wsdl_url"] = os.getenv(
+        "FON_SOAP_WSDL",
+        yaml_data.setdefault("finanzonline", {}).get("wsdl_url", ""),
+    )
+    yaml_data.setdefault("finanzonline", {})["operation_name"] = os.getenv(
+        "FON_SOAP_OPERATION",
+        yaml_data.setdefault("finanzonline", {}).get("operation_name", "submitUva"),
+    )
+    yaml_data.setdefault("finanzonline", {})["test_mode"] = str(
+        os.getenv(
+            "FON_SOAP_TEST_MODE",
+            str(yaml_data.setdefault("finanzonline", {}).get("test_mode", True)),
+        )
+    ).strip().lower() in {"1", "true", "yes", "ja", "on"}
     yaml_data["database_url"] = os.getenv("DATABASE_URL", "")
     yaml_data["fernet_master_key"] = os.getenv("FERNET_MASTER_KEY", "")
 

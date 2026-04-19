@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from xw_studio.core.config import AppConfig
+from xw_studio.core.config import AppConfig, FinanzOnlineSection
 from xw_studio.services.finanzonline.client import FinanzOnlineClient
+from xw_studio.services.finanzonline.uva_models import UvaKennzahlen, UvaPayloadResult
 from xw_studio.services.finanzonline.uva_service import UvaService
 from xw_studio.services.finanzonline.uva_soap import (
     MockUvaSoapBackend,
@@ -71,6 +72,21 @@ class _SecretsStub:
         return self._values.get(key, "")
 
 
+class _PayloadServiceStub:
+    def build_payload(self, year: int, month: int) -> UvaPayloadResult:
+        assert (year, month) == (2026, 3)
+        return UvaPayloadResult(
+            year=year,
+            month=month,
+            kennzahlen=UvaKennzahlen(A000="123.45", A029="100.00", C060="10.00"),
+            zahlbetrag="0.00",
+            warnings=[],
+        )
+
+    def render_kennzahlen_text(self, payload: UvaPayloadResult) -> str:
+        return f"KZ000={payload.kennzahlen.A000}"
+
+
 def test_zeep_backend_calls_operation() -> None:
     backend = ZeepUvaSoapBackend(
         wsdl_url="https://fon.example/wsdl",
@@ -98,4 +114,73 @@ def test_finanzonline_client_uses_live_backend_when_wsdl_set(monkeypatch: pytest
 
     client = FinanzOnlineClient(AppConfig(), secret_service=secrets)  # type: ignore[arg-type]
 
-    assert client.backend_mode() == "live"
+    assert client.backend_mode().startswith("live")
+
+
+def test_uva_service_builds_submission_payload_from_kennzahlen() -> None:
+    mock = MockUvaSoapBackend()
+    client = FinanzOnlineClient(AppConfig(), uva_backend=mock)
+    service = UvaService(AppConfig(), client, payload_service=_PayloadServiceStub())  # type: ignore[arg-type]
+
+    payload = service.build_submission_payload(2026, 3)
+
+    assert payload["jahr"] == 2026
+    assert payload["monat"] == 3
+    assert payload["meldung"] == "U30"
+    assert payload["kennzahlen"]["KZ000"] == "123.45"
+
+
+def test_uva_service_submit_month_uses_built_submission_payload() -> None:
+    mock = MockUvaSoapBackend()
+    client = FinanzOnlineClient(AppConfig(), uva_backend=mock)
+    service = UvaService(AppConfig(), client, payload_service=_PayloadServiceStub())  # type: ignore[arg-type]
+
+    result = service.submit_month(2026, 3)
+
+    assert result.ok is True
+    assert mock.calls[-1]["meldung"] == "U30"
+    assert mock.calls[-1]["kennzahlen"]["KZ000"] == "123.45"
+
+
+def test_finanzonline_client_uses_configured_wsdl_without_env() -> None:
+    cfg = AppConfig(
+        finanzonline=FinanzOnlineSection(
+            wsdl_url="https://fon.example/config.wsdl",
+            operation_name="submitUva",
+            test_mode=True,
+        )
+    )
+    secrets = _SecretsStub(
+        {
+            "FON_TEILNEHMER_ID": "T",
+            "FON_BENUTZER_ID": "B",
+            "FON_PIN": "P",
+        }
+    )
+
+    client = FinanzOnlineClient(cfg, secret_service=secrets)  # type: ignore[arg-type]
+
+    assert client.backend_mode().startswith("live")
+    assert client.participant_id() == "T"
+
+
+def test_zeep_backend_wraps_runtime_faults() -> None:
+    class _FaultyService:
+        def submitUva(self, **_: object) -> object:
+            raise RuntimeError("SOAP endpoint unavailable")
+
+    class _FaultyClient:
+        def __init__(self, _wsdl: str) -> None:
+            self.service = _FaultyService()
+
+    backend = ZeepUvaSoapBackend(
+        wsdl_url="https://fon.example/wsdl",
+        operation_name="submitUva",
+        static_kwargs={"teilnehmer_id": "T", "benutzer_id": "B", "pin": "P"},
+        client_factory=lambda wsdl: _FaultyClient(wsdl),
+    )
+
+    out = backend.submit_uva({"jahr": 2026, "monat": 4})
+
+    assert out.ok is False
+    assert "SOAP endpoint unavailable" in out.message

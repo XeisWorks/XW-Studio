@@ -10,7 +10,13 @@ from xw_studio.services.clearing.service import PaymentClearingService
 from xw_studio.services.crm.service import CrmService
 from xw_studio.services.daily_business.service import DailyBusinessService
 from xw_studio.services.expenses.service import ExpenseAuditService
-from xw_studio.services.finanzonline import FinanzOnlineClient, UvaService
+from xw_studio.services.finanzonline import (
+    FinanzOnlineClient,
+    SevdeskUvaPreviewProvider,
+    UvaPayloadService,
+    UvaPreviewService,
+    UvaService,
+)
 from xw_studio.services.http_client import SevdeskConnection, build_sevdesk_connection
 from xw_studio.services.ideas.stores import (
     MarketingIdeasStore,
@@ -76,8 +82,21 @@ def register_default_services(container: Container) -> None:
         ),
     )
     container.register(
+        UvaPreviewService,
+        lambda c: UvaPreviewService(SevdeskUvaPreviewProvider(c.resolve(SevdeskConnection))),
+    )
+    container.register(
+        UvaPayloadService,
+        lambda c: UvaPayloadService(c.resolve(UvaPreviewService)),
+    )
+    container.register(
         UvaService,
-        lambda c: UvaService(c.config, c.resolve(FinanzOnlineClient)),
+        lambda c: UvaService(
+            c.config,
+            c.resolve(FinanzOnlineClient),
+            preview_service=c.resolve(UvaPreviewService),
+            payload_service=c.resolve(UvaPayloadService),
+        ),
     )
     container.register(
         PaymentClearingService,

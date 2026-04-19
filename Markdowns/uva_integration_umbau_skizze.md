@@ -48,33 +48,30 @@ Die Legacy-Datei enthält bereits einige gute und für Österreich passende Grun
 
 Die Legacy-Logik ist **für viele Standardfälle brauchbar**, aber **nicht vollständig sauber genug**, um sie unverändert in XW-Studio zu übernehmen.
 
-### A. EU-B2B-Leistungen dürfen nicht wie normale österreichische Reverse-Charge-Umsätze in die UVA laufen
+### A. EU-B2B-Leistungen und innergemeinschaftliche Lieferungen bleiben in der österreichischen UVA sichtbar
 
-Wesentlicher Punkt aus der Recherche:
+Aktueller fachlicher Zielentscheid:
 
-- Bei **grenzüberschreitenden B2B-Dienstleistungen**, die im Ausland steuerbar sind, scheint der Umsatz in Österreich **nicht** als normaler UVA-Inlandsumsatz auf.
-- Er ist stattdessen für die **ZM / Auslandslogik** relevant.
+- **EU-B2B-Leistungen / Reverse Charge** sollen in der österreichischen UVA berücksichtigt werden.
+- **Innergemeinschaftliche Lieferungen** sollen ebenfalls in der UVA berücksichtigt werden.
+- **Nur B2C-Auslandsleistungen** sollen nicht in die österreichische UVA laufen.
 
 **Folge für den Umbau:**
-Die Legacy-Zuordnung `Reverse Charge EU -> A021` ist **zu grob und potentiell fachlich falsch**. In XW-Studio muss sauber getrennt werden zwischen:
+Die Legacy-Logik darf diese B2B-Fälle weiterhin in der UVA führen, muss aber sauber zwischen:
 
-- **inländischem Reverse Charge** → UVA-relevant
-- **EU-B2B-Leistung mit Leistungsort Ausland** → **nicht** in die österreichische UVA, aber ZM-/Audit-relevant
+- **B2B / UVA-relevant**
+- **B2C / nicht UVA-relevant**
 
-### B. Innergemeinschaftlicher Erwerb und Reverse Charge sind derzeit faktisch auf 20 % vereinfacht
+unterscheiden.
 
-Die Altlogik arbeitet bei mehreren Sonderfällen implizit mit einem **20-%-Standardpfad**. Das ist für viele reale Belege ausreichend, aber nicht allgemein korrekt.
+### B. Innergemeinschaftlicher Erwerb und Reverse Charge bleiben in Phase 1 bewusst pauschal bei 20 %
 
-Für XW-Studio muss die Logik **satzabhängig** aufgebaut werden:
+Für die jetzt beauftragte Phase 1 gilt ausdrücklich:
 
-- ig Erwerb mit 20 %
-- ig Erwerb mit 10 %
-- ig Erwerb mit 13 %
-- Reverse Charge mit dem in Österreich passenden Steuersatz
+- **Reverse Charge weiterhin pauschal 20 %**
+- **innergemeinschaftlicher Erwerb weiterhin pauschal 20 %**
 
-**Nicht ausreichend:**
-- ein einziger „Sammelpfad“ für alle Fälle
-- harte Annahme, dass RC/ig Erwerb immer 20 % sind
+Das ist eine pragmatische Zielvorgabe für die erste Integrationsstufe und wird daher so umgesetzt.
 
 ### C. Feldbezeichnungen in der Legacy-Datei sind teils irreführend
 
@@ -117,13 +114,13 @@ Die Zielberechnung für XW-Studio soll sich an folgendem fachlichen Verhalten or
 | --- | --- | --- |
 | Österreichische Ausgangsrechnungen 20/10/13 % | nach Zahlung im Zeitraum berücksichtigen | ja |
 | Inländisches Reverse Charge (Ausgangsseite) | getrennt erfassen | ja |
-| EU-B2B-Leistung mit Leistungsort Ausland | nicht in die österreichische UVA übernehmen, aber auditieren / ZM-seitig markieren | nein / indirekt |
+| EU-B2B-Leistung / Reverse Charge | in der österreichischen UVA mitführen | ja |
 | Innergemeinschaftliche Lieferung von Waren | getrennt erfassen | ja |
 | Ausfuhr / Drittland | getrennt erfassen | ja |
 | OSS-Umsätze an Privatkunden in anderen EU-Ländern | aus der AT-UVA ausschließen, separat kennzeichnen | nein |
 | Eingangsrechnung mit ausländischer ausgewiesener VAT | nicht in KZ 060 übernehmen | nein |
-| Reverse-Charge-Eingangsleistung | Steuer und ggf. korrespondierende Vorsteuer satzabhängig erfassen | ja |
-| Innergemeinschaftlicher Erwerb | Bemessungsgrundlage + Steuer nach passendem Steuersatz erfassen | ja |
+| Reverse-Charge-Eingangsleistung | pauschal mit 20 % führen und korrespondierende Vorsteuer berücksichtigen | ja |
+| Innergemeinschaftlicher Erwerb | pauschal mit 20 % führen | ja |
 
 ---
 
@@ -201,10 +198,9 @@ Vergleicht XW-Studio-Berechnung mit bereits eingereichten Monaten:
 
 ## 5.2 EU-B2B-Leistungen
 
-- **nicht** in die österreichische Inlands-UVA aufnehmen
-- in der Preview separat als:
-  - „nicht UVA-relevant, aber ZM-/Auslandsfall“
-- nie automatisch mit A021 vermischen
+- in die österreichische UVA aufnehmen
+- in Phase 1 als B2B-/Reverse-Charge-Fall sichtbar halten
+- nur B2C-Auslandsleistungen ausschließen
 
 ## 5.3 Innergemeinschaftliche Lieferungen
 
@@ -224,9 +220,9 @@ Vergleicht XW-Studio-Berechnung mit bereits eingereichten Monaten:
 
 ## 5.6 Reverse Charge / ig Erwerb
 
-- satzabhängig rechnen
-- nicht auf 20 % hart verdrahten
-- nur dann korrespondierende Vorsteuer ziehen, wenn Vorsteuerabzug zulässig ist
+- in Phase 1 bewusst mit **20 % pauschal** rechnen
+- korrespondierende Vorsteuer nur ziehen, wenn Vorsteuerabzug zulässig ist
+- spätere Verfeinerung bleibt optional für Phase 2+
 
 ---
 
