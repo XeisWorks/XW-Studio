@@ -193,12 +193,41 @@ class _PaidWithoutDateProvider:
         return []
 
 
-def test_paid_like_document_without_paid_date_falls_back_to_period_date() -> None:
+class _PaidWithOverlayDateProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 201,
+                "invoiceNumber": "RE-OVERLAY-1",
+                "status": "1000",
+                "invoiceDate": "2026-02-10",
+                "xw_payment_date": "2026-03-12",
+                "taxText": "MIT 10% MEHRWERTSTEUER",
+                "sumGross": "110.00",
+                "sumNet": "100.00",
+                "sumTax": "10.00",
+            }
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return []
+
+
+def test_paid_like_document_without_paid_date_is_not_included_without_payment_evidence() -> None:
     payload_service = UvaPayloadService(UvaPreviewService(_PaidWithoutDateProvider()))
     payload = payload_service.build_payload(2026, 3)
 
+    assert payload.kennzahlen.A029 == "0.00"
+    assert any("zahlungsnachweis" in warning.lower() for warning in payload.warnings)
+
+
+def test_overlay_payment_date_includes_cash_basis_document() -> None:
+    payload_service = UvaPayloadService(UvaPreviewService(_PaidWithOverlayDateProvider()))
+    payload = payload_service.build_payload(2026, 3)
+
     assert payload.kennzahlen.A029 == "100.00"
-    assert any("belegdatum" in warning.lower() for warning in payload.warnings)
 
 
 class _LegacyTaxClassificationProvider:
@@ -210,6 +239,7 @@ class _LegacyTaxClassificationProvider:
                 "invoiceNumber": "RE-EU-1",
                 "status": "1000",
                 "invoiceDate": "2026-03-10",
+                "xw_payment_date": "2026-03-10",
                 "taxType": "eu",
                 "sumGross": "250.00",
                 "sumNet": "250.00",
@@ -220,6 +250,7 @@ class _LegacyTaxClassificationProvider:
                 "invoiceNumber": "RE-AT-13",
                 "status": "1000",
                 "invoiceDate": "2026-03-11",
+                "xw_payment_date": "2026-03-11",
                 "taxText": "0",
                 "sumGross": "113.00",
                 "sumNet": "100.00",
@@ -244,3 +275,42 @@ def test_legacy_tax_metadata_is_mapped_to_expected_uva_groups() -> None:
     assert "MIT 13% MEHRWERTSTEUER" in labels
     assert payload.kennzahlen.A017 == "250.00"
     assert payload.kennzahlen.A006 == "100.00"
+
+
+class _MixedPositionProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return [
+            {
+                "id": 400,
+                "invoiceNumber": "RE-MIXED-1",
+                "status": "1000",
+                "xw_payment_date": "2026-03-15",
+                "taxText": "0",
+                "sumGross": "188.46",
+                "sumNet": "167.30",
+                "sumTax": "21.16",
+                "xw_positions": [
+                    {"sumNetAccounting": "150.00", "sumTaxAccounting": "15.00", "taxRate": "10"},
+                    {"sumNetAccounting": "17.30", "sumTaxAccounting": "3.46", "taxRate": "20"},
+                ],
+            }
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 3)
+        return []
+
+
+def test_preview_splits_mixed_tax_document_by_positions() -> None:
+    preview_service = UvaPreviewService(_MixedPositionProvider())
+    payload_service = UvaPayloadService(preview_service)
+
+    preview = preview_service.build_preview(2026, 3)
+    payload = payload_service.build_payload(2026, 3)
+    groups = {group.label: group for group in preview.sales.groups}
+
+    assert groups["MIT 10% MEHRWERTSTEUER"].net_amount == "150.00"
+    assert groups["MIT 20% MEHRWERTSTEUER"].net_amount == "17.30"
+    assert payload.kennzahlen.A029 == "150.00"
+    assert payload.kennzahlen.A022 == "17.30"
