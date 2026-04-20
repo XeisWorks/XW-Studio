@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from xw_studio.services.finanzonline.uva_payload_service import UvaPayloadService
-from xw_studio.services.finanzonline.uva_preview import UvaPreviewService
+from xw_studio.services.finanzonline.uva_preview import SevdeskUvaPreviewProvider, UvaPreviewService
 
 
 class _FakeProvider:
@@ -34,6 +34,32 @@ class _FakeProvider:
         ]
 
 
+class _FebruaryProvider:
+    def load_sales_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 2)
+        return [
+            {"taxText": "MIT 10% MEHRWERTSTEUER", "sumGross": "4173.31", "sumNet": "3794.34", "sumTax": "378.97"},
+            {"taxText": "STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)", "sumGross": "3346.20", "sumNet": "3346.20", "sumTax": "0.00"},
+            {"taxText": "REVERSE CHARGE", "sumGross": "134.00", "sumNet": "134.00", "sumTax": "0.00"},
+            {"taxText": "DEUTSCHE MWST. 7%", "sumGross": "1480.97", "sumNet": "1380.21", "sumTax": "100.76"},
+            {"taxText": "ITALIENISCHE IVA 4%", "sumGross": "264.10", "sumNet": "253.90", "sumTax": "10.20"},
+            {"taxText": "STEUERFREIE AUSFUHRLIEFERUNG (Â§ 7 USTG 1994)", "sumGross": "185.30", "sumNet": "185.30", "sumTax": "0.00"},
+            {"taxText": "LUXEMBURGISCHE TVA 3%", "sumGross": "63.60", "sumNet": "61.74", "sumTax": "1.86"},
+            {"taxText": "SPANISCHE IVA 10%", "sumGross": "5.50", "sumNet": "5.00", "sumTax": "0.50"},
+        ]
+
+    def load_purchase_documents(self, year: int, month: int) -> list[dict[str, object]]:
+        assert (year, month) == (2026, 2)
+        return [
+            {"taxText": "MIT 0% MEHRWERTSTEUER", "sumGross": "4232.91", "sumNet": "4232.91", "sumTax": "0.00"},
+            {"taxText": "MIT 10% MEHRWERTSTEUER", "sumGross": "308.43", "sumNet": "280.39", "sumTax": "28.04"},
+            {"taxText": "MIT 13% MEHRWERTSTEUER", "sumGross": "1130.00", "sumNet": "1000.00", "sumTax": "130.00"},
+            {"taxText": "MIT 20% MEHRWERTSTEUER", "sumGross": "4008.93", "sumNet": "3340.78", "sumTax": "668.15"},
+            {"taxText": "STEUERFREIE INNERGEMEINSCHAFTL. LIEFERUNG (EU)", "sumGross": "5917.67", "sumNet": "5917.67", "sumTax": "0.00"},
+            {"taxText": "REVERSE CHARGE", "sumGross": "2077.90", "sumNet": "2077.90", "sumTax": "0.00"},
+        ]
+
+
 def test_phase1_preview_matches_expected_fixture() -> None:
     service = UvaPreviewService(_FakeProvider())
     preview = service.build_preview(2026, 3)
@@ -43,6 +69,17 @@ def test_phase1_preview_matches_expected_fixture() -> None:
     expected = fixture.read_text(encoding="utf-8").strip()
 
     assert rendered.strip() == expected
+
+
+def test_phase1_preview_matches_february_expected_values() -> None:
+    service = UvaPreviewService(_FebruaryProvider())
+    preview = service.build_preview(2026, 2)
+    rendered = service.render_preview_text(preview)
+
+    fixture = Path(__file__).resolve().parents[1] / "expected" / "UVA 02-26.txt"
+    expected = fixture.read_text(encoding="utf-8").strip()
+
+    assert _semantic_preview_lines(rendered) == _semantic_preview_lines(expected)
 
 
 def test_phase1_payload_contains_preview_text() -> None:
@@ -314,3 +351,125 @@ def test_preview_splits_mixed_tax_document_by_positions() -> None:
     assert groups["MIT 20% MEHRWERTSTEUER"].net_amount == "17.30"
     assert payload.kennzahlen.A029 == "150.00"
     assert payload.kennzahlen.A022 == "17.30"
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class _PaymentLogConnection:
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, object]]] = []
+
+    def get(self, path: str, params: dict[str, object] | None = None) -> _FakeResponse:
+        query = dict(params or {})
+        self.requests.append((path, query))
+        if path == "/Invoice":
+            if "startPayDate" in query:
+                return _FakeResponse(
+                    {
+                        "objects": [
+                            {
+                                "id": "9001",
+                                "status": "750",
+                                "invoiceDate": "2026-02-18",
+                                "invoiceNumber": "RE-9001",
+                                "taxText": "MIT 20% MEHRWERTSTEUER",
+                                "sumGross": "120.00",
+                                "sumNet": "100.00",
+                                "sumTax": "20.00",
+                            }
+                        ]
+                    }
+                )
+            return _FakeResponse({"objects": []})
+        if path == "/Invoice/9001/getCheckAccountTransactionLogs":
+            return _FakeResponse(
+                {
+                    "objects": [
+                        {
+                            "checkAccountTransaction": {
+                                "valueDate": "2026-03-04",
+                                "assignedAmountGross": "60.00",
+                            }
+                        }
+                    ]
+                }
+            )
+        if path == "/Invoice/9001/getCheckAccountTransactions":
+            return _FakeResponse({"objects": []})
+        if path == "/InvoicePos":
+            return _FakeResponse({"objects": []})
+        if path == "/Voucher":
+            return _FakeResponse({"objects": []})
+        if path == "/CreditNote":
+            return _FakeResponse({"objects": []})
+        raise AssertionError(f"Unexpected request: {path} {query}")
+
+
+def test_provider_uses_payment_logs_before_period_filtering() -> None:
+    connection = _PaymentLogConnection()
+    provider = SevdeskUvaPreviewProvider(connection)  # type: ignore[arg-type]
+    preview_service = UvaPreviewService(provider)
+    payload_service = UvaPayloadService(preview_service)
+
+    preview = preview_service.build_preview(2026, 3)
+    payload = payload_service.build_payload(2026, 3)
+
+    assert preview.sales.groups[0].net_amount == "50.00"
+    assert payload.kennzahlen.A022 == "50.00"
+    assert any(path == "/Invoice/9001/getCheckAccountTransactionLogs" for path, _ in connection.requests)
+
+
+class _CreditNoteConnection:
+    def get(self, path: str, params: dict[str, object] | None = None) -> _FakeResponse:
+        query = dict(params or {})
+        if path == "/Invoice":
+            return _FakeResponse({"objects": []})
+        if path == "/Voucher":
+            return _FakeResponse({"objects": []})
+        if path == "/CreditNote":
+            if "startPayDate" in query:
+                return _FakeResponse(
+                    {
+                        "objects": [
+                            {
+                                "id": "9100",
+                                "status": "1000",
+                                "creditNoteDate": "2026-03-02",
+                                "paidDate": "2026-03-05",
+                                "creditNoteNumber": "GU-9100",
+                                "refSrcInvoice": {"id": "9000"},
+                                "taxText": "MIT 10% MEHRWERTSTEUER",
+                                "sumGross": "110.00",
+                                "sumNet": "100.00",
+                                "sumTax": "10.00",
+                            }
+                        ]
+                    }
+                )
+            return _FakeResponse({"objects": []})
+        if path == "/CreditNotePos":
+            return _FakeResponse({"objects": []})
+        raise AssertionError(f"Unexpected request: {path} {query}")
+
+
+def test_provider_loads_credit_notes_as_negative_sales() -> None:
+    provider = SevdeskUvaPreviewProvider(_CreditNoteConnection())  # type: ignore[arg-type]
+    payload_service = UvaPayloadService(UvaPreviewService(provider))
+
+    payload = payload_service.build_payload(2026, 3)
+
+    assert payload.kennzahlen.A029 == "-100.00"
+
+
+def _semantic_preview_lines(text: str) -> list[str]:
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and line.strip() != "------------"
+    ]

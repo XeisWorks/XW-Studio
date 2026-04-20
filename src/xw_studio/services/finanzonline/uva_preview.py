@@ -50,6 +50,48 @@ _REVERSE_TAX_RULES = {"5", "21"}
 _EXPORT_TAXSETS = {"45412"}
 _ICS_TAXSETS = {"27267"}
 _REVERSE_TAXSETS = {"35315"}
+_PAYMENT_DATE_KEYS = (
+    "xw_payment_date",
+    "paidDate",
+    "paymentDate",
+    "payDate",
+    "datePaid",
+    "datePayment",
+)
+_SALES_DOCUMENT_DATE_KEYS = ("invoiceDate", "date")
+_CREDIT_NOTE_DOCUMENT_DATE_KEYS = ("creditNoteDate", "date")
+_PURCHASE_DOCUMENT_DATE_KEYS = ("voucherDate", "date")
+_PAYMENT_EVENT_DATE_KEYS = ("bookingDate", "valueDate", "entryDate", "date", "created", "create")
+_PAYMENT_EVENT_AMOUNT_KEYS = (
+    "amountPaid",
+    "assignedAmount",
+    "assignedAmountGross",
+    "paymentAmount",
+    "amount",
+    "value",
+    "sum",
+)
+_DOCUMENT_AMOUNT_KEYS = (
+    "sumGross",
+    "sumGrossAccounting",
+    "sumGrossForeignCurrency",
+    "sumNet",
+    "sumNetAccounting",
+    "sumTax",
+    "sumTaxAccounting",
+)
+_POSITION_AMOUNT_KEYS = (
+    "sumGross",
+    "sumGrossAccounting",
+    "sumNet",
+    "sumNetAccounting",
+    "sumTax",
+    "sumTaxAccounting",
+    "amountNet",
+    "priceNet",
+    "priceNetAccounting",
+    "net",
+)
 
 
 class UvaPreviewGroup(BaseModel):
@@ -111,7 +153,7 @@ class SevdeskUvaPreviewProvider:
 
     def load_sales_documents(self, year: int, month: int) -> list[dict[str, Any]]:
         start_ts, end_ts = self._month_bounds(year, month)
-        docs = self._merge_documents(
+        invoice_docs = self._merge_documents(
             self._load_resource(
                 "/Invoice",
                 params={"startDate": start_ts, "endDate": end_ts, "showAll": "true"},
@@ -129,27 +171,38 @@ class SevdeskUvaPreviewProvider:
                 extra_params={"partiallyPaid": "true"},
             ),
         )
+        credit_note_docs = self._merge_documents(
+            self._load_resource(
+                "/CreditNote",
+                params={"startDate": start_ts, "endDate": end_ts, "showAll": "true"},
+            ),
+            self._load_resource(
+                "/CreditNote",
+                params={"startPayDate": start_ts, "endPayDate": end_ts, "showAll": "true"},
+            ),
+            self._load_period_overlay("CreditNote", year, month, statuses=("750", "1000")),
+        )
+
         result: list[dict[str, Any]] = []
-        for doc in docs:
-            if not self._is_period_match(
-                doc,
+        result.extend(
+            self._select_sales_resource(
+                "Invoice",
+                invoice_docs,
                 year,
                 month,
-                ("paidDate", "paymentDate", "payDate", "datePaid", "datePayment", "invoiceDate", "date"),
-            ):
-                continue
-            enriched = self._enrich_payment_metadata("Invoice", doc, year, month)
-            if not self._is_period_match(
-                enriched,
+                document_date_keys=_SALES_DOCUMENT_DATE_KEYS,
+            )
+        )
+        result.extend(
+            self._select_sales_resource(
+                "CreditNote",
+                credit_note_docs,
                 year,
                 month,
-                ("xw_payment_date", "paidDate", "paymentDate", "payDate", "datePaid", "datePayment", "invoiceDate", "date"),
-            ):
-                continue
-            status = str(enriched.get("status") or "").strip()
-            if status and status not in {"1000", "300", "750"} and not enriched.get("paidDate") and not enriched.get("xw_payment_date"):
-                continue
-            result.append(self._prepare_document("Invoice", enriched))
+                document_date_keys=_CREDIT_NOTE_DOCUMENT_DATE_KEYS,
+                negative_amounts=True,
+            )
+        )
         return result
 
     def load_purchase_documents(self, year: int, month: int) -> list[dict[str, Any]]:
@@ -167,10 +220,10 @@ class SevdeskUvaPreviewProvider:
         )
         result: list[dict[str, Any]] = []
         for doc in docs:
-            if not self._is_period_match(doc, year, month, ("paidDate", "paymentDate", "payDate", "datePaid", "datePayment", "voucherDate", "date")):
-                continue
             enriched = self._enrich_payment_metadata("Voucher", doc, year, month)
-            if not self._is_period_match(enriched, year, month, ("xw_payment_date", "paidDate", "paymentDate", "payDate", "datePaid", "datePayment", "voucherDate", "date")):
+            payment_in_period = self._is_period_match(enriched, year, month, _PAYMENT_DATE_KEYS)
+            document_in_period = self._is_period_match(enriched, year, month, _PURCHASE_DOCUMENT_DATE_KEYS)
+            if not payment_in_period and not document_in_period:
                 continue
             credit_debit = str(enriched.get("creditDebit") or "").upper().strip()
             if credit_debit and credit_debit != "C":
@@ -205,8 +258,34 @@ class SevdeskUvaPreviewProvider:
         if doc_id:
             positions = self._load_positions(resource, doc_id)
             if positions:
+                if resource == "CreditNote":
+                    positions = [_with_negative_amounts(position, _POSITION_AMOUNT_KEYS) for position in positions]
                 prepared["xw_positions"] = positions
         return prepared
+
+    def _select_sales_resource(
+        self,
+        resource: str,
+        documents: list[dict[str, Any]],
+        year: int,
+        month: int,
+        *,
+        document_date_keys: tuple[str, ...],
+        negative_amounts: bool = False,
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for doc in documents:
+            enriched = self._enrich_payment_metadata(resource, doc, year, month)
+            payment_in_period = self._is_period_match(enriched, year, month, _PAYMENT_DATE_KEYS)
+            document_in_period = self._is_period_match(enriched, year, month, document_date_keys)
+            if not payment_in_period and not document_in_period:
+                continue
+            status = str(enriched.get("status") or "").strip()
+            if status and status not in {"1000", "300", "750"} and not payment_in_period:
+                continue
+            prepared = _with_negative_amounts(enriched, _DOCUMENT_AMOUNT_KEYS) if negative_amounts else enriched
+            result.append(self._prepare_document(resource, prepared))
+        return result
 
     def _apply_tax_text_fallback(self, document: dict[str, Any]) -> None:
         raw = str(document.get("taxText") or "").strip()
@@ -248,6 +327,9 @@ class SevdeskUvaPreviewProvider:
         if resource == "Invoice":
             path = "/InvoicePos"
             params.update({"invoice[id]": doc_id, "invoice[objectName]": "Invoice"})
+        elif resource == "CreditNote":
+            path = "/CreditNotePos"
+            params.update({"creditNote[id]": doc_id, "creditNote[objectName]": "CreditNote"})
         elif resource == "Voucher":
             path = "/VoucherPos"
             params.update({"voucher[id]": doc_id, "voucher[objectName]": "Voucher"})
@@ -324,11 +406,9 @@ class SevdeskUvaPreviewProvider:
         year: int,
         month: int,
     ) -> dict[str, Any]:
-        if document.get("xw_payment_date") or document.get("paidDate") or document.get("payDate"):
+        if self._is_period_match(document, year, month, _PAYMENT_DATE_KEYS):
             return document
         if not _looks_paid_like(document):
-            return document
-        if not self._is_period_match(document, year, month, ("invoiceDate", "voucherDate", "deliveryDate", "date")):
             return document
         doc_id = document.get("id")
         if doc_id in (None, ""):
@@ -520,19 +600,42 @@ def _looks_paid_like(document: dict[str, Any]) -> bool:
 
 
 def _extract_payment_event_date(event: dict[str, Any]) -> datetime | None:
-    for key in ("bookingDate", "valueDate", "entryDate", "date", "create"):
-        dt = _parse_date(event.get(key))
-        if dt is not None:
-            return dt
+    for node in _payment_event_nodes(event):
+        for key in _PAYMENT_EVENT_DATE_KEYS:
+            dt = _parse_date(node.get(key))
+            if dt is not None:
+                return dt
     return None
 
 
 def _extract_payment_event_amount(event: dict[str, Any]) -> Decimal:
-    for key in ("amountPaid", "amount", "value"):
-        amount = _to_decimal(event.get(key))
-        if amount > Decimal("0.00"):
-            return amount
+    for node in _payment_event_nodes(event):
+        for key in _PAYMENT_EVENT_AMOUNT_KEYS:
+            if key not in node:
+                continue
+            amount = abs(_to_decimal(node.get(key)))
+            if amount > Decimal("0.00"):
+                return amount
     return Decimal("0.00")
+
+
+def _payment_event_nodes(event: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = [event]
+    nested = event.get("checkAccountTransaction")
+    if isinstance(nested, dict):
+        nodes.append(nested)
+    return nodes
+
+
+def _with_negative_amounts(payload: dict[str, Any], amount_keys: tuple[str, ...]) -> dict[str, Any]:
+    prepared = dict(payload)
+    for key in amount_keys:
+        if key not in prepared or prepared.get(key) in (None, ""):
+            continue
+        amount = _to_decimal(prepared.get(key))
+        if amount > Decimal("0.00"):
+            prepared[key] = _format_plain(-amount)
+    return prepared
 
 
 def _to_decimal(value: object) -> Decimal:
